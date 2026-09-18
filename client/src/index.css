@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Scrollbar estilizada estilo WhatsApp */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Fundo pontilhado/doodle sutil de chat */
+.wa-chat-pattern {
+  background-color: #0b141a;
+  background-image: radial-gradient(#182229 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Animações sutis */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+.animate-dot-1 {
+  animation: pulse-dot 1.2s infinite ease-in-out;
+}
+.animate-dot-2 {
+  animation: pulse-dot 1.2s infinite ease-in-out 0.2s;
+}
+.animate-dot-3 {
+  animation: pulse-dot 1.2s infinite ease-in-out 0.4s;
+}

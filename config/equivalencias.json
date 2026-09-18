@@ -1,0 +1,8 @@
+{
+  "CNH": ["CPF", "RG", "nome", "data de nascimento", "filiação"],
+  "CTPS": ["CPF", "RG"],
+  "RG": ["CPF", "filiação"],
+  "PASSAPORTE": ["CPF", "nome", "data de nascimento"],
+  "CONTRATO_SOCIAL": ["CNPJ", "razão social", "sócios"],
+  "CARTAO_CNPJ": ["CNPJ", "razão social", "endereço"]
+}

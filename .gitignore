@@ -1,0 +1,33 @@
+# Dependências
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Compilação e builds
+dist/
+client/dist/
+server/dist/
+
+# Variáveis de ambiente sensíveis (NUNCA COMMITAR)
+.env
+.env.local
+.env.*.local
+
+# Backups e dados locais efêmeros
+backups/
+arquivos_backups/
+temp_ocr/
+temp/
+server/temp/
+
+# Dados locais e documentos do Cofre (estão seguros no Supabase - NUNCA COMMITAR)
+data/
+arquivos/
+
+# Arquivos de sistema
+.DS_Store
+Thumbs.db
+
+# Documentos internos
+VEGA.md

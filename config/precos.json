@@ -1,0 +1,17 @@
+{
+  "gpt-5.4-mini": {
+    "precoEntradaPorMilhao": 0.90,
+    "precoSaidaPorMilhao": 3.60,
+    "moeda": "BRL"
+  },
+  "gpt-4o-mini": {
+    "precoEntradaPorMilhao": 0.90,
+    "precoSaidaPorMilhao": 3.60,
+    "moeda": "BRL"
+  },
+  "text-embedding-3-small": {
+    "precoEntradaPorMilhao": 0.12,
+    "precoSaidaPorMilhao": 0.12,
+    "moeda": "BRL"
+  }
+}
