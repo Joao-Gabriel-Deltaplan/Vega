@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
-import { PDFParse } from 'pdf-parse';
+import { extractText } from 'unpdf';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,10 +12,9 @@ async function main() {
   console.log('Tamanho do arquivo:', fs.statSync(caminhoCnh).size, 'bytes');
 
   const buf = fs.readFileSync(caminhoCnh);
-  const parser = new PDFParse(new Uint8Array(buf));
-  const textRes = await parser.getText();
+  const { text: textRes } = await extractText(new Uint8Array(buf), { mergePages: true });
   console.log('=== TEXTO NATIVO DO PDF ===');
-  console.log(textRes.text);
+  console.log(textRes);
 
   try {
     console.log('=== PDFINFO ===');

@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import OpenAI from 'openai';
-import { PDFParse } from 'pdf-parse';
+import { extractText } from 'unpdf';
 import { getSupabaseClient } from '../db/supabaseClient.js';
 import {
   obterTodosDocumentos,
@@ -182,14 +182,8 @@ export async function extrairTextoDocumento(
   docInfo?: { titulo: string; descricao?: string; titular?: string }
 ): Promise<{ paginas: PaginaExtraida[]; usouOCR: boolean; custoOcrUSD: number }> {
   const buf = fs.readFileSync(caminhoPdf);
-  const uint8 = new Uint8Array(buf);
-  const parser = new PDFParse(uint8);
-  const res = await parser.getText();
-
-  // Divide texto por quebra de página padrão do pdf-parse se houver
-  const textoCompleto = res?.text || '';
-  const blocosPagina = textoCompleto.split(/\x0C|--\s*\d+\s*of\s*\d+\s*--/gi).map((b) => b.trim());
-  const paginasValidas = blocosPagina.filter((b) => b.length > 0);
+  const { text: paginasTexto, totalPages: paginasDetectadas } = await extractText(new Uint8Array(buf), { mergePages: false });
+  const paginasValidas = (Array.isArray(paginasTexto) ? paginasTexto : [paginasTexto]).map((b) => (b || '').trim());
 
   let totalPaginas = paginasValidas.length;
   try {

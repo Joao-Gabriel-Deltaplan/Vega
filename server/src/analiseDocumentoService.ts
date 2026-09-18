@@ -1,4 +1,4 @@
-import { PDFParse } from 'pdf-parse';
+import { extractText } from 'unpdf';
 import { AnaliseDocumentoResponse, VisibilidadeDoc } from './types.js';
 import { extrairCamposTitularDeDocumento } from './extracaoTitularService.js';
 
@@ -49,10 +49,8 @@ export async function analisarDocumentoParaCofre(dados: {
     try {
       const base64Limpo = base64.replace(/^data:.*?;base64,/, '');
       const buffer = Buffer.from(base64Limpo, 'base64');
-      const uint8 = new Uint8Array(buffer);
-      const parser = new PDFParse(uint8);
-      const resultado = await parser.getText();
-      textoExtraido = (resultado?.text || '').toUpperCase();
+      const { text } = await extractText(new Uint8Array(buffer), { mergePages: true });
+      textoExtraido = (text || '').toUpperCase();
     } catch (err) {
       // Se falhar a extração do PDF (arquivo corrompido, protegido ou imagem pura), segue com o nome do arquivo
       textoExtraido = '';

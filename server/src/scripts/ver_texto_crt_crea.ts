@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { PDFParse } from 'pdf-parse';
+import { extractText } from 'unpdf';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,10 +18,10 @@ async function testar() {
       continue;
     }
     const buf = fs.readFileSync(fullPath);
-    const parser = new PDFParse(new Uint8Array(buf));
-    const res = await parser.getText();
-    console.log(`Texto tamanho: ${res.text.length} caracteres`);
-    console.log(res.text.slice(0, 1500));
+    const { text: resText } = await extractText(new Uint8Array(buf), { mergePages: true });
+    const textoStr = resText || '';
+    console.log(`Texto tamanho: ${textoStr.length} caracteres`);
+    console.log(textoStr.slice(0, 1500));
   }
 }
 
