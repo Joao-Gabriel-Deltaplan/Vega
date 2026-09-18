@@ -8,7 +8,11 @@ import {
   obterTodosConhecimentos,
   salvarOuAtualizarTitular,
 } from '../storage.js';
-import { buscarDocumentos, isConfirmacaoSimples } from '../busca/motor.js';
+import {
+  buscarDocumentos,
+  isConfirmacaoSimples,
+  identificarMultiplosDocumentosNoTexto,
+} from '../busca/motor.js';
 import { buscarConhecimento } from '../busca/motorConhecimento.js';
 import {
   Contato,
@@ -51,6 +55,7 @@ export interface ClassificacaoChatResponse {
   origemPessoa?: 'mensagem_atual' | 'contexto';
   campos?: string[];
   documento_citado?: string;
+  documentos_citados?: string[];
   pergunta_completa: string;
   termo_busca: string;
   pergunta_reescrita: string;
@@ -62,6 +67,71 @@ export interface ClassificacaoChatResponse {
   tokensCompletion: number;
   tokensTotal: number;
 }
+
+/**
+ * Interpreta a resposta do usuário quando há documentos previamente oferecidos pela VEGA.
+ * Reconhece:
+ * - "os dois", "esses 2", "ambos", "todos", "pode mandar", "sim", "manda": envia todos.
+ * - "o primeiro", "1", "o 1", ordinal: envia o primeiro da lista.
+ * - "o segundo", "2", "o 2", ordinal: envia o segundo da lista.
+ * - Nome de um documento (ex: "crea", "certidão"): envia o correspondente.
+ */
+export function resolverEscolhaDocumentosOferecidos(
+  mensagemUsuario: string,
+  docsOferecidos: DocumentoRegistro[]
+): DocumentoRegistro[] | null {
+  if (!mensagemUsuario || !docsOferecidos || docsOferecidos.length === 0) return null;
+
+  const msgLimpa = mensagemUsuario
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+  // 1. Quero TODOS ("os dois", "esses 2", "ambos", "todos", "pode mandar", "manda", "sim", "quero", "manda tudo")
+  const regexTodos = /\b(os dois|os 2|esses 2|estes 2|esses dois|estes dois|ambos|ambas|todos|todas|manda os dois|envia os dois|quero os dois|manda ambos|manda todos|manda tudo|pode mandar|pode enviar|sim|quero|pode ser|por favor|com certeza|manda|envia|preciso dos 2|preciso dos dois|anexo dos 2|anexo dos dois|preciso do anexo dos 2)\b/i;
+  if (regexTodos.test(msgLimpa) || isConfirmacaoSimples(mensagemUsuario)) {
+    return docsOferecidos;
+  }
+
+  // 2. Escolha por número ordinal ("o primeiro", "primeiro", "1", "o 1", "opcao 1")
+  const regexPrimeiro = /\b(primeiro|primeira|1|opcao 1|op[cç][aã]o 1|o 1|o primeiro)\b/i;
+  if (regexPrimeiro.test(msgLimpa) && docsOferecidos.length >= 1) {
+    return [docsOferecidos[0]];
+  }
+
+  // 3. Escolha por segundo ordinal ("o segundo", "segundo", "2", "o 2", "opcao 2")
+  const regexSegundo = /\b(segundo|segunda|2|opcao 2|op[cç][aã]o 2|o 2|o segundo)\b/i;
+  if (regexSegundo.test(msgLimpa) && docsOferecidos.length >= 2) {
+    return [docsOferecidos[1]];
+  }
+
+  // 4. Escolha por terceiro ordinal ("o terceiro", "terceiro", "3", "o 3", "opcao 3")
+  const regexTerceiro = /\b(terceiro|terceira|3|opcao 3|op[cç][aã]o 3|o 3|o terceiro)\b/i;
+  if (regexTerceiro.test(msgLimpa) && docsOferecidos.length >= 3) {
+    return [docsOferecidos[2]];
+  }
+
+  // 5. Escolha pelo nome / título do documento
+  const matches = docsOferecidos.filter((d) => {
+    const tNorm = d.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const arqNorm = d.arquivo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const palavrasTitulo = tNorm.split(/\s+/).filter((w) => w.length >= 3);
+    return (
+      msgLimpa.includes(tNorm) ||
+      palavrasTitulo.some((p) => msgLimpa.includes(p)) ||
+      (d.tipo && msgLimpa.includes(d.tipo.toLowerCase())) ||
+      (d.apelidos && d.apelidos.some((ap) => msgLimpa.includes(ap.toLowerCase())))
+    );
+  });
+
+  if (matches.length > 0) {
+    return matches;
+  }
+
+  return null;
+}
+
 
 export interface TrechoEncontrado {
   id: string;
@@ -400,13 +470,15 @@ Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
   "campo_corrigir": "nome do campo a ser corrigido (ex: profissao, cpf, rg, etc.) ou vazio",
   "valor_novo": "novo valor correto informado pelo usuário ou vazio",
   "documento_citado": "nome do documento físico citado explicitamente ou vazio",
+  "documentos_citados": ["lista de documentos físicos citados na mensagem atual (ex: ['CREA', 'Certidão de Casamento']) ou vazio"],
   "pergunta_completa": "versão clara e completa da pergunta sem perder nenhuma informação",
   "termo_busca": "versão curta para busca por nome de arquivo ou tópico"
 }
 
 REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
 1. "saudacao_ou_vago": Apenas saudações puras ("oi", "olá", "bom dia") ou pedidos vagos ("me ajuda"). NUNCA use para perguntas com assunto ou listas.
-2. "pedir_arquivo": Pedido exclusivo de envio de arquivo físico/PDF ("me manda a CNH", "envia o PDF do CREA", "baixa o arquivo", "qual é a CNH do Thomaz"). NUNCA classifique como pedir_arquivo se a mensagem pedir dados cadastrais ou campos!
+2. "pedir_arquivo": Pedido de envio de arquivo físico/PDF ("me manda a CNH", "envia o PDF do CREA", "baixa o arquivo", "qual é a CNH do Thomaz", "esses 2 documentos, preciso do anexo dos 2", "pode mandar", "os dois").
+   - SE O USUÁRIO CITAR MAIS DE UM DOCUMENTO ("o CREA e a certidão", "manda o CREA e a CNH"), a intenção É SEMPRE "pedir_arquivo", e preencha "documentos_citados" com todos os documentos pedidos: ["CREA", "Certidão de Casamento"]!
 3. "dado_pessoal": Perguntas sobre dados cadastrais de titulares (RG, CPF, endereço, estado civil, profissão, mãe, pai, filiação, data de nascimento, validade da CNH etc.).
    - Se a mensagem citar campos cadastrais de uma pessoa física titular, a intenção É SEMPRE "dado_pessoal". Preencha a lista "campos" com todos os campos pedidos!
 4. "pergunta_conteudo": Perguntas sobre normas, regras, políticas corporativas ou tópicos da base de conhecimento ("o que tem em testes jg", "qual o endereço do escritório").
@@ -424,6 +496,13 @@ REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - O CONTEXTO SÓ DEVE SER USADO quando a mensagem atual NÃO tem sujeito nenhum (ex.: perguntas com pronomes como "ele", "dele", ou elípticas como "e a validade?", "e o CPF dele?", "e o RG dele?", "e o endereço dele?"). Nesses casos, herde o titular mencionado anteriormente no histórico.
 
 EXEMPLOS OBRIGATÓRIOS:
+- "me envia o crea e a certidão de casamento do thomaz por favor" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CREA, Certidão de Casamento", "documentos_citados": ["CREA", "Certidão de Casamento"], "pergunta_completa": "Enviar documentos CREA e Certidão de Casamento do Thomaz", "termo_busca": "CREA, Certidão de Casamento"}
+- "quero a certidão e o crea do thomaz" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "Certidão de Casamento, CREA", "documentos_citados": ["Certidão de Casamento", "CREA"], "pergunta_completa": "Enviar documentos Certidão de Casamento e CREA do Thomaz", "termo_busca": "Certidão de Casamento, CREA"}
+- "esses 2 documentos, preciso do anexo dos 2" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Confirmar envio dos dois documentos oferecidos", "termo_busca": ""}
+- "pode mandar" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Confirmar envio dos documentos oferecidos", "termo_busca": ""}
+- "os dois" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Confirmar envio dos dois documentos oferecidos", "termo_busca": ""}
+- "me manda o conselho do thomaz" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "conselho", "documentos_citados": [], "pergunta_completa": "Enviar documento do conselho do Thomaz", "termo_busca": "conselho Thomaz"}
+- "me envia o registro profissional do thomaz" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "registro profissional", "documentos_citados": [], "pergunta_completa": "Enviar registro profissional do Thomaz", "termo_busca": "registro profissional Thomaz"}
 - "pare de alertar o CRT do Thomaz" -> {"intencao": "silenciar_alerta", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CRT", "pergunta_completa": "Desativar alertas de vencimento do documento CRT do Thomaz", "termo_busca": "CRT"}
 - "não alerte mais sobre o CRT" -> {"intencao": "silenciar_alerta", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CRT", "pergunta_completa": "Desativar alertas de vencimento do documento CRT", "termo_busca": "CRT"}
 - "qual o CPF do Thomaz?" -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["cpf"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o CPF do Thomaz?", "termo_busca": "Thomaz"}
@@ -443,7 +522,8 @@ EXEMPLOS OBRIGATÓRIOS:
 - "quem é a mãe do Thomaz" -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["filiacao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Quem é a mãe do Thomaz?", "termo_busca": "filiacao Thomaz"}
 - "qual é a CNH do Thomaz" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CNH Thomaz", "pergunta_completa": "Enviar documento CNH Thomaz", "termo_busca": "CNH Thomaz"}
 - "o que tem em testes jg" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o conteúdo do documento ou instrução testes jg?", "termo_busca": "testes jg"}
-- "sim" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Confirmar envio do documento oferecido", "termo_busca": ""}`;
+- "sim" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Confirmar envio do documento oferecido", "termo_busca": ""}
+`;
 
   // Limita o histórico recente estritamente às últimas 4 mensagens e extrai apenas remetente e texto (sem rastros pesados)
   const ultimas4Msgs = (historicoRecente || [])
@@ -607,24 +687,32 @@ EXEMPLOS OBRIGATÓRIOS:
       }
     }
 
-    // REGRA DE PROTEÇÃO 2: Pedido explícito de arquivo sem campos cadastrais
-    const regexDocSemCampo = /\b(cnh|crea|crt|certidao|cartao\s*vacinas?)\b/i;
-    const regexCampoEspecifico = /\b(numero|validade|vencimento|categoria|vence|venc|data|emissao|expedicao|orgao|endereco|estado\s*civil|rg|profissao|cpf|mae|pai|filiacao|alerta|alertar|silenciar|desativar)\b/i;
-
-    if (
-      !ehSilenciarAlerta &&
-      !ehConsultaVencimento &&
-      parsed.intencao !== 'silenciar_alerta' &&
-      regexDocSemCampo.test(msgNorm) &&
-      !regexCampoEspecifico.test(msgNorm) &&
-      (!parsed.campos || parsed.campos.length === 0)
-    ) {
+    // REGRA DE PROTEÇÃO 2: Pedido de arquivos físicos (múltiplos ou individual)
+    const multiplosNoTexto = identificarMultiplosDocumentosNoTexto(mensagemUsuario, docs, parsed.pessoa);
+    if (multiplosNoTexto.length > 1) {
       parsed.intencao = 'pedir_arquivo';
-      const docMatch = msgNorm.match(regexDocSemCampo);
-      const nomeDoc = docMatch ? docMatch[0].toUpperCase() : 'CNH';
-      if (msgNorm.includes('thomaz') || (parsed.pessoa && parsed.pessoa.toLowerCase().includes('thomaz'))) {
-        parsed.termo_busca = `${nomeDoc} Thomaz`.trim();
-        parsed.documento_citado = `${nomeDoc} Thomaz`;
+      parsed.documentos_citados = multiplosNoTexto.map((d) => d.titulo);
+      parsed.documento_citado = multiplosNoTexto.map((d) => d.titulo).join(', ');
+      parsed.termo_busca = parsed.documento_citado;
+    } else {
+      const regexDocSemCampo = /\b(cnh|crea|crt|certidao|cartao\s*vacinas?|conselho|registro\s*profissional)\b/i;
+      const regexCampoEspecifico = /\b(numero|validade|vencimento|categoria|vence|venc|data|emissao|expedicao|orgao|endereco|estado\s*civil|rg|profissao|cpf|mae|pai|filiacao|alerta|alertar|silenciar|desativar)\b/i;
+
+      if (
+        !ehSilenciarAlerta &&
+        !ehConsultaVencimento &&
+        parsed.intencao !== 'silenciar_alerta' &&
+        regexDocSemCampo.test(msgNorm) &&
+        !regexCampoEspecifico.test(msgNorm) &&
+        (!parsed.campos || parsed.campos.length === 0)
+      ) {
+        parsed.intencao = 'pedir_arquivo';
+        const docMatch = msgNorm.match(regexDocSemCampo);
+        const nomeDoc = docMatch ? docMatch[0] : 'CNH';
+        if (msgNorm.includes('thomaz') || (parsed.pessoa && parsed.pessoa.toLowerCase().includes('thomaz'))) {
+          parsed.termo_busca = `${nomeDoc} Thomaz`.trim();
+          parsed.documento_citado = `${nomeDoc} Thomaz`;
+        }
       }
     }
 
@@ -661,6 +749,7 @@ EXEMPLOS OBRIGATÓRIOS:
       campo_corrigir: parsed.campo_corrigir || undefined,
       valor_novo: parsed.valor_novo || undefined,
       documento_citado: parsed.documento_citado || undefined,
+      documentos_citados: parsed.documentos_citados && parsed.documentos_citados.length > 0 ? parsed.documentos_citados : undefined,
       pergunta_completa: perguntaCompleta,
       termo_busca: termoBusca,
       pergunta_reescrita: perguntaCompleta,
@@ -1091,85 +1180,89 @@ export async function processarMensagemChat(dados: {
     };
   }
 
-  // 2. CASO DE CONFIRMAÇÃO DE OFERTA DE DOCUMENTO ANTERIOR ("sim", "pode mandar", "manda", "quero")
+  // 2. CASO DE RESOLUÇÃO OU CONFIRMAÇÃO DE DOCUMENTOS PREVIAMENTE OFERECIDOS
+  // ("os dois", "esses 2", "pode mandar", "manda", "o primeiro", "1", "o segundo", "crea", "certidão")
   const docOferecidoIdsStr = ultimaMsgAssistente?.documentoOferecidoId;
 
-  if (docOferecidoIdsStr && isConfirmacaoSimples(mensagemUsuario)) {
+  if (docOferecidoIdsStr) {
     const ids = docOferecidoIdsStr.split(',').map((s) => s.trim()).filter(Boolean);
     const todosDocs = documentosDisponiveis.length > 0 ? documentosDisponiveis : await obterTodosDocumentos();
-    const docsParaEnviar = todosDocs.filter((d) => ids.includes(d.id));
+    const docsCandidatos = todosDocs.filter((d) => ids.includes(d.id));
 
-    if (docsParaEnviar.length > 0) {
-      const anexos: Anexo[] = [];
-      for (const d of docsParaEnviar) {
-        anexos.push(await criarAnexoParaDocumento(d));
-      }
+    if (docsCandidatos.length > 0) {
+      const docsEscolhidos = resolverEscolhaDocumentosOferecidos(mensagemUsuario, docsCandidatos);
+      if (docsEscolhidos && docsEscolhidos.length > 0) {
+        const anexos: Anexo[] = [];
+        for (const d of docsEscolhidos) {
+          anexos.push(await criarAnexoParaDocumento(d));
+        }
 
-      const titulos = docsParaEnviar.map((d) => d.titulo).join(', ');
-      const textoResposta = docsParaEnviar.length === 1
-        ? `Aqui está o documento solicitado: ${titulos}.`
-        : `Aqui estão os documentos solicitados: ${titulos}.`;
+        const titulos = docsEscolhidos.map((d) => d.titulo).join(' e ');
+        const textoResposta = docsEscolhidos.length === 1
+          ? `Aqui está o documento solicitado: ${titulos}.`
+          : `Aqui estão os documentos solicitados: ${titulos}.`;
 
-      const docsRastro: DocumentoRastro[] = docsParaEnviar.map((d) => ({
-        id: d.id,
-        titulo: d.titulo,
-        tipo: d.tipo,
-        similaridade: 100,
-        usadoNaResposta: true,
-      }));
+        const docsRastro: DocumentoRastro[] = docsEscolhidos.map((d) => ({
+          id: d.id,
+          titulo: d.titulo,
+          tipo: d.tipo,
+          similaridade: 100,
+          usadoNaResposta: true,
+        }));
 
-      const rastro: RastroRegistro = {
-        mensagemId: '',
-        usuarioNome: contato.nome,
-        usuarioId: contato.id,
-        mensagemOriginal: mensagemUsuario,
-        perguntaReescrita: `Confirmar envio: ${titulos}`,
-        perguntaCompleta: `Enviar documento(s) ${titulos}`,
-        termoBusca: titulos,
-        documentoCitado: titulos,
-        intencaoDetectada: 'pedir_arquivo' as IntencaoChat,
-        tipoBusca: 'nome_cofre',
-        documentosEncontrados: docsRastro,
-        documentoUsado: titulos,
-        enviouAnexo: true,
-        anexosDetalhes: anexos.map((a) => ({
-          nome: a.nome,
-          titulo: a.titulo,
-          tamanho: a.tamanho,
-          tipo: a.tipo,
-        })),
-        respostaFinal: mascararDadosSensiveis(textoResposta),
-        modeloUsado: 'Motor Interno',
-        tokensTotal: 0,
-        tokensPrompt: 0,
-        tokensCompletion: 0,
-        custoEstimadoUsd: 0,
-        tempoTotalMs: Date.now() - inicioTotal,
-        etapas: [
-          {
-            ordem: 1,
-            nome: 'Confirmação de Envio de Documento Ofertado',
-            descricao: `Usuário confirmou o recebimento com "${mensagemUsuario}". Documento(s) "${titulos}" preparado(s) e anexado(s) para entrega direta.`,
-            tempoMs: Date.now() - inicioTotal,
-            detalhes: {
-              confirmacao: mensagemUsuario,
-              documentosEnviados: titulos,
-              documentoIds: ids,
+        const rastro: RastroRegistro = {
+          mensagemId: '',
+          usuarioNome: contato.nome,
+          usuarioId: contato.id,
+          mensagemOriginal: mensagemUsuario,
+          perguntaReescrita: `Envio de documento(s) selecionado(s): ${titulos}`,
+          perguntaCompleta: `Enviar documento(s) ${titulos}`,
+          termoBusca: titulos,
+          documentoCitado: titulos,
+          intencaoDetectada: 'pedir_arquivo' as IntencaoChat,
+          tipoBusca: 'nome_cofre',
+          documentosEncontrados: docsRastro,
+          documentoUsado: titulos,
+          enviouAnexo: true,
+          anexosDetalhes: anexos.map((a) => ({
+            nome: a.nome,
+            titulo: a.titulo,
+            tamanho: a.tamanho,
+            tipo: a.tipo,
+          })),
+          respostaFinal: mascararDadosSensiveis(textoResposta),
+          modeloUsado: 'Motor Interno',
+          tokensTotal: 0,
+          tokensPrompt: 0,
+          tokensCompletion: 0,
+          custoEstimadoUsd: 0,
+          tempoTotalMs: Date.now() - inicioTotal,
+          etapas: [
+            {
+              ordem: 1,
+              nome: 'Resolução de Escolha de Documentos Ofertados',
+              descricao: `Usuário respondeu com "${mensagemUsuario}". Documento(s) selecionado(s): "${titulos}". Preparado(s) e anexado(s) para entrega direta.`,
+              tempoMs: Date.now() - inicioTotal,
+              detalhes: {
+                escolha: mensagemUsuario,
+                documentosEnviados: titulos,
+                documentoIds: docsEscolhidos.map((d) => d.id),
+              },
             },
-          },
-        ],
-      };
+          ],
+        };
 
-      return {
-        textoResposta,
-        anexos,
-        origem: 'motor',
-        intencaoDetectada: 'pedir_arquivo',
-        perguntaReescrita: titulos,
-        buscaUsada: 'Confirmação de Envio de Documento Ofertado',
-        similaridade: '100% (Confirmação afirmativa)',
-        rastro,
-      };
+        return {
+          textoResposta,
+          anexos,
+          origem: 'motor',
+          intencaoDetectada: 'pedir_arquivo',
+          perguntaReescrita: titulos,
+          buscaUsada: 'Resolução de Opção/Confirmação de Documento',
+          similaridade: '100% (Seleção direta do usuário)',
+          rastro,
+        };
+      }
     }
   }
 
@@ -1311,6 +1404,85 @@ export async function processarMensagemChat(dados: {
   // CASO 2: PEDIR ARQUIVO (Cofre -> Aba Conhecimento -> Rede de Segurança Vetorial)
   // ============================================================================
   if (intencao === 'pedir_arquivo') {
+    const todosDocs = documentosDisponiveis.length > 0 ? documentosDisponiveis : await obterTodosDocumentos();
+
+    // 1. Identificação de múltiplos documentos pedidos na mensagem ou reescrita
+    let docsMultiplos = identificarMultiplosDocumentosNoTexto(mensagemUsuario, todosDocs, pessoa);
+    if (docsMultiplos.length < 2 && pergunta_reescrita) {
+      const daReescrita = identificarMultiplosDocumentosNoTexto(pergunta_reescrita, todosDocs, pessoa);
+      if (daReescrita.length > docsMultiplos.length) {
+        docsMultiplos = daReescrita;
+      }
+    }
+
+    if (docsMultiplos.length < 2 && classificacao.documentos_citados && classificacao.documentos_citados.length > 1) {
+      const docsPorCitacao: DocumentoRegistro[] = [];
+      for (const termoCitado of classificacao.documentos_citados) {
+        const termoCompleto = pessoa ? `${termoCitado} ${pessoa}` : termoCitado;
+        const resBusca = await buscarDocumentos(termoCompleto, contato);
+        if (resBusca.status === 'unico' && resBusca.resultados[0]) {
+          const docAchado = resBusca.resultados[0];
+          if (!docsPorCitacao.some((d) => d.id === docAchado.id)) {
+            docsPorCitacao.push(docAchado);
+          }
+        }
+      }
+      if (docsPorCitacao.length > 1) {
+        docsMultiplos = docsPorCitacao;
+      }
+    }
+
+    // Se identificou múltiplos documentos, envia todos diretamente sem perguntar (Exigências 1 e 4)
+    if (docsMultiplos.length > 1) {
+      modeloUsado = 'Motor Interno';
+      const anexos: Anexo[] = [];
+      for (const d of docsMultiplos) {
+        anexos.push(await criarAnexoParaDocumento(d));
+      }
+
+      const titulos = docsMultiplos.map((d) => d.titulo).join(' e ');
+      const textoResposta = `Aqui estão os documentos solicitados: ${titulos}.`;
+
+      const docsRastro: DocumentoRastro[] = docsMultiplos.map((d) => ({
+        id: d.id,
+        titulo: d.titulo,
+        tipo: d.tipo,
+        similaridade: 100,
+        usadoNaResposta: true,
+      }));
+
+      etapas.push({
+        ordem: 2,
+        nome: 'Localização de Múltiplos Arquivos Físicos no Cofre',
+        descricao: `${docsMultiplos.length} documentos identificados (${titulos}) e preparados para entrega direta.`,
+        tempoMs: 2,
+        detalhes: {
+          documentos: docsMultiplos.map((d) => ({ id: d.id, titulo: d.titulo, arquivo: d.arquivo })),
+        },
+      });
+
+      const rastro = criarRastroFinal({
+        tipoBusca: 'nome_cofre',
+        docsEncontrados: docsRastro,
+        docUsado: titulos,
+        enviouAnexo: true,
+        anexos,
+        respostaFinal: textoResposta,
+        modelo: modeloUsado,
+      });
+
+      return {
+        textoResposta,
+        anexos,
+        origem: 'motor',
+        intencaoDetectada: intencao,
+        perguntaReescrita: pergunta_reescrita,
+        buscaUsada: 'Busca de múltiplos documentos no Cofre',
+        similaridade: '100% (Múltiplos documentos localizados)',
+        rastro,
+      };
+    }
+
     const inicioBuscaDoc = Date.now();
     const termoBuscaArquivo = classificacao.termo_busca || classificacao.documento_citado || pergunta_reescrita || mensagemUsuario;
     // 1. Busca por nome no Cofre (documentos físicos / PDFs)
@@ -1378,6 +1550,58 @@ export async function processarMensagemChat(dados: {
     }
 
     if (buscaDoc.status === 'ambiguo') {
+      const temConectivo = /\b(e|com|mais|tambem|al[eé]m disso|os dois|ambos|junto|preciso dos)\b/i.test(mensagemUsuario) || mensagemUsuario.includes(',');
+      // Se houver conectivo e os resultados corresponderem a múltiplos documentos distintos pedidos, envia todos
+      if (temConectivo && buscaDoc.resultados.length > 1) {
+        const normMensagem = normalizarParaBusca(mensagemUsuario);
+        const termosDistintos = buscaDoc.resultados.filter((d) => {
+          const tNorm = normalizarParaBusca(d.titulo);
+          const arqNorm = normalizarParaBusca(d.arquivo);
+          return normMensagem.includes(tNorm) ||
+            tNorm.split(/\s+/).some((p) => p.length >= 4 && normMensagem.includes(p)) ||
+            (d.tipo && normMensagem.includes(normalizarParaBusca(d.tipo)));
+        });
+
+        if (termosDistintos.length >= 2) {
+          modeloUsado = 'Motor Interno';
+          const anexos: Anexo[] = [];
+          for (const d of termosDistintos) {
+            anexos.push(await criarAnexoParaDocumento(d));
+          }
+          const titulos = termosDistintos.map((d) => d.titulo).join(' e ');
+          const textoResposta = `Aqui estão os documentos solicitados: ${titulos}.`;
+          const docsRastro: DocumentoRastro[] = termosDistintos.map((d) => ({
+            id: d.id,
+            titulo: d.titulo,
+            tipo: d.tipo,
+            similaridade: 100,
+            usadoNaResposta: true,
+          }));
+
+          const rastro = criarRastroFinal({
+            tipoBusca: 'nome_cofre',
+            docsEncontrados: docsRastro,
+            docUsado: titulos,
+            enviouAnexo: true,
+            anexos,
+            respostaFinal: textoResposta,
+            modelo: modeloUsado,
+          });
+
+          return {
+            textoResposta,
+            anexos,
+            origem: 'motor',
+            intencaoDetectada: intencao,
+            perguntaReescrita: pergunta_reescrita,
+            buscaUsada: 'Busca de múltiplos documentos no Cofre',
+            similaridade: '100% (Múltiplos documentos localizados)',
+            rastro,
+          };
+        }
+      }
+
+      // Ambiguidade real: lista as opções enumeradas e guarda documentoOferecidoId
       modeloUsado = 'Motor Interno';
       const docsRastro: DocumentoRastro[] = buscaDoc.resultados.map((d) => ({
         id: d.id,
@@ -1390,12 +1614,20 @@ export async function processarMensagemChat(dados: {
       etapas.push({
         ordem: 2,
         nome: 'Resolução de Ambiguidade de Documentos',
-        descricao: `Encontrados ${buscaDoc.resultados.length} documentos possíveis. Oferecidas opções de escolha ao usuário.`,
+        descricao: `Encontrados ${buscaDoc.resultados.length} documentos possíveis. Oferecidas opções enumeradas de escolha ao usuário.`,
         tempoMs: tempoBuscaDoc,
         detalhes: { resultados: buscaDoc.resultados.map((d) => d.titulo) },
       });
 
-      const textoResposta = `Encontrei mais de um documento relacionado${vocativo}. Qual deles você gostaria de acessar?`;
+      const listaDocsFormatada = buscaDoc.resultados
+        .map((d, idx) => `${idx + 1}) *${d.titulo}*`)
+        .join(', ');
+
+      const perguntaFinal = buscaDoc.resultados.length === 2
+        ? 'Quer os dois ou algum específico?'
+        : 'Quer todos ou algum específico?';
+
+      const textoResposta = `Encontrei estes documentos${vocativo}: ${listaDocsFormatada}. ${perguntaFinal}`;
 
       const rastro = criarRastroFinal({
         tipoBusca: 'nome_cofre',
@@ -1407,6 +1639,7 @@ export async function processarMensagemChat(dados: {
 
       return {
         textoResposta,
+        documentoOferecidoId: buscaDoc.resultados.map((d: DocumentoRegistro) => d.id).join(','),
         opcoes: buscaDoc.resultados.map((d: DocumentoRegistro) => ({ id: d.id, titulo: d.titulo })),
         origem: 'motor',
         intencaoDetectada: intencao,

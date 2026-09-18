@@ -121,7 +121,7 @@ export function verificarConfirmacao(texto: string): boolean {
     .replace(/\s+/g, ' ')
     .trim();
 
-  return /\b(sim|pode mandar|pode enviar|serve|manda|mande|quero|envia|enviar|ok|beleza|por favor|com certeza|isso|manda esse|pode ser|manda pra mim)\b/i.test(
+  return /\b(sim|pode mandar|pode enviar|serve|manda|mande|quero|envia|enviar|ok|beleza|por favor|com certeza|isso|manda esse|pode ser|manda pra mim|os dois|os 2|esses 2|estes 2|esses dois|estes dois|ambos|ambas|todos|todas|manda os dois|manda todos|manda os 2|preciso dos 2|preciso dos dois|anexo dos 2|anexo dos dois|preciso do anexo dos 2|manda tudo)\b/i.test(
     limpo
   );
 }
@@ -136,6 +136,107 @@ export function isConfirmacaoSimples(texto: string): boolean {
   const regexPergunta = /\?|\b(qual|quem|quando|onde|quanto|como|porque|por que|o que)\b/i;
   if (regexPergunta.test(t)) return false;
   return verificarConfirmacao(t);
+}
+
+const SIGLAS_DOCUMENTO = ['crea', 'crt', 'cnh', 'cpf', 'rg', 'cnpj', 'dre', 'art', 'ctps'];
+
+/**
+ * Identifica se a mensagem cita múltiplos documentos do catálogo que devem ser entregues juntos.
+ * Exemplo: "me envia o crea e a certidão de casamento do thomaz", "o CREA e a CNH", "certidão e crea"
+ */
+export function identificarMultiplosDocumentosNoTexto(
+  texto: string,
+  catalogo: DocumentoRegistro[],
+  titular?: string
+): DocumentoRegistro[] {
+  if (!texto || !catalogo || catalogo.length === 0) return [];
+
+  const normTexto = normalizarTexto(texto);
+
+  // Filtra catálogo pelo titular se fornecido
+  const catalogoFiltrado = titular
+    ? catalogo.filter((d) => titularCorresponde(d.titular, titular))
+    : catalogo;
+
+  const docsEncontrados: DocumentoRegistro[] = [];
+
+  for (const doc of catalogoFiltrado) {
+    const normTitulo = normalizarTexto(doc.titulo);
+    const titularDocNorm = doc.titular ? normalizarTexto(doc.titular) : '';
+    const titularBuscaNorm = titular ? normalizarTexto(titular) : '';
+    const apelidos = (doc.apelidos || [])
+      .map((ap) => normalizarTexto(ap))
+      .filter((ap) => {
+        if (!ap || ap.length < 2) return false;
+        if (titularDocNorm && (ap === titularDocNorm || titularDocNorm.includes(ap))) return false;
+        if (titularBuscaNorm && (ap === titularBuscaNorm || titularBuscaNorm.includes(ap))) return false;
+        if (['documento pessoal', 'documento', 'pessoal', 'digital', 'ensino', 'medio', '2024', '2025'].includes(ap)) return false;
+        return true;
+      });
+
+    let match = false;
+
+    // a) Siglas de documentos (CREA, CNH, CRT, CTPS, CPF, RG, etc.)
+    for (const sigla of SIGLAS_DOCUMENTO) {
+      const regexSigla = new RegExp(`\\b${sigla}\\b`, 'i');
+      if (regexSigla.test(normTexto)) {
+        if (
+          regexSigla.test(normTitulo) ||
+          apelidos.some((ap) => regexSigla.test(ap)) ||
+          doc.id.toLowerCase().includes(sigla) ||
+          doc.arquivo.toLowerCase().includes(sigla)
+        ) {
+          match = true;
+          break;
+        }
+      }
+    }
+
+    // b) Apelidos do documento no texto
+    if (!match) {
+      for (const ap of apelidos) {
+        if (ap.length >= 3 && new RegExp(`\\b${ap}\\b`, 'i').test(normTexto)) {
+          match = true;
+          break;
+        }
+      }
+    }
+
+    // c) Palavras-chave específicas de cada documento do cofre
+    if (!match) {
+      if ((normTitulo.includes('casamento') || doc.arquivo.toLowerCase().includes('casamento')) && /\b(casamento|certid[aã]o)\b/i.test(texto)) {
+        match = true;
+      } else if ((normTitulo.includes('vacina') || doc.arquivo.toLowerCase().includes('vacina')) && /\b(vacina|vacinas|vacina[cç][aã]o)\b/i.test(texto)) {
+        match = true;
+      } else if (
+        (normTitulo.includes('imposto de renda') || normTitulo.includes('dirpf') || doc.arquivo.toLowerCase().includes('irpf')) &&
+        /\b(imposto\s*de\s*renda|irpf|dirpf)\b/i.test(texto)
+      ) {
+        match = true;
+      } else if ((normTitulo.includes('diploma') || doc.arquivo.toLowerCase().includes('diploma')) && /\b(diploma)\b/i.test(texto)) {
+        match = true;
+      } else if (
+        (normTitulo.includes('trabalho') || normTitulo.includes('ctps') || doc.arquivo.toLowerCase().includes('carteira de trabalho')) &&
+        /\b(carteira\s*de\s*trabalho|ctps)\b/i.test(texto)
+      ) {
+        match = true;
+      }
+    }
+
+    if (match && !docsEncontrados.some((d) => d.id === doc.id)) {
+      docsEncontrados.push(doc);
+    }
+  }
+
+  // Se encontrou mais de um documento e o texto possui conectivo ou pontuação indicando múltiplos pedidos
+  if (docsEncontrados.length > 1) {
+    const temConectivoMultiplo = /\b(e|com|mais|tambem|al[eé]m disso|os dois|ambos|junto|preciso dos)\b/i.test(texto) || texto.includes(',');
+    if (temConectivoMultiplo) {
+      return docsEncontrados;
+    }
+  }
+
+  return docsEncontrados.length > 1 ? docsEncontrados : [];
 }
 
 /**
@@ -278,8 +379,6 @@ function verificarSimilaridadeFlexivel(textoBusca: string, alvo: string): number
   return maiorSim;
 }
 
-const SIGLAS_DOCUMENTO = ['cnh', 'cpf', 'rg', 'cnpj', 'dre', 'art'];
-
 /**
  * Função principal do Motor de Busca Determinístico com regras de tipo,
  * escopo de titular e sugestão de equivalentes.
@@ -294,6 +393,16 @@ export async function buscarDocumentos(
   const catalogo = await obterDocumentosPorNivelAcesso(nivelAcesso);
   if (!catalogo || catalogo.length === 0) {
     return { status: 'nenhum', resultados: [], score: 0 };
+  }
+
+  // Enriquecimento de termos profissionais para documentos de conselhos/registros
+  for (const doc of catalogo) {
+    const tNorm = normalizarTexto(doc.titulo);
+    if (tNorm.includes('crea') || tNorm.includes('crt')) {
+      doc.apelidos = Array.from(
+        new Set([...(doc.apelidos || []), 'conselho', 'registro profissional', 'carteira profissional', 'carteira do conselho'])
+      );
+    }
   }
 
   const textoNorm = normalizarTexto(texto);
@@ -514,7 +623,15 @@ export async function buscarDocumentos(
   for (const doc of catalogo) {
     let score = 0;
     const normTitulo = normalizarTexto(doc.titulo);
-    const apelidos = (doc.apelidos || []).map((ap) => normalizarTexto(ap)).filter(Boolean);
+    const titularDocNorm = doc.titular ? normalizarTexto(doc.titular) : '';
+    const apelidos = (doc.apelidos || [])
+      .map((ap) => normalizarTexto(ap))
+      .filter((ap) => {
+        if (!ap || ap.length < 2) return false;
+        if (titularDocNorm && (ap === titularDocNorm || titularDocNorm.includes(ap))) return false;
+        if (['documento pessoal', 'documento', 'pessoal', 'digital', 'ensino', 'medio', '2024', '2025'].includes(ap)) return false;
+        return true;
+      });
     const palavrasTitulo = normTitulo.split(/\s+/).filter((w) => w.length >= 2);
 
     // a) Match exato do título ......... 100
