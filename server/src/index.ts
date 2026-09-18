@@ -1171,9 +1171,9 @@ app.post(
       const resultado = await processarEventoEvolution(ev, ipOrigem);
       resultados.push(resultado);
 
-      // Prepara envio futuro da resposta (atualmente simulação com log estruturado)
+      // Envio da resposta ao WhatsApp via Evolution API (Texto e Documentos se houver)
       if (resultado.resposta && resultado.destinatario) {
-        await enviarMensagemWhatsApp(resultado.destinatario, resultado.resposta);
+        await enviarMensagemWhatsApp(resultado.destinatario, resultado.resposta, resultado.anexos);
       }
     }
 

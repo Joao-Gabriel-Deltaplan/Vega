@@ -46,13 +46,11 @@ export function obterUsuariosLocais(): UsuarioWhatsApp[] {
 }
 
 /**
- * Lê todos os usuários cadastrados no Supabase (tabela usuarios), mesclando
- * com mapeamentos locais de data/usuarios.json (como o campo "lid").
+ * Lê todos os usuários cadastrados no Supabase (tabela usuarios).
+ * A fonte da verdade é o Supabase. O arquivo data/usuarios.json atua
+ * exclusivamente como fallback offline caso o banco esteja indisponível.
  */
 export async function obterTodosUsuariosWhatsApp(): Promise<UsuarioWhatsApp[]> {
-  const usuariosLocais = obterUsuariosLocais();
-  let usuariosSupabase: UsuarioWhatsApp[] = [];
-
   try {
     const supabase = getSupabaseClient();
     const { data, error } = await supabase
@@ -60,8 +58,8 @@ export async function obterTodosUsuariosWhatsApp(): Promise<UsuarioWhatsApp[]> {
       .select('*')
       .order('created_at', { ascending: true });
 
-    if (!error && Array.isArray(data)) {
-      usuariosSupabase = data.map((u: any) => ({
+    if (!error && Array.isArray(data) && data.length > 0) {
+      return data.map((u: any) => ({
         id: String(u.id),
         numero: String(u.numero || '').replace(/\D/g, ''),
         lid: u.lid ? String(u.lid).trim() : null,
@@ -78,38 +76,13 @@ export async function obterTodosUsuariosWhatsApp(): Promise<UsuarioWhatsApp[]> {
     console.warn('[WhatsApp Usuários ⚠️] Erro de conexão com Supabase:', erro);
   }
 
-  // Se o Supabase estiver indisponível ou vazio, usa diretamente os usuários locais
-  if (usuariosSupabase.length === 0) {
-    return usuariosLocais;
-  }
-
-  // Mesclagem: aplica os campos do data/usuarios.json (especialmente o campo "lid") aos usuários do Supabase
-  const resultado: UsuarioWhatsApp[] = [...usuariosSupabase];
-
-  for (const local of usuariosLocais) {
-    const idx = resultado.findIndex(
-      (u) => u.id === local.id || (local.numero && u.numero === local.numero)
-    );
-
-    if (idx !== -1) {
-      // Se houver "lid" no JSON local e não no Supabase (ou sobreposto localmente), aplica o lid
-      if (local.lid) {
-        resultado[idx].lid = local.lid;
-      }
-      if (local.nome && !resultado[idx].nome) {
-        resultado[idx].nome = local.nome;
-      }
-    } else {
-      // Usuário novo presente apenas no JSON local
-      resultado.push(local);
-    }
-  }
-
-  return resultado;
+  // Fallback offline (se Supabase falhar ou estiver vazio em dev)
+  console.warn('[WhatsApp Usuários ⚠️] Usando fallback de data/usuarios.json...');
+  return obterUsuariosLocais();
 }
 
 /**
- * Salva a lista de usuários no Supabase (tabela usuarios)
+ * Salva a lista de usuários no Supabase (tabela usuarios), persistindo também a coluna lid.
  */
 export async function salvarUsuariosWhatsApp(usuarios: UsuarioWhatsApp[]): Promise<void> {
   try {
@@ -117,6 +90,7 @@ export async function salvarUsuariosWhatsApp(usuarios: UsuarioWhatsApp[]): Promi
     const registros = usuarios.map((u) => ({
       id: u.id,
       numero: u.numero,
+      lid: u.lid ? String(u.lid).trim() : null,
       nome: u.nome,
       perfil: u.perfil,
       pessoa_id: u.pessoa_id || null,
@@ -194,8 +168,54 @@ export function normalizarNumeroCanonica(numeroRaw: string): string {
 }
 
 /**
- * Busca e valida se um remetente (por número de telefone ou identificador @lid)
- * está autorizado na base de dados (Supabase ou data/usuarios.json).
+ * Busca usuário ativo pelo número real de telefone (comparando variantes do Brasil).
+ * Esta busca tem prioridade máxima sobre qualquer identificador @lid.
+ */
+export async function buscarUsuarioPorTelefone(numeroTelefone: string): Promise<UsuarioWhatsApp | null> {
+  if (!numeroTelefone) return null;
+
+  const variantesRecebidas = gerarVariantesNumeroBrasil(numeroTelefone);
+  if (variantesRecebidas.length === 0) return null;
+
+  const usuarios = await obterTodosUsuariosWhatsApp();
+  const usuariosAtivos = usuarios.filter((u) => u.ativo !== false);
+
+  for (const usuario of usuariosAtivos) {
+    const variantesCadastradas = gerarVariantesNumeroBrasil(usuario.numero);
+    const match = variantesRecebidas.some((vRec) => variantesCadastradas.includes(vRec));
+    if (match) {
+      return usuario;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Busca usuário ativo pelo identificador @lid cadastrado no Supabase.
+ */
+export async function buscarUsuarioPorLid(lidRaw: string): Promise<UsuarioWhatsApp | null> {
+  const lidCandidato = normalizarLid(lidRaw);
+  if (!lidCandidato) return null;
+
+  const usuarios = await obterTodosUsuariosWhatsApp();
+  const usuariosAtivos = usuarios.filter((u) => u.ativo !== false);
+
+  for (const usuario of usuariosAtivos) {
+    if (usuario.lid && normalizarLid(usuario.lid) === lidCandidato) {
+      return usuario;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Valida se um remetente está autorizado na base de dados do Supabase.
+ * 
+ * ORDEM DE PRIORIDADE ESTRITA:
+ * 1. Número real de telefone (senderPn / telefone canônico) tem prioridade absoluta.
+ * 2. Somente se o número real não estiver cadastrado ou não for fornecido, consulta o LID no Supabase.
  */
 export async function buscarUsuarioPorNumero(
   identificadorRaw: string,
@@ -203,31 +223,20 @@ export async function buscarUsuarioPorNumero(
 ): Promise<UsuarioWhatsApp | null> {
   if (!identificadorRaw && !lidOpcional) return null;
 
-  const usuarios = await obterTodosUsuariosWhatsApp();
-  const usuariosAtivos = usuarios.filter((u) => u.ativo !== false);
-
-  // 1. Busca prioritária por LID (se o identificador terminar em @lid ou se lidOpcional foi informado)
-  const lidCandidato = normalizarLid(identificadorRaw.endsWith('@lid') ? identificadorRaw : lidOpcional);
-
-  if (lidCandidato) {
-    for (const usuario of usuariosAtivos) {
-      if (usuario.lid && normalizarLid(usuario.lid) === lidCandidato) {
-        return usuario;
-      }
+  // 1ª PRIORIDADE: Se o identificador NÃO é um @lid (ou seja, é um número de telefone real), busca por telefone
+  if (!identificadorRaw.endsWith('@lid')) {
+    const usuarioPorTelefone = await buscarUsuarioPorTelefone(identificadorRaw);
+    if (usuarioPorTelefone) {
+      return usuarioPorTelefone;
     }
   }
 
-  // 2. Se o identificador for um número de telefone (não @lid), busca por variantes do Brasil
-  if (!identificadorRaw.endsWith('@lid')) {
-    const variantesRecebidas = gerarVariantesNumeroBrasil(identificadorRaw);
-    if (variantesRecebidas.length > 0) {
-      for (const usuario of usuariosAtivos) {
-        const variantesCadastradas = gerarVariantesNumeroBrasil(usuario.numero);
-        const match = variantesRecebidas.some((vRec) => variantesCadastradas.includes(vRec));
-        if (match) {
-          return usuario;
-        }
-      }
+  // 2ª PRIORIDADE: Se não encontrou por telefone e possuímos um identificador LID, busca pelo campo lid no Supabase
+  const lidParaBuscar = identificadorRaw.endsWith('@lid') ? identificadorRaw : lidOpcional;
+  if (lidParaBuscar) {
+    const usuarioPorLid = await buscarUsuarioPorLid(lidParaBuscar);
+    if (usuarioPorLid) {
+      return usuarioPorLid;
     }
   }
 

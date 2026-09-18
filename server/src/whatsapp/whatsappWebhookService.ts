@@ -6,9 +6,12 @@ import {
 } from './types.js';
 import {
   buscarUsuarioPorNumero,
+  buscarUsuarioPorTelefone,
+  buscarUsuarioPorLid,
   normalizarNumeroCanonica,
   normalizarLid,
 } from './usuarioWhatsAppService.js';
+import { enviarRespostaCompletaWhatsApp } from './evolutionSenderService.js';
 import {
   obterConversaPorId,
   salvarConversa,
@@ -17,7 +20,7 @@ import {
 } from '../storage.js';
 import { processarMensagemChat } from '../chat/chatOrquestrador.js';
 import { salvarRastro } from '../rastros/rastroService.js';
-import { Contato, Mensagem, RastroRegistro, NivelAcesso, SetorUsuario } from '../types.js';
+import { Contato, Mensagem, RastroRegistro, NivelAcesso, SetorUsuario, Anexo } from '../types.js';
 import { ASSISTENTE } from '../config/assistente.js';
 
 // Cache em memória para deduplicação de mensagens recebidas
@@ -298,32 +301,37 @@ export async function processarEventoEvolution(
     };
   }
 
-  // 4. VERIFICAÇÃO DO USUÁRIO AUTORIZADO
+  // 4. VERIFICAÇÃO DO USUÁRIO AUTORIZADO (PRIORIDADE ESTRITA AO NÚMERO REAL)
   let usuarioAutorizado: UsuarioWhatsApp | null = null;
 
-  // 1ª Prioridade: busca pelo número real encontrado em senderPn ou outros campos da Evolution
+  // 1ª Prioridade Absoluta: busca pelo número real encontrado em senderPn ou outros campos da Evolution
   if (numeroTelefoneReal) {
-    usuarioAutorizado = await buscarUsuarioPorNumero(numeroTelefoneReal, lidLimpo || undefined);
+    usuarioAutorizado = await buscarUsuarioPorTelefone(numeroTelefoneReal);
     if (usuarioAutorizado) {
       console.log(
-        `[Webhook WhatsApp 📱] Remetente @lid resolvido para telefone "${numeroTelefoneReal}" via campo [${campoOrigemNumero}].`
+        `[Webhook WhatsApp 📱] Remetente autorizado pelo número real "${numeroTelefoneReal}" via campo [${campoOrigemNumero}].`
       );
     }
   }
 
-  // 2ª Prioridade: busca por mapeamento manual de LID em data/usuarios.json ou Supabase
+  // 2ª Prioridade: busca por identificador @lid cadastrado no Supabase (coluna lid)
   if (!usuarioAutorizado && lidLimpo) {
-    usuarioAutorizado = await buscarUsuarioPorNumero(lidCompleto || lidLimpo, lidLimpo);
+    usuarioAutorizado = await buscarUsuarioPorLid(lidLimpo);
     if (usuarioAutorizado) {
       console.log(
-        `[Webhook WhatsApp 🆔] Remetente autorizado pelo mapeamento de LID ("${lidLimpo}") para o usuário "${usuarioAutorizado.nome}".`
+        `[Webhook WhatsApp 🆔] Remetente autorizado pelo LID ("${lidLimpo}") cadastrado no Supabase para o usuário "${usuarioAutorizado.nome}".`
       );
     }
   }
 
-  // 3ª Prioridade: busca direta caso seja JID numérico tradicional (@s.whatsapp.net)
+  // 3ª Prioridade: busca direta por telefone caso seja JID numérico tradicional (@s.whatsapp.net)
   if (!usuarioAutorizado && remetenteOrigem && !isLid) {
-    usuarioAutorizado = await buscarUsuarioPorNumero(remetenteOrigem);
+    usuarioAutorizado = await buscarUsuarioPorTelefone(remetenteOrigem);
+    if (usuarioAutorizado) {
+      console.log(
+        `[Webhook WhatsApp 📱] Remetente autorizado pelo JID tradicional "${remetenteOrigem}".`
+      );
+    }
   }
 
   if (!usuarioAutorizado) {
@@ -333,12 +341,6 @@ export async function processarEventoEvolution(
         isLid ? `(LID: ${lidLimpo || 'desconhecido'})` : ''
       } | Origem: ${ipOrigem}`
     );
-
-    if (isLid) {
-      console.warn(
-        `[Webhook WhatsApp 💡] Dica: Para autorizar este LID manualmente, adicione '"lid": "${lidLimpo}"' ao usuário correspondente em data/usuarios.json.`
-      );
-    }
 
     // Resposta curta e fixa para o mesmo identificador de onde veio a mensagem (remoteJid @lid)
     return {
@@ -428,14 +430,17 @@ export async function processarEventoEvolution(
     origem: resultadoChat.origem,
     rastro: resultadoChat.rastro,
     documentoOferecidoId: resultadoChat.documentoOferecidoId,
+    anexos: resultadoChat.anexos,
   };
   await adicionarMensagem(conversaId, msgAssistente);
 
-  // Se houver rastro, salva no Supabase (assíncrono resiliente)
+  // Se houver rastro, salva no Supabase identificando com precisão o remetente
   if (resultadoChat.rastro) {
     try {
       resultadoChat.rastro.mensagemId = assistenteMsgId;
       resultadoChat.rastro.conversaId = conversaId;
+      resultadoChat.rastro.usuarioNome = usuarioAutorizado.nome;
+      resultadoChat.rastro.usuarioId = usuarioAutorizado.id;
       await salvarRastro(resultadoChat.rastro);
     } catch (e: any) {
       console.warn('[Webhook WhatsApp ⚠️] Falha ao salvar rastro no Supabase:', e?.message || e);
@@ -449,6 +454,7 @@ export async function processarEventoEvolution(
     sucesso: true,
     status: 'processado',
     resposta: textoResposta,
+    anexos: resultadoChat.anexos,
     destinatario: remoteJid,
     mensagemId,
     usuario: usuarioAutorizado,
@@ -457,10 +463,14 @@ export async function processarEventoEvolution(
 }
 
 /**
- * Função reservada para envio futuro via Evolution API (atualmente apenas registra em log)
+ * Envia mensagens para o WhatsApp usando a Evolution API.
+ * Se houver anexos (ex: PDFs), envia o texto primeiro e depois os documentos em sequência.
  */
-export async function enviarMensagemWhatsApp(destinatario: string, texto: string): Promise<void> {
-  // Conforme orientação do usuário: "Ainda NÃO conecte a Evolution API; primeiro a segurança."
-  // Aqui deixamos a estrutura pronta para quando a URL e API Key da Evolution API forem configuradas.
-  console.log(`[WhatsApp Sender 📱 (Simulação)] Para: ${destinatario} | Texto: "${texto.slice(0, 80)}${texto.length > 80 ? '...' : ''}"`);
+export async function enviarMensagemWhatsApp(
+  destinatario: string,
+  texto: string,
+  anexos?: Anexo[]
+): Promise<void> {
+  await enviarRespostaCompletaWhatsApp(destinatario, texto, anexos);
 }
+

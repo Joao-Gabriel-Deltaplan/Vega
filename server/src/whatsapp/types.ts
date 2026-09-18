@@ -57,13 +57,17 @@ export interface EvolutionWebhookPayload {
   date_time?: string;
 }
 
+import { Anexo } from '../types.js';
+
 export interface ResultadoProcessamentoWebhook {
   sucesso: boolean;
   status: 'processado' | 'ignorado' | 'recusado' | 'erro';
   motivo?: string;
   resposta?: string;
+  anexos?: Anexo[];
   destinatario?: string;
   mensagemId?: string;
   usuario?: UsuarioWhatsApp;
   tempoMs?: number;
 }
+
