@@ -1,5 +1,5 @@
 import React from 'react';
-import { Users, Brain, Settings, Bot, ShieldCheck, Bell } from 'lucide-react';
+import { Users, Brain, Settings, Bot, ShieldCheck, Bell, LogOut } from 'lucide-react';
 
 export type AbaNavegacao = 'conversas' | 'conhecimento' | 'admin';
 
@@ -9,6 +9,8 @@ interface NavigationSidebarProps {
   totalNaoLidas?: number;
   totalAlertasVencimento?: number;
   onAbrirAlertas?: () => void;
+  onLogout?: () => void;
+  nomeUsuario?: string;
 }
 
 export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
@@ -17,6 +19,8 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
   totalNaoLidas = 0,
   totalAlertasVencimento = 0,
   onAbrirAlertas,
+  onLogout,
+  nomeUsuario,
 }) => {
   return (
     <nav className="w-16 min-w-[64px] h-full bg-[#0c1317] border-r border-wa-border flex flex-col items-center justify-between py-4 z-20 select-none">
@@ -112,9 +116,23 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
           <ShieldCheck className="w-4 h-4 text-wa-green" />
           <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-wa-green border-2 border-[#0c1317]"></span>
           <span className="absolute left-16 bg-slate-900 text-white text-xs px-2 py-1 rounded shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
-            Delta Admin • Online
+            {nomeUsuario ? `${nomeUsuario} • Online` : 'Delta Admin • Online'}
           </span>
         </div>
+
+        {/* Botão de Logout */}
+        {onLogout && (
+          <button
+            onClick={onLogout}
+            title="Sair do Painel"
+            className="w-9 h-9 rounded-xl flex items-center justify-center text-wa-textSecondary hover:text-rose-400 hover:bg-rose-500/10 transition-all relative group cursor-pointer"
+          >
+            <LogOut className="w-4 h-4" />
+            <span className="absolute left-16 bg-slate-900 text-white text-xs px-2 py-1 rounded shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
+              Sair do Painel
+            </span>
+          </button>
+        )}
       </div>
     </nav>
   );

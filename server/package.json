@@ -11,6 +11,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",
     "@types/pg": "^8.23.1",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
@@ -20,6 +21,7 @@
     "unpdf": "^1.8.1"
   },
   "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/node": "^22.13.9",

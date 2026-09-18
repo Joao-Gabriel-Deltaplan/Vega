@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
@@ -105,6 +106,8 @@ import {
   uploadArquivoStorage,
   sanitizarChaveStorage,
 } from './utils/storageUtils.js';
+import { autenticarPainel, validarTokenSessao } from './auth/authService.js';
+import { authMiddleware } from './auth/authMiddleware.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -144,8 +147,84 @@ app.use(
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+app.use(cookieParser());
 
-// Servir arquivos prioritariamente via Supabase Storage
+// ================================================================
+// ENDPOINTS PÚBLICOS DE AUTENTICAÇÃO DO PAINEL
+// ================================================================
+
+// POST /api/auth/login (Autenticação via senha mestra)
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { senha, usuario } = req.body;
+    const ip =
+      (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() ||
+      req.ip ||
+      req.socket.remoteAddress ||
+      '127.0.0.1';
+
+    const resultado = await autenticarPainel({ senha, usuario, ip });
+
+    if (!resultado.sucesso) {
+      const statusHttp = resultado.bloqueado ? 429 : 401;
+      return res.status(statusHttp).json({ erro: resultado.erro });
+    }
+
+    const isProd =
+      process.env.NODE_ENV === 'production' || req.headers['x-forwarded-proto'] === 'https';
+
+    res.cookie('vega_session', resultado.token, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 dias
+      path: '/',
+    });
+
+    return res.status(200).json({
+      sucesso: true,
+      usuario: resultado.usuario,
+    });
+  } catch (erro: any) {
+    console.error('[Auth ❌] Erro interno ao processar login:', erro);
+    return res.status(500).json({ erro: 'Erro interno ao processar autenticação.' });
+  }
+});
+
+// GET /api/auth/status (Verifica validade da sessão atual)
+app.get('/api/auth/status', (req, res) => {
+  const token = req.cookies?.vega_session;
+  if (!token) {
+    return res.status(200).json({ autenticado: false });
+  }
+
+  const sessao = validarTokenSessao(token);
+  if (!sessao) {
+    return res.status(200).json({ autenticado: false });
+  }
+
+  return res.status(200).json({
+    autenticado: true,
+    usuario: {
+      userId: sessao.userId,
+      nome: sessao.nome,
+      role: sessao.role,
+    },
+  });
+});
+
+// POST /api/auth/logout (Encerra a sessão e limpa cookie)
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie('vega_session', { path: '/' });
+  return res.status(200).json({ sucesso: true });
+});
+
+// ================================================================
+// MIDDLEWARE DE PROTEÇÃO GLOBAL (Exige sessão para /api/* e /arquivos/*)
+// ================================================================
+app.use(authMiddleware);
+
+// Servir arquivos prioritariamente via Supabase Storage (Apenas com sessão válida)
 app.get('/arquivos/:nome', async (req, res) => {
   try {
     const nomeArquivo = decodeURIComponent(path.basename(req.params.nome));

@@ -7,9 +7,14 @@ import { KnowledgeBaseView } from './components/KnowledgeBaseView.js';
 import { AdminView } from './components/AdminView.js';
 import { ModalAlertasVencimento } from './components/ModalAlertasVencimento.js';
 import { Conversa, Contato, Anexo, Mensagem, SetorUsuario, AlertaVencimento } from './types/chat.js';
-import { Users } from 'lucide-react';
+import { Users, Bot } from 'lucide-react';
+import { LoginView } from './components/LoginView.js';
 
 export function App() {
+  // Estados de Autenticação
+  const [autenticado, setAutenticado] = useState<boolean | null>(null);
+  const [usuarioLogado, setUsuarioLogado] = useState<{ userId: string; nome: string; role: string } | null>(null);
+
   const [abaAtiva, setAbaAtiva] = useState<AbaNavegacao>('conversas');
   const [subAbaBaseVega, setSubAbaBaseVega] = useState<'conhecimento' | 'documentos'>('conhecimento');
   const [conversas, setConversas] = useState<Conversa[]>([]);
@@ -28,6 +33,10 @@ export function App() {
   const carregarAlertasVencimento = useCallback(async () => {
     try {
       const res = await fetch('/api/vencimentos/alertas');
+      if (res.status === 401) {
+        setAutenticado(false);
+        return;
+      }
       if (res.ok) {
         const dados = await res.json();
         setAlertasVencimento(dados.alertas || []);
@@ -37,12 +46,35 @@ export function App() {
     }
   }, []);
 
+  // Checagem inicial de status de autenticação
   useEffect(() => {
-    carregarAlertasVencimento();
-    // Atualiza alertas a cada 60 segundos
-    const timer = setInterval(carregarAlertasVencimento, 60000);
-    return () => clearInterval(timer);
-  }, [carregarAlertasVencimento]);
+    const checarAutenticacao = async () => {
+      try {
+        const res = await fetch('/api/auth/status');
+        if (res.ok) {
+          const dados = await res.json();
+          if (dados.autenticado) {
+            setAutenticado(true);
+            setUsuarioLogado(dados.usuario || null);
+            return;
+          }
+        }
+        setAutenticado(false);
+      } catch {
+        setAutenticado(false);
+      }
+    };
+    checarAutenticacao();
+  }, []);
+
+  // Atualiza alertas periodicamente apenas se estiver autenticado
+  useEffect(() => {
+    if (autenticado) {
+      carregarAlertasVencimento();
+      const timer = setInterval(carregarAlertasVencimento, 60000);
+      return () => clearInterval(timer);
+    }
+  }, [autenticado, carregarAlertasVencimento]);
 
   const handleMarcarAlertaLido = async (id: string) => {
     try {
@@ -96,6 +128,10 @@ export function App() {
   const carregarConversas = useCallback(async () => {
     try {
       const res = await fetch('/api/conversas');
+      if (res.status === 401) {
+        setAutenticado(false);
+        return;
+      }
       if (res.ok) {
         const dados: Conversa[] = await res.json();
         setConversas(dados);
@@ -113,8 +149,22 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    carregarConversas();
-  }, [carregarConversas]);
+    if (autenticado) {
+      carregarConversas();
+    }
+  }, [autenticado, carregarConversas]);
+
+  // Função para efetuar logout
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (err) {
+      console.error('Erro ao deslogar:', err);
+    } finally {
+      setAutenticado(false);
+      setUsuarioLogado(null);
+    }
+  };
 
   // Conversa atualmente selecionada
   const conversaAtiva = conversas.find((c) => c.id === conversaAtivaId) || null;
@@ -312,6 +362,31 @@ export function App() {
     }
   };
 
+  // Renderizações Condicionais de Autenticação
+  if (autenticado === null) {
+    return (
+      <div className="h-screen w-screen bg-[#0b141a] flex flex-col items-center justify-center text-wa-textPrimary select-none">
+        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-wa-green to-emerald-700 flex items-center justify-center shadow-lg shadow-emerald-950/50 mb-4 animate-pulse">
+          <Bot className="w-9 h-9 text-slate-950" />
+        </div>
+        <p className="text-sm font-medium text-wa-textSecondary">
+          Inicializando VEGA Delta Plan...
+        </p>
+      </div>
+    );
+  }
+
+  if (autenticado === false) {
+    return (
+      <LoginView
+        onLoginSucesso={(usuario) => {
+          setAutenticado(true);
+          if (usuario) setUsuarioLogado(usuario);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="flex h-screen w-screen bg-wa-bg overflow-hidden font-sans">
       {/* Barra de Navegação Extrema Esquerda (64px) */}
@@ -321,6 +396,8 @@ export function App() {
         totalNaoLidas={totalNaoLidas}
         totalAlertasVencimento={totalAlertasNaoLidos}
         onAbrirAlertas={() => setModalAlertasAberto(true)}
+        onLogout={handleLogout}
+        nomeUsuario={usuarioLogado?.nome}
       />
 
       {/* Visualização de acordo com a aba selecionada */}
