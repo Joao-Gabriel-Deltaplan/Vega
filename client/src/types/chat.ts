@@ -41,6 +41,9 @@ export interface Mensagem {
   correcaoPendente?: CorrecaoPendenteFicha;
   rastroId?: string;
   rastro?: RastroRegistro;
+  tipoMensagem?: 'texto' | 'audio';
+  duracaoAudioSegundos?: number;
+  audioOriginal?: boolean;
 }
 
 export interface FichaContato {
@@ -195,7 +198,7 @@ export interface Conversa {
   mensagens: Mensagem[];
 }
 
-export type MotivoUsoIA = 'interpretacao' | 'equivalencia' | 'conversa';
+export type MotivoUsoIA = 'interpretacao' | 'equivalencia' | 'conversa' | 'transcricao_audio';
 
 export interface RegistroUsoIA {
   id: string;
@@ -256,6 +259,7 @@ export interface MetricasUsoIA {
     interpretacao: number;
     equivalencia: number;
     conversa: number;
+    transcricao_audio?: number;
   };
 
   ultimas50Chamadas: RegistroUsoIA[];
@@ -325,5 +329,12 @@ export interface RastroRegistro {
   campos?: string[];
   documentoCitado?: string;
   detalhesCorrecao?: DetalhesCorrecaoRastro;
+  tipoEntrada?: 'texto' | 'audio';
+  transcricaoAudio?: {
+    duracaoSegundos: number;
+    custoUsd: number;
+    modelo: string;
+    metodoDownload?: string;
+  };
   etapas: EtapaRastro[];
 }

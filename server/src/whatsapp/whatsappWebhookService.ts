@@ -11,7 +11,13 @@ import {
   normalizarNumeroCanonica,
   normalizarLid,
 } from './usuarioWhatsAppService.js';
-import { enviarRespostaCompletaWhatsApp } from './evolutionSenderService.js';
+import { enviarRespostaCompletaWhatsApp, obterConfigEvolution } from './evolutionSenderService.js';
+import {
+  extrairInfoAudio,
+  obterAudioBufferEvolution,
+  transcreverAudioOpenAI,
+  validarLimitesAudio,
+} from './audioTranscriptionService.js';
 import {
   obterConversaPorId,
   salvarConversa,
@@ -290,18 +296,7 @@ export async function processarEventoEvolution(
     }
   }
 
-  // 3. EXTRAÇÃO DO TEXTO DA MENSAGEM
-  const textoMensagem = extrairTextoMensagem(evento.message);
-  if (!textoMensagem) {
-    return {
-      sucesso: true,
-      status: 'ignorado',
-      motivo: 'mensagem_sem_texto_suportado',
-      mensagemId,
-    };
-  }
-
-  // 4. VERIFICAÇÃO DO USUÁRIO AUTORIZADO (PRIORIDADE ESTRITA AO NÚMERO REAL)
+  // 3. VERIFICAÇÃO DO USUÁRIO AUTORIZADO (SEMPRE ANTES DE QUALQUER TRANSCRIÇÃO OU PROCESSAMENTO)
   let usuarioAutorizado: UsuarioWhatsApp | null = null;
 
   // 1ª Prioridade Absoluta: busca pelo número real encontrado em senderPn ou outros campos da Evolution
@@ -353,6 +348,139 @@ export async function processarEventoEvolution(
     };
   }
 
+  // 4. EXTRAÇÃO DO CONTEÚDO DA MENSAGEM (ÁUDIO OU TEXTO)
+  let textoMensagem = '';
+  let tipoMensagem: 'texto' | 'audio' = 'texto';
+  let duracaoAudioSegundos: number | undefined;
+  let custoTranscricaoUsd = 0;
+  let modeloTranscricao = '';
+  let tempoTranscricaoMs = 0;
+  let metodoDownload: 'base64_payload' | 'api_download' | undefined;
+
+  const infoAudio = extrairInfoAudio(evento);
+
+  if (infoAudio.isAudio) {
+    console.log(
+      `[Webhook WhatsApp 🎙️] Mensagem de áudio recebida de "${usuarioAutorizado.nome}" (~${infoAudio.duracaoSegundos}s).`
+    );
+
+    // Validação prévia de duração (se informada no payload da Evolution)
+    if (infoAudio.duracaoSegundos > 0) {
+      const validacaoPrevia = validarLimitesAudio(infoAudio.duracaoSegundos, infoAudio.tamanhoBytes || 0);
+      if (!validacaoPrevia.valido) {
+        console.warn(`[Webhook WhatsApp ⚠️] Áudio rejeitado por limites: ${validacaoPrevia.mensagemAviso}`);
+        return {
+          sucesso: true,
+          status: 'processado',
+          resposta: validacaoPrevia.mensagemAviso,
+          destinatario: remoteJid,
+          mensagemId,
+          usuario: usuarioAutorizado,
+        };
+      }
+    }
+
+    const configEvolution = obterConfigEvolution();
+    if (!configEvolution) {
+      console.error('[Webhook WhatsApp ❌] Configuração da Evolution API não encontrada para baixar áudio.');
+      return {
+        sucesso: true,
+        status: 'processado',
+        resposta: 'Não consegui entender o áudio, pode escrever ou gravar de novo?',
+        destinatario: remoteJid,
+        mensagemId,
+        usuario: usuarioAutorizado,
+      };
+    }
+
+    // Baixa o áudio 100% em memória RAM
+    let downloadAudio;
+    try {
+      downloadAudio = await obterAudioBufferEvolution(evento, configEvolution);
+    } catch (err: any) {
+      console.error('[Webhook WhatsApp ❌] Falha ao baixar áudio da Evolution API:', err?.message || err);
+      return {
+        sucesso: true,
+        status: 'processado',
+        resposta: 'Não consegui entender o áudio, pode escrever ou gravar de novo?',
+        destinatario: remoteJid,
+        mensagemId,
+        usuario: usuarioAutorizado,
+      };
+    }
+
+    // Validação de limites com os dados reais do buffer baixado
+    const validacaoBuffer = validarLimitesAudio(downloadAudio.duracaoSegundos, downloadAudio.tamanhoBytes);
+    if (!validacaoBuffer.valido) {
+      console.warn(`[Webhook WhatsApp ⚠️] Áudio rejeitado por limites reais: ${validacaoBuffer.mensagemAviso}`);
+      return {
+        sucesso: true,
+        status: 'processado',
+        resposta: validacaoBuffer.mensagemAviso,
+        destinatario: remoteJid,
+        mensagemId,
+        usuario: usuarioAutorizado,
+      };
+    }
+
+    // Transcrição via OpenAI Whisper em memória RAM
+    try {
+      const resultadoTranscricao = await transcreverAudioOpenAI(
+        downloadAudio.buffer,
+        downloadAudio.mimetype,
+        downloadAudio.duracaoSegundos,
+        `ct-${usuarioAutorizado.id}`,
+        usuarioAutorizado.nome
+      );
+
+      if (!resultadoTranscricao.texto || resultadoTranscricao.texto.trim().length === 0) {
+        console.warn('[Webhook WhatsApp ⚠️] Transcrição retornou texto vazio.');
+        return {
+          sucesso: true,
+          status: 'processado',
+          resposta: 'Não consegui entender o áudio, pode escrever ou gravar de novo?',
+          destinatario: remoteJid,
+          mensagemId,
+          usuario: usuarioAutorizado,
+        };
+      }
+
+      textoMensagem = resultadoTranscricao.texto;
+      tipoMensagem = 'audio';
+      duracaoAudioSegundos = resultadoTranscricao.duracaoSegundos;
+      custoTranscricaoUsd = resultadoTranscricao.custoUsd;
+      modeloTranscricao = resultadoTranscricao.modelo;
+      tempoTranscricaoMs = resultadoTranscricao.tempoMs;
+      metodoDownload = downloadAudio.metodo;
+
+      console.log(
+        `[Webhook WhatsApp 🎙️] Áudio transcrito com sucesso: "${textoMensagem}" (Custo: $${custoTranscricaoUsd}, Método: ${metodoDownload})`
+      );
+    } catch (err: any) {
+      console.error('[Webhook WhatsApp ❌] Erro ao transcrever áudio na OpenAI:', err?.message || err);
+      return {
+        sucesso: true,
+        status: 'processado',
+        resposta: 'Não consegui entender o áudio, pode escrever ou gravar de novo?',
+        destinatario: remoteJid,
+        mensagemId,
+        usuario: usuarioAutorizado,
+      };
+    }
+  } else {
+    // Mensagem de texto tradicional
+    textoMensagem = extrairTextoMensagem(evento.message);
+    if (!textoMensagem) {
+      return {
+        sucesso: true,
+        status: 'ignorado',
+        motivo: 'mensagem_sem_texto_suportado',
+        mensagemId,
+      };
+    }
+    tipoMensagem = 'texto';
+  }
+
   // 5. REMETENTE AUTORIZADO: PROCESSAMENTO COM A VEGA (IA E COFRE)
   const inicioProcessamento = Date.now();
   console.log(
@@ -396,13 +524,16 @@ export async function processarEventoEvolution(
     await salvarConversa(conversa);
   }
 
-  // Registra mensagem do usuário no histórico
+  // Registra mensagem do usuário no histórico (com marcador de áudio se aplicável)
   const msgUsuario: Mensagem = {
     id: mensagemId || `wa-msg-${Date.now()}-user`,
     remetente: 'cliente',
     nomeRemetente: contato.nome,
     horario: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
     texto: textoMensagem,
+    tipoMensagem,
+    duracaoAudioSegundos,
+    audioOriginal: tipoMensagem === 'audio',
   };
   await adicionarMensagem(conversaId, msgUsuario);
 
@@ -420,6 +551,53 @@ export async function processarEventoEvolution(
   const textoResposta = resultadoChat.textoResposta;
   const assistenteMsgId = `wa-msg-${Date.now()}-vega`;
 
+  // Se a mensagem veio de áudio, enriquece o rastro com o custo e a etapa de transcrição
+  if (resultadoChat.rastro) {
+    if (tipoMensagem === 'audio') {
+      resultadoChat.rastro.tipoEntrada = 'audio';
+      resultadoChat.rastro.transcricaoAudio = {
+        duracaoSegundos: duracaoAudioSegundos || 0,
+        custoUsd: custoTranscricaoUsd,
+        modelo: modeloTranscricao,
+        metodoDownload,
+      };
+
+      // Injeta a etapa de transcrição no rastro antes das etapas da busca/resposta
+      resultadoChat.rastro.etapas.unshift({
+        ordem: 0,
+        nome: 'Transcrição de Áudio (Whisper)',
+        descricao: `Áudio transcrito via ${modeloTranscricao} (${duracaoAudioSegundos || 0}s). Método: ${
+          metodoDownload === 'base64_payload' ? 'Base64 direto no evento' : 'Download via Evolution API'
+        }.`,
+        tempoMs: tempoTranscricaoMs,
+        detalhes: {
+          duracaoSegundos: duracaoAudioSegundos,
+          custoUsd: custoTranscricaoUsd,
+          modelo: modeloTranscricao,
+          metodoDownload,
+          textoTranscrito: textoMensagem,
+        },
+      });
+
+      // Soma o custo e tempo da transcrição
+      resultadoChat.rastro.custoEstimadoUsd = Number(
+        ((resultadoChat.rastro.custoEstimadoUsd || 0) + custoTranscricaoUsd).toFixed(6)
+      );
+      resultadoChat.rastro.tempoTotalMs =
+        (resultadoChat.rastro.tempoTotalMs || 0) + tempoTranscricaoMs;
+    }
+
+    try {
+      resultadoChat.rastro.mensagemId = assistenteMsgId;
+      resultadoChat.rastro.conversaId = conversaId;
+      resultadoChat.rastro.usuarioNome = usuarioAutorizado.nome;
+      resultadoChat.rastro.usuarioId = usuarioAutorizado.id;
+      await salvarRastro(resultadoChat.rastro);
+    } catch (e: any) {
+      console.warn('[Webhook WhatsApp ⚠️] Falha ao salvar rastro no Supabase:', e?.message || e);
+    }
+  }
+
   // Registra mensagem do assistente na conversa
   const msgAssistente: Mensagem = {
     id: assistenteMsgId,
@@ -433,19 +611,6 @@ export async function processarEventoEvolution(
     anexos: resultadoChat.anexos,
   };
   await adicionarMensagem(conversaId, msgAssistente);
-
-  // Se houver rastro, salva no Supabase identificando com precisão o remetente
-  if (resultadoChat.rastro) {
-    try {
-      resultadoChat.rastro.mensagemId = assistenteMsgId;
-      resultadoChat.rastro.conversaId = conversaId;
-      resultadoChat.rastro.usuarioNome = usuarioAutorizado.nome;
-      resultadoChat.rastro.usuarioId = usuarioAutorizado.id;
-      await salvarRastro(resultadoChat.rastro);
-    } catch (e: any) {
-      console.warn('[Webhook WhatsApp ⚠️] Falha ao salvar rastro no Supabase:', e?.message || e);
-    }
-  }
 
   const tempoTotal = Date.now() - inicioProcessamento;
   console.log(`[Webhook WhatsApp 🤖] Resposta gerada pela VEGA em ${tempoTotal} ms para "${usuarioAutorizado.nome}".`);

@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   Coins,
   Edit3,
+  Mic,
 } from 'lucide-react';
 import { RastroRegistro } from '../types/chat.js';
 
@@ -209,6 +210,45 @@ export const ModalRaciocinio: React.FC<ModalRaciocinioProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/* Card de Mensagem de Áudio Transcrita */}
+              {(rastro.tipoEntrada === 'audio' || rastro.transcricaoAudio) && (
+                <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-2">
+                  <div className="flex items-center justify-between gap-2 text-xs font-semibold text-amber-300">
+                    <div className="flex items-center gap-1.5">
+                      <Mic className="w-4 h-4 text-amber-400" />
+                      <span>Mensagem Recebida por Áudio de Voz (WhatsApp)</span>
+                    </div>
+                    {rastro.transcricaoAudio?.modelo && (
+                      <span className="text-[10px] text-amber-400/90 font-mono bg-amber-950/50 px-2 py-0.5 rounded border border-amber-800/40">
+                        {rastro.transcricaoAudio.modelo}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-300 pt-1">
+                    <div>
+                      <span className="text-slate-400">Duração:</span>{' '}
+                      <span className="font-semibold text-slate-100 font-mono">
+                        {rastro.transcricaoAudio?.duracaoSegundos ?? 0}s
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400">Custo Whisper:</span>{' '}
+                      <span className="font-semibold text-amber-300 font-mono">
+                        ${(rastro.transcricaoAudio?.custoUsd ?? 0).toFixed(6)}
+                      </span>
+                    </div>
+                    {rastro.transcricaoAudio?.metodoDownload && (
+                      <div>
+                        <span className="text-slate-400">Origem Mídia:</span>{' '}
+                        <span className="text-slate-200">
+                          {rastro.transcricaoAudio.metodoDownload === 'base64_payload' ? 'Base64 Webhook' : 'Download Evolution API'}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Informações Gerais de Intenção e Busca */}
               <div className="p-3.5 rounded-xl bg-slate-950/40 border border-slate-800 space-y-2">

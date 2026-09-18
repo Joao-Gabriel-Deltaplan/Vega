@@ -619,7 +619,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ conversas }) => {
                   <span className="text-xs text-wa-textMuted">Classificação das requisições</span>
                 </div>
 
-                <div className="grid grid-cols-3 gap-2 text-xs">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                   <div className="p-3 bg-wa-bg rounded-lg border border-wa-border text-center">
                     <span className="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 text-[10px] font-bold uppercase">
                       Interpretação
@@ -649,6 +649,16 @@ export const AdminView: React.FC<AdminViewProps> = ({ conversas }) => {
                     </p>
                     <p className="text-[10px] text-wa-textMuted mt-0.5">Geral / Dúvidas</p>
                   </div>
+
+                  <div className="p-3 bg-wa-bg rounded-lg border border-wa-border text-center">
+                    <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold uppercase">
+                      Áudio
+                    </span>
+                    <p className="text-xl font-bold text-wa-textPrimary mt-2 font-mono">
+                      {metricasIA?.motivos?.transcricao_audio ?? 0}
+                    </p>
+                    <p className="text-[10px] text-wa-textMuted mt-0.5">Whisper (Voz)</p>
+                  </div>
                 </div>
 
                 {/* Barra segmentada de motivos */}
@@ -656,10 +666,12 @@ export const AdminView: React.FC<AdminViewProps> = ({ conversas }) => {
                   const total =
                     (metricasIA?.motivos?.interpretacao ?? 0) +
                     (metricasIA?.motivos?.equivalencia ?? 0) +
-                    (metricasIA?.motivos?.conversa ?? 0);
-                  const pInterp = total > 0 ? ((metricasIA?.motivos?.interpretacao ?? 0) / total) * 100 : 33.3;
-                  const pEquiv = total > 0 ? ((metricasIA?.motivos?.equivalencia ?? 0) / total) * 100 : 33.3;
-                  const pConv = total > 0 ? ((metricasIA?.motivos?.conversa ?? 0) / total) * 100 : 33.4;
+                    (metricasIA?.motivos?.conversa ?? 0) +
+                    (metricasIA?.motivos?.transcricao_audio ?? 0);
+                  const pInterp = total > 0 ? ((metricasIA?.motivos?.interpretacao ?? 0) / total) * 100 : 25;
+                  const pEquiv = total > 0 ? ((metricasIA?.motivos?.equivalencia ?? 0) / total) * 100 : 25;
+                  const pConv = total > 0 ? ((metricasIA?.motivos?.conversa ?? 0) / total) * 100 : 25;
+                  const pAudio = total > 0 ? ((metricasIA?.motivos?.transcricao_audio ?? 0) / total) * 100 : 25;
 
                   return (
                     <div>
@@ -667,6 +679,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ conversas }) => {
                         <div style={{ width: `${pInterp}%` }} className="bg-sky-500 h-full"></div>
                         <div style={{ width: `${pEquiv}%` }} className="bg-purple-500 h-full"></div>
                         <div style={{ width: `${pConv}%` }} className="bg-emerald-500 h-full"></div>
+                        <div style={{ width: `${pAudio}%` }} className="bg-amber-500 h-full"></div>
                       </div>
                       <div className="flex justify-between text-[10px] text-wa-textMuted mt-1">
                         <span className="text-sky-400">Interpretação ({Math.round(pInterp)}%)</span>
@@ -814,6 +827,8 @@ export const AdminView: React.FC<AdminViewProps> = ({ conversas }) => {
                                     ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
                                     : ch.motivo === 'equivalencia'
                                     ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                                    : ch.motivo === 'transcricao_audio'
+                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                                     : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                                 }`}
                               >
@@ -821,6 +836,8 @@ export const AdminView: React.FC<AdminViewProps> = ({ conversas }) => {
                                   ? 'Interpretação'
                                   : ch.motivo === 'equivalencia'
                                   ? 'Equivalência'
+                                  : ch.motivo === 'transcricao_audio'
+                                  ? 'Áudio'
                                   : 'Conversa'}
                               </span>
                             </td>

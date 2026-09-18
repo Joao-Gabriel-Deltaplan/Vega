@@ -931,6 +931,7 @@ app.get('/api/uso-ia/metricas', async (req, res) => {
       interpretacao: registros.filter((r) => r.motivo === 'interpretacao').length,
       equivalencia: registros.filter((r) => r.motivo === 'equivalencia').length,
       conversa: registros.filter((r) => r.motivo === 'conversa').length,
+      transcricao_audio: registros.filter((r) => r.motivo === 'transcricao_audio').length,
     };
 
     // 7. Últimas 50 chamadas (mais recentes primeiro)

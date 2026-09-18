@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FileText, Download, ExternalLink, Calendar, Volume2, Image as ImageIcon, Sparkles } from 'lucide-react';
+import { FileText, Download, ExternalLink, Calendar, Volume2, Image as ImageIcon, Sparkles, Mic } from 'lucide-react';
 import { Mensagem } from '../types/chat.js';
 import { ASSISTENTE } from '../config/assistente.js';
 import { AudioPlayerBubble } from './AudioPlayerBubble.js';
@@ -98,6 +98,16 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
                 </div>
               </div>
             ))}
+
+        {/* Indicador de Mensagem de Áudio Transcrita */}
+        {mensagem.tipoMensagem === 'audio' && (
+          <div className="flex items-center gap-1.5 mb-1.5 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px] font-medium w-fit shadow-xs">
+            <Mic className="w-3 h-3 text-emerald-400" />
+            <span>
+              Áudio transcrito{mensagem.duracaoAudioSegundos ? ` (${mensagem.duracaoAudioSegundos}s)` : ''}
+            </span>
+          </div>
+        )}
 
         {/* Conteúdo textual da mensagem com formatação estilo WhatsApp */}
         {mensagem.texto && (
