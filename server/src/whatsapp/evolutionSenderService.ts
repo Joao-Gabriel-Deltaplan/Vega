@@ -1,5 +1,5 @@
 import { Anexo } from '../types.js';
-import { obterBufferArquivo } from '../utils/storageUtils.js';
+import { obterBufferArquivo, gerarSignedUrlArquivo } from '../utils/storageUtils.js';
 
 export interface EvolutionConfig {
   apiUrl: string;
@@ -12,15 +12,25 @@ export interface ResultadoEnvioEvolution {
   statusHttp?: number;
   resposta?: any;
   motivoFalha?: string;
+  metodoEnvio?: 'base64' | 'signed_url';
 }
 
 /**
+ * Limite seguro de tamanho para envio direto em Base64 no corpo JSON (1.5 MB).
+ * Acima de 1.5 MB, o Base64 atinge >2 MB de texto JSON, causando estouro de pilha
+ * ("Maximum call stack size exceeded") na Evolution API / Baileys.
+ * Arquivos acima deste limite são enviados automaticamente via Signed URL temporária do Supabase.
+ */
+export const LIMITE_BASE64_BYTES = 1.5 * 1024 * 1024; // 1.5 MB
+
+/**
  * Obtém a configuração da Evolution API a partir das variáveis de ambiente.
+ * Aceita EVOLUTION_API_KEY ou AUTHENTICATION_API_KEY como fallback.
  * Normaliza a URL removendo barras finais.
  */
 export function obterConfigEvolution(): EvolutionConfig | null {
   const apiUrl = process.env.EVOLUTION_API_URL?.trim().replace(/\/+$/, '');
-  const apiKey = process.env.EVOLUTION_API_KEY?.trim();
+  const apiKey = (process.env.EVOLUTION_API_KEY || process.env.AUTHENTICATION_API_KEY)?.trim();
   const instance = process.env.EVOLUTION_INSTANCE?.trim();
 
   if (!apiUrl || !apiKey || !instance) {
@@ -61,7 +71,6 @@ export async function enviarTextoEvolution(
   texto: string
 ): Promise<ResultadoEnvioEvolution> {
   const config = obterConfigEvolution();
-
   const numeroNormalizado = normalizarDestinatarioEvolution(destinatario);
 
   if (!config) {
@@ -142,12 +151,13 @@ export async function enviarTextoEvolution(
 }
 
 /**
- * Envia um arquivo (PDF / Documento) via Evolution API com base64 vindo do Supabase Storage.
+ * Envia um arquivo (PDF / Documento) via Evolution API.
+ * Suporta tanto Buffer (convertido de forma segura para base64) quanto Signed URL (string iniciada em http/https).
  * Endpoint: POST {EVOLUTION_API_URL}/message/sendMedia/{EVOLUTION_INSTANCE}
  */
 export async function enviarMediaEvolution(
   destinatario: string,
-  buffer: Buffer,
+  mediaConteudo: Buffer | string,
   nomeArquivo: string,
   legenda?: string,
   mimeType: string = 'application/pdf'
@@ -169,17 +179,32 @@ export async function enviarMediaEvolution(
   const url = `${config.apiUrl}/message/sendMedia/${encodeURIComponent(config.instance)}`;
 
   try {
-    const base64Limpo = buffer.toString('base64');
     const nomeLimpo = nomeArquivo.trim();
+    let mediaParam: string;
+    let metodo: 'base64' | 'signed_url';
+
+    if (typeof mediaConteudo === 'string' && (mediaConteudo.startsWith('http://') || mediaConteudo.startsWith('https://'))) {
+      mediaParam = mediaConteudo.trim();
+      metodo = 'signed_url';
+    } else {
+      // Uso seguro de Buffer.from(buffer).toString('base64') sem spreads ou loops manuais
+      const buffer = Buffer.isBuffer(mediaConteudo) ? mediaConteudo : Buffer.from(mediaConteudo);
+      mediaParam = buffer.toString('base64');
+      metodo = 'base64';
+    }
 
     const body = {
       number: numeroNormalizado,
       mediatype: 'document',
       mimetype: mimeType,
       caption: legenda || nomeLimpo,
-      media: base64Limpo,
+      media: mediaParam,
       fileName: nomeLimpo,
     };
+
+    console.log(
+      `[Evolution API 📎] Iniciando envio do documento "${nomeLimpo}" para ${numeroNormalizado} via [${metodo}]...`
+    );
 
     const response = await fetch(url, {
       method: 'POST',
@@ -200,12 +225,13 @@ export async function enviarMediaEvolution(
 
     if (response.ok) {
       console.log(
-        `[Evolution API 📎] Documento "${nomeLimpo}" enviado com sucesso para ${numeroNormalizado} | Status: ${response.status}`
+        `[Evolution API 📎] Documento "${nomeLimpo}" enviado com sucesso para ${numeroNormalizado} via [${metodo}] | Status: ${response.status}`
       );
       return {
         sucesso: true,
         statusHttp: response.status,
         resposta: dadosJson,
+        metodoEnvio: metodo,
       };
     } else {
       const dataHora = new Date().toLocaleString('pt-BR');
@@ -214,6 +240,7 @@ export async function enviarMediaEvolution(
         `\n❌ [Evolution API FALHA NO ENVIO DE ARQUIVO] ${dataHora}\n` +
           `- Documento: ${nomeLimpo}\n` +
           `- Destinatário: ${numeroNormalizado} (Original: ${destinatario})\n` +
+          `- Método utilizado: ${metodo}\n` +
           `- Status HTTP: ${response.status} ${response.statusText}\n` +
           `- URL: ${url}\n` +
           `- Motivo retornado pela Evolution: ${motivo}\n`
@@ -223,6 +250,7 @@ export async function enviarMediaEvolution(
         statusHttp: response.status,
         motivoFalha: motivo,
         resposta: dadosJson,
+        metodoEnvio: metodo,
       };
     }
   } catch (erro: any) {
@@ -245,8 +273,11 @@ export async function enviarMediaEvolution(
  * 
  * Regra de entrega:
  * 1. Envia a resposta de texto primeiro.
- * 2. Se houver anexos (ex: PDFs gerados ou do Cofre), busca os buffers no Supabase Storage
- *    e envia cada documento em seguida, com um pequeno delay ordenado.
+ * 2. Se houver anexos (documentos PDF):
+ *    - Se tamanho <= 1.5 MB: tenta via Base64; com fallback para Signed URL caso a Evolution falhe.
+ *    - Se tamanho > 1.5 MB: envia diretamente via Signed URL do Supabase Storage (evita estouro de pilha).
+ * 3. Se o envio de qualquer documento falhar após todas as tentativas:
+ *    - A VEGA avisa imediatamente no WhatsApp qual documento não foi enviado, não ficando em silêncio.
  */
 export async function enviarRespostaCompletaWhatsApp(
   destinatario: string,
@@ -267,32 +298,89 @@ export async function enviarRespostaCompletaWhatsApp(
   if (anexos && Array.isArray(anexos) && anexos.length > 0) {
     for (const anexo of anexos) {
       const nomeDoc = anexo.nome || 'documento.pdf';
+      const legenda = anexo.titulo || anexo.nome || nomeDoc;
+      let envioSucesso = false;
+
       try {
         // Pausa de 800ms entre texto e anexo para garantir a ordem visual no WhatsApp
         await new Promise((resolve) => setTimeout(resolve, 800));
 
-        // Busca o buffer do PDF no Supabase Storage
+        // 1. Obtém buffer do arquivo para checar tamanho real
         const arquivo = await obterBufferArquivo(nomeDoc);
+        const tamanhoBytes = arquivo?.buffer ? arquivo.buffer.length : 0;
+        const contentType = arquivo?.contentType || 'application/pdf';
 
-        if (arquivo && arquivo.buffer) {
-          const legenda = anexo.titulo || anexo.nome;
-          await enviarMediaEvolution(
-            destinatario,
-            arquivo.buffer,
-            nomeDoc,
-            legenda,
-            arquivo.contentType || 'application/pdf'
+        console.log(
+          `[Evolution API 📄] Processando anexo "${nomeDoc}" | Tamanho: ${(tamanhoBytes / 1024).toFixed(1)} KB`
+        );
+
+        // DECISÃO DE ESTRATÉGIA BASEADA NO TAMANHO:
+        if (tamanhoBytes > LIMITE_BASE64_BYTES) {
+          // Arquivo GRANDE (> 1.5 MB): usa prioritariamente Signed URL para evitar "Maximum call stack size exceeded"
+          console.log(
+            `[Evolution API 🚀] Arquivo "${nomeDoc}" tem ${(tamanhoBytes / (1024 * 1024)).toFixed(2)} MB (> 1.5 MB). Gerando Signed URL...`
           );
+          const signedUrl = await gerarSignedUrlArquivo(nomeDoc, 3600);
+
+          if (signedUrl) {
+            const resUrl = await enviarMediaEvolution(destinatario, signedUrl, nomeDoc, legenda, contentType);
+            if (resUrl.sucesso) {
+              envioSucesso = true;
+            } else {
+              console.warn(
+                `[Evolution API ⚠️] Envio por Signed URL falhou para "${nomeDoc}". Tentando fallback por buffer...`
+              );
+              if (arquivo?.buffer) {
+                const resFallback = await enviarMediaEvolution(destinatario, arquivo.buffer, nomeDoc, legenda, contentType);
+                envioSucesso = resFallback.sucesso;
+              }
+            }
+          } else if (arquivo?.buffer) {
+            // Se não gerou Signed URL (ex: fallback local), tenta o buffer
+            const resBuffer = await enviarMediaEvolution(destinatario, arquivo.buffer, nomeDoc, legenda, contentType);
+            envioSucesso = resBuffer.sucesso;
+          }
+        } else if (arquivo?.buffer) {
+          // Arquivo PEQUENO (<= 1.5 MB): envia por Base64 diretamente
+          const resBase64 = await enviarMediaEvolution(destinatario, arquivo.buffer, nomeDoc, legenda, contentType);
+          if (resBase64.sucesso) {
+            envioSucesso = true;
+          } else {
+            console.warn(
+              `[Evolution API ⚠️] Envio por Base64 falhou para "${nomeDoc}". Tentando fallback por Signed URL...`
+            );
+            const signedUrl = await gerarSignedUrlArquivo(nomeDoc, 3600);
+            if (signedUrl) {
+              const resFallbackUrl = await enviarMediaEvolution(destinatario, signedUrl, nomeDoc, legenda, contentType);
+              envioSucesso = resFallbackUrl.sucesso;
+            }
+          }
         } else {
-          console.error(
-            `[Evolution API ⚠️] Não foi possível obter o arquivo "${nomeDoc}" no Supabase Storage para envio.`
-          );
+          // Arquivo sem buffer local: tenta gerar Signed URL direto do Supabase
+          const signedUrl = await gerarSignedUrlArquivo(nomeDoc, 3600);
+          if (signedUrl) {
+            const resUrl = await enviarMediaEvolution(destinatario, signedUrl, nomeDoc, legenda, contentType);
+            envioSucesso = resUrl.sucesso;
+          }
         }
       } catch (errAnexo: any) {
         console.error(
-          `[Evolution API ❌] Falha no fluxo de envio do anexo "${nomeDoc}":`,
+          `[Evolution API ❌] Exceção no fluxo de envio do anexo "${nomeDoc}":`,
           errAnexo?.message || errAnexo
         );
+      }
+
+      // EXIGÊNCIA 4: Se o envio do documento falhar, avisa no WhatsApp em vez de ficar em silêncio
+      if (!envioSucesso) {
+        const config = obterConfigEvolution();
+        // Só avisa no WhatsApp se a Evolution API estiver configurada (não poluir em simulação pura local)
+        if (config) {
+          console.warn(
+            `[Evolution API 📢] Documento "${nomeDoc}" falhou no envio. Notificando remetente no WhatsApp...`
+          );
+          const avisoFalha = `⚠️ Não foi possível entregar o documento "${legenda}" pelo WhatsApp devido a uma limitação no envio de arquivos da operadora. Você também pode visualizá-lo diretamente pelo painel da VEGA.`;
+          await enviarTextoEvolution(destinatario, avisoFalha);
+        }
       }
     }
   }

@@ -85,3 +85,34 @@ export async function uploadArquivoStorage(
 
   return chave;
 }
+
+/**
+ * Gera uma Signed URL temporária no Supabase Storage para download direto de arquivos.
+ * Válida por padrão por 3600 segundos (1 hora).
+ */
+export async function gerarSignedUrlArquivo(
+  nomeArquivo: string,
+  expiresInSegundos: number = 3600,
+  storagePath?: string
+): Promise<string | null> {
+  const supabase = getSupabaseClient();
+  const nomeLimpo = path.basename(nomeArquivo).trim();
+  const chave = storagePath ? storagePath.trim() : sanitizarChaveStorage(nomeLimpo);
+
+  try {
+    const { data, error } = await supabase.storage
+      .from('documentos')
+      .createSignedUrl(chave, expiresInSegundos);
+
+    if (!error && data?.signedUrl) {
+      return data.signedUrl;
+    } else if (error) {
+      console.warn(`[StorageUtils ⚠️] Erro ao gerar Signed URL para "${chave}":`, error.message);
+    }
+  } catch (err: any) {
+    console.warn(`[StorageUtils ⚠️] Falha ao gerar Signed URL no Supabase Storage:`, err?.message || err);
+  }
+
+  return null;
+}
+
