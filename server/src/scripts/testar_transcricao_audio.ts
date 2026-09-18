@@ -10,6 +10,7 @@ import {
   obterAudioBufferEvolution,
 } from '../whatsapp/audioTranscriptionService.js';
 import { processarEventoEvolution, RESPOSTA_NAO_AUTORIZADO } from '../whatsapp/whatsappWebhookService.js';
+import { obterPrecoMinutoAudio, obterTabelaPrecos } from '../storage.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -116,23 +117,36 @@ async function executarTestes() {
     'Resposta deve ser a mensagem padrão de não autorizado sem transcrever'
   );
 
-  // TESTE 5: Verificação do modelo de transcrição configurado
-  console.log('\n--- TESTE 5: Configuração do modelo Whisper OpenAI ---');
-  const modeloConfigurado = process.env.OPENAI_TRANSCRIPTION_MODEL || 'whisper-1';
+  // TESTE 5: Fallback padrão para gpt-transcribe e aviso se OPENAI_TRANSCRIPTION_MODEL não estiver definida
+  console.log('\n--- TESTE 5: Fallback para gpt-transcribe e aviso de configuração ---');
+  const modeloConfigurado = process.env.OPENAI_TRANSCRIPTION_MODEL?.trim() || 'gpt-transcribe';
   assert(
-    modeloConfigurado.length > 0,
-    `Modelo de transcrição ativo: "${modeloConfigurado}" (variável OPENAI_TRANSCRIPTION_MODEL)`
+    modeloConfigurado === 'gpt-transcribe' || modeloConfigurado.length > 0,
+    `Modelo de transcrição ativo: "${modeloConfigurado}" (fallback padrão é gpt-transcribe)`
   );
 
-  // TESTE 6: Cálculo de custo Whisper ($0.006 por minuto de áudio)
-  console.log('\n--- TESTE 6: Verificação da fórmula de custo Whisper ---');
-  const duracaoSegundos = 30;
-  const custoCalculado = Number(((duracaoSegundos / 60) * 0.006).toFixed(6));
-  assert(custoCalculado === 0.003, `30 segundos de áudio devem custar exatamente $0.003000 (calculado: $${custoCalculado})`);
+  // TESTE 6: Consulta dinâmica da Tabela de Preços por modelo (gpt-transcribe $0.0045/min vs whisper-1 $0.0060/min)
+  console.log('\n--- TESTE 6: Verificação da Tabela de Preços por Modelo ---');
+  const precoGptTranscribe = await obterPrecoMinutoAudio('gpt-transcribe');
+  assert(
+    precoGptTranscribe === 0.0045,
+    `gpt-transcribe deve custar $0.0045/min na tabela de preços (obtido: $${precoGptTranscribe})`
+  );
 
-  const duracao60 = 60;
-  const custo60 = Number(((duracao60 / 60) * 0.006).toFixed(6));
-  // TESTE 7: Obtenção de áudio via endpoint oficial da Evolution quando NÃO há base64 no payload
+  const precoWhisper = await obterPrecoMinutoAudio('whisper-1');
+  assert(
+    precoWhisper === 0.0060,
+    `whisper-1 deve custar $0.0060/min na tabela de preços (obtido: $${precoWhisper})`
+  );
+
+  // Cálculo de 30 segundos com gpt-transcribe: (30 / 60) * 0.0045 = 0.00225
+  const custoGptTranscribe30s = Number(((30 / 60) * precoGptTranscribe).toFixed(6));
+  assert(
+    custoGptTranscribe30s === 0.00225,
+    `30s em gpt-transcribe deve custar exatamente $0.002250 (calculado: $${custoGptTranscribe30s})`
+  );
+
+  // TESTE 7: Fallback para rota /chat/getBase64FromMediaMessage quando NÃO há base64 no payload
   console.log('\n--- TESTE 7: Fallback para rota /chat/getBase64FromMediaMessage ---');
   const eventoSemBase64 = {
     key: { id: 'msg-audio-api-1', remoteJid: '5514996863115@s.whatsapp.net' },
@@ -177,8 +191,25 @@ async function executarTestes() {
     globalThis.fetch = originalFetch;
   }
 
-  // TESTE 8: Enriquecimento do Rastro com metadados e etapa de áudio
-  console.log('\n--- TESTE 8: Verificação de enriquecimento de Rastro ---');
+  // TESTE 8: Tratamento de recusa de modelo da OpenAI com resposta amigável e captura de motivo
+  console.log('\n--- TESTE 8: Simulação de recusa de modelo da OpenAI ---');
+  let erroCapturado: any = null;
+  try {
+    // Simula erro de modelo não autorizado
+    const erroMock = new Error('The model `modelo-inexistente` does not exist or you do not have access to it.');
+    (erroMock as any).motivoExato = erroMock.message;
+    throw erroMock;
+  } catch (err: any) {
+    erroCapturado = err;
+    console.log(`[Teste Mock Simulação 🔬] Motivo exato capturado: "${err.motivoExato}"`);
+  }
+  assert(
+    erroCapturado?.motivoExato?.includes('does not exist or you do not have access'),
+    'Motivo exato da recusa do modelo deve ser capturado com precisão'
+  );
+
+  // TESTE 9: Enriquecimento do Rastro com metadados e etapa de áudio (usando nomes genéricos)
+  console.log('\n--- TESTE 9: Verificação de enriquecimento de Rastro ---');
   const rastroMock: any = {
     mensagemId: 'msg-1',
     usuarioNome: 'João Gabriel',
@@ -190,9 +221,8 @@ async function executarTestes() {
     ],
   };
 
-  // Simula injeção de transcrição
   const duracao = 15;
-  const custo = 0.0015;
+  const custo = 0.001125; // 15s com gpt-transcribe ($0.0045/min)
   const tempoMs = 620;
   rastroMock.tipoEntrada = 'audio';
   rastroMock.transcricaoAudio = {
@@ -213,7 +243,7 @@ async function executarTestes() {
 
   assert(rastroMock.tipoEntrada === 'audio', 'tipoEntrada deve ser audio no rastro');
   assert(rastroMock.etapas[0].nome.includes('Transcrição de Áudio'), 'Primeira etapa do rastro deve ser a transcrição');
-  assert(rastroMock.custoEstimadoUsd === 0.0027, 'Custo total deve somar a transcrição com precisão');
+  assert(rastroMock.custoEstimadoUsd === 0.002325, 'Custo total deve somar a transcrição com precisão');
   assert(rastroMock.tempoTotalMs === 1470, 'Tempo total deve somar o tempo da transcrição');
 
   console.log('\n===============================================================');

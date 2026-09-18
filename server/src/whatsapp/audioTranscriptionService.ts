@@ -1,6 +1,6 @@
 import { OpenAI, toFile } from 'openai';
 import { EvolutionConfig } from './evolutionSenderService.js';
-import { adicionarRegistroUsoIA } from '../storage.js';
+import { adicionarRegistroUsoIA, obterPrecoMinutoAudio } from '../storage.js';
 
 /**
  * Limites operacionais para mensagens de áudio
@@ -197,7 +197,13 @@ export async function transcreverAudioOpenAI(
     throw new Error('OPENAI_API_KEY ausente ou inválida para transcrição de áudio.');
   }
 
-  const modelo = process.env.OPENAI_TRANSCRIPTION_MODEL?.trim() || 'whisper-1';
+  const modeloConfigurado = process.env.OPENAI_TRANSCRIPTION_MODEL?.trim();
+  if (!modeloConfigurado) {
+    console.warn(
+      '[OpenAI Transcrição ⚠️] Variável OPENAI_TRANSCRIPTION_MODEL não definida no .env/Railway. Utilizando fallback padrão "gpt-transcribe".'
+    );
+  }
+  const modelo = modeloConfigurado || 'gpt-transcribe';
 
   // Determina nome de arquivo virtual e mimetype adequado
   let nomeArquivoVirtual = 'audio.ogg';
@@ -225,21 +231,42 @@ export async function transcreverAudioOpenAI(
 
   console.log(`[OpenAI Transcrição 🎙️] Enviando áudio em memória para o modelo "${modelo}" (tamanho: ${audioBuffer.length} bytes)...`);
 
-  const resposta = await openai.audio.transcriptions.create({
-    file,
-    model: modelo,
-    language: 'pt',
-  });
+  let resposta: any;
+  try {
+    resposta = await openai.audio.transcriptions.create({
+      file,
+      model: modelo,
+      language: 'pt',
+    });
+  } catch (err: any) {
+    const motivoExato =
+      err?.message ||
+      err?.error?.message ||
+      (typeof err === 'object' ? JSON.stringify(err) : String(err));
+
+    console.error(
+      `[OpenAI Transcrição ❌] A OpenAI recusou o modelo ou falhou ao transcrever (modelo "${modelo}"):`,
+      motivoExato
+    );
+
+    const erroRecusa = new Error(
+      `A OpenAI recusou o modelo "${modelo}" ou não conseguiu processar o áudio: ${motivoExato}`
+    );
+    (erroRecusa as any).motivoExato = motivoExato;
+    (erroRecusa as any).modeloRecusado = true;
+    throw erroRecusa;
+  }
 
   const tempoMs = Date.now() - inicio;
   const textoTranscrito = (resposta?.text || '').trim();
 
-  // Cálculo de custo: whisper-1 custa $0.006 por minuto ($0.0001 por segundo de áudio)
+  // Cálculo de custo dinâmico via tabela de preços por modelo (ex: gpt-transcribe $0.0045/min, whisper-1 $0.006/min)
+  const precoMinuto = await obterPrecoMinutoAudio(modelo);
   const duracaoCalculo = duracaoSegundos > 0 ? duracaoSegundos : Math.max(5, Math.ceil(audioBuffer.length / 32000));
-  const custoUsd = Number(((duracaoCalculo / 60) * 0.006).toFixed(6));
+  const custoUsd = Number(((duracaoCalculo / 60) * precoMinuto).toFixed(6));
 
   console.log(
-    `[OpenAI Transcrição ✅] Sucesso (${tempoMs} ms) | Duração: ${duracaoCalculo}s | Custo: $${custoUsd} | Texto: "${textoTranscrito.slice(0, 80)}${textoTranscrito.length > 80 ? '...' : ''}"`
+    `[OpenAI Transcrição ✅] Sucesso (${tempoMs} ms) | Modelo: "${modelo}" ($${precoMinuto}/min) | Duração: ${duracaoCalculo}s | Custo: $${custoUsd} | Texto: "${textoTranscrito.slice(0, 80)}${textoTranscrito.length > 80 ? '...' : ''}"`
   );
 
   // Registra na telemetria de uso da IA

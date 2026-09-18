@@ -779,6 +779,18 @@ const TABELA_PRECOS_PADRAO: TabelaPrecos = {
     precoSaidaPorMilhao: 0.12,
     moeda: 'BRL',
   },
+  'gpt-transcribe': {
+    precoEntradaPorMilhao: 0,
+    precoSaidaPorMilhao: 0,
+    precoPorMinutoAudio: 0.0045, // $0.0045 por minuto de áudio
+    moeda: 'USD',
+  },
+  'whisper-1': {
+    precoEntradaPorMilhao: 0,
+    precoSaidaPorMilhao: 0,
+    precoPorMinutoAudio: 0.0060, // $0.0060 por minuto de áudio
+    moeda: 'USD',
+  },
 };
 
 export async function obterTabelaPrecos(): Promise<TabelaPrecos> {
@@ -791,6 +803,21 @@ export async function obterTabelaPrecos(): Promise<TabelaPrecos> {
     }
   } catch {}
   return TABELA_PRECOS_PADRAO;
+}
+
+/**
+ * Obtém o preço por minuto para o modelo de áudio a partir da tabela de preços configurada.
+ * Se não configurado explicitamente no modelo, utiliza os preços de mercado oficiais.
+ */
+export async function obterPrecoMinutoAudio(modelo: string): Promise<number> {
+  const tabela = await obterTabelaPrecos();
+  const config = tabela[modelo];
+  if (config?.precoPorMinutoAudio !== undefined) {
+    return config.precoPorMinutoAudio;
+  }
+  if (modelo.includes('gpt-transcribe')) return 0.0045;
+  if (modelo.includes('whisper')) return 0.0060;
+  return 0.0045;
 }
 
 export async function salvarTabelaPrecos(tabela: TabelaPrecos): Promise<void> {

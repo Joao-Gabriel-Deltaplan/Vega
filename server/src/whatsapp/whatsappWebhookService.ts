@@ -457,11 +457,14 @@ export async function processarEventoEvolution(
         `[Webhook WhatsApp 🎙️] Áudio transcrito com sucesso: "${textoMensagem}" (Custo: $${custoTranscricaoUsd}, Método: ${metodoDownload})`
       );
     } catch (err: any) {
-      console.error('[Webhook WhatsApp ❌] Erro ao transcrever áudio na OpenAI:', err?.message || err);
+      const motivoExato = err?.motivoExato || err?.message || String(err);
+      console.error(
+        `[Webhook WhatsApp ❌] A OpenAI recusou o modelo ou falhou ao transcrever áudio (motivo exato): ${motivoExato}`
+      );
       return {
         sucesso: true,
         status: 'processado',
-        resposta: 'Não consegui entender o áudio, pode escrever ou gravar de novo?',
+        resposta: 'Não consegui processar o áudio, pode escrever ou gravar de novo?',
         destinatario: remoteJid,
         mensagemId,
         usuario: usuarioAutorizado,

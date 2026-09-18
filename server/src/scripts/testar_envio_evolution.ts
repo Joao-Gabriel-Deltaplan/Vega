@@ -99,7 +99,7 @@ async function rodarTestes() {
       tipo: 'pdf',
       url: '/arquivos/CARTAO%20DE%20VACINAS.pdf',
       nome: 'CARTAO DE VACINAS.pdf',
-      titulo: 'Cartão de Vacinas - Thomaz Brandini',
+      titulo: 'Cartão de Vacinas - Thomaz Lustri Fabre',
     },
   ];
 

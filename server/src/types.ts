@@ -222,6 +222,7 @@ export interface RegistroUsoIA {
 export interface ConfigPrecoModelo {
   precoEntradaPorMilhao: number;
   precoSaidaPorMilhao: number;
+  precoPorMinutoAudio?: number;
   moeda: string;
 }
 
