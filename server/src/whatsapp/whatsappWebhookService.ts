@@ -17,6 +17,7 @@ import {
   obterAudioBufferEvolution,
   transcreverAudioOpenAI,
   validarLimitesAudio,
+  registrarInspecaoPrimeiroAudio,
 } from './audioTranscriptionService.js';
 import {
   obterConversaPorId,
@@ -360,6 +361,9 @@ export async function processarEventoEvolution(
   const infoAudio = extrairInfoAudio(evento);
 
   if (infoAudio.isAudio) {
+    // Registra no terminal a estrutura completa do primeiro áudio recebido (sem imprimir bytes de base64)
+    registrarInspecaoPrimeiroAudio(evento);
+
     console.log(
       `[Webhook WhatsApp 🎙️] Mensagem de áudio recebida de "${usuarioAutorizado.nome}" (~${infoAudio.duracaoSegundos}s).`
     );
@@ -386,23 +390,23 @@ export async function processarEventoEvolution(
       return {
         sucesso: true,
         status: 'processado',
-        resposta: 'Não consegui entender o áudio, pode escrever ou gravar de novo?',
+        resposta: 'Não consegui processar o áudio, pode escrever ou gravar de novo?',
         destinatario: remoteJid,
         mensagemId,
         usuario: usuarioAutorizado,
       };
     }
 
-    // Baixa o áudio 100% em memória RAM
+    // Baixa o áudio 100% em memória RAM (priorizando base64 no evento, fallback rota API)
     let downloadAudio;
     try {
       downloadAudio = await obterAudioBufferEvolution(evento, configEvolution);
     } catch (err: any) {
-      console.error('[Webhook WhatsApp ❌] Falha ao baixar áudio da Evolution API:', err?.message || err);
+      console.error('[Webhook WhatsApp ❌] Falha ao obter áudio da Evolution API:', err?.message || err);
       return {
         sucesso: true,
         status: 'processado',
-        resposta: 'Não consegui entender o áudio, pode escrever ou gravar de novo?',
+        resposta: 'Não consegui processar o áudio, pode escrever ou gravar de novo?',
         destinatario: remoteJid,
         mensagemId,
         usuario: usuarioAutorizado,

@@ -163,9 +163,10 @@ async function executarTestes() {
 
   const originalFetch = globalThis.fetch;
   try {
-    // Mock do fetch para simular resposta da Evolution API
+    let bodyEnviadoEvolution: any = null;
     globalThis.fetch = (async (url: string, init?: any) => {
       if (typeof url === 'string' && url.includes('/chat/getBase64FromMediaMessage/')) {
+        bodyEnviadoEvolution = JSON.parse(init?.body || '{}');
         return {
           ok: true,
           status: 200,
@@ -187,9 +188,41 @@ async function executarTestes() {
     assert(Buffer.isBuffer(downloadApi.buffer), 'Áudio via API deve ser retornado como Buffer em memória');
     assert(downloadApi.metodo === 'api_download', 'Método deve ser api_download quando não há base64 no webhook');
     assert(downloadApi.duracaoSegundos === 22, 'Duração de 22s deve ser mantida');
+    assert(
+      bodyEnviadoEvolution?.message?.key?.id === 'msg-audio-api-1',
+      'Body enviado à Evolution deve conter message.key completo'
+    );
+    assert(
+      Boolean(bodyEnviadoEvolution?.message?.message?.audioMessage),
+      'Body enviado à Evolution deve conter message.message completo'
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
+
+  // TESTE 7.1: Priorização e extração de Base64 em múltiplos campos (Webhook Base64 ativado)
+  console.log('\n--- TESTE 7.1: Descoberta de Base64 em múltiplos campos do webhook ---');
+  const eventoBase64EmMessage = {
+    key: { id: 'msg-b64-msg' },
+    messageType: 'audioMessage',
+    message: {
+      audioMessage: { mimetype: 'audio/ogg', seconds: 10 },
+      base64: 'T2dnU19lbV9tZXNzYWdlX2Jhc2U2NA==',
+    },
+  };
+  const infoB64Msg = extrairInfoAudio(eventoBase64EmMessage);
+  assert(infoB64Msg.base64Direto !== undefined, 'Deve encontrar base64 em message.base64');
+  assert(infoB64Msg.campoBase64 === 'message.base64', 'Deve identificar o campo message.base64');
+
+  const eventoBase64NaRaiz = {
+    key: { id: 'msg-b64-raiz' },
+    messageType: 'audioMessage',
+    message: { audioMessage: { mimetype: 'audio/ogg', seconds: 12 } },
+    base64: 'T2dnU19uYV9yYWl6X2RldmVfZnVuY2lvbmFy',
+  };
+  const infoB64Raiz = extrairInfoAudio(eventoBase64NaRaiz);
+  assert(infoB64Raiz.base64Direto !== undefined, 'Deve encontrar base64 na raiz do evento');
+  assert(infoB64Raiz.campoBase64 === 'base64 (raiz)', 'Deve identificar o campo base64 (raiz)');
 
   // TESTE 8: Tratamento de recusa de modelo da OpenAI com resposta amigável e captura de motivo
   console.log('\n--- TESTE 8: Simulação de recusa de modelo da OpenAI ---');

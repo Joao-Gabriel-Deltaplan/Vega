@@ -14,6 +14,7 @@ export interface InfoAudioMensagem {
   mimetype: string;
   tamanhoBytes?: number;
   base64Direto?: string;
+  campoBase64?: string;
 }
 
 export interface ResultadoDownloadAudio {
@@ -32,12 +33,116 @@ export interface ResultadoTranscricaoAudio {
   tempoMs: number;
 }
 
+// Flag para registrar a estrutura do primeiro áudio no terminal
+let primeiroAudioInspecionado = false;
+
+/**
+ * Registra no terminal a estrutura de campos do primeiro áudio recebido (sem imprimir os bytes de base64).
+ * Permite ao operador auditar em qual campo exato o áudio está chegando.
+ */
+export function registrarInspecaoPrimeiroAudio(evento: any): void {
+  if (primeiroAudioInspecionado) return;
+  primeiroAudioInspecionado = true;
+
+  try {
+    const info = extrairInfoAudio(evento);
+    console.log('\n================================================================');
+    console.log('🎙️ [Evolution Webhook 🔬] PRIMEIRA MENSAGEM DE ÁUDIO RECEBIDA (INSPEÇÃO)');
+    console.log(`Data/Hora: ${new Date().toLocaleString('pt-BR')}`);
+    console.log(`- messageType: ${evento?.messageType || '(não informado)'}`);
+    console.log(`- Duração detectada: ${info.duracaoSegundos} segundos`);
+    console.log(`- Mimetype: ${info.mimetype || '(não informado)'}`);
+    console.log(
+      `- Base64 no próprio evento: ${
+        info.base64Direto
+          ? `SIM (encontrado no campo: "${info.campoBase64}", tamanho: ${info.base64Direto.length} caracteres)`
+          : 'NÃO (será necessário download via endpoint oficial)'
+      }`
+    );
+
+    // Sanitizador recursivo para inspecionar hierarquia sem despejar base64 gigante no terminal
+    function sanitizarEstrutura(obj: any, profundidade = 0): any {
+      if (profundidade > 4) return '[...]';
+      if (obj === null || obj === undefined) return obj;
+      if (typeof obj === 'string') {
+        if (obj.length > 80) {
+          return `[STRING DE ${obj.length} CARACTERES - Ex: ${obj.slice(0, 25)}...]`;
+        }
+        return obj;
+      }
+      if (typeof obj !== 'object') return obj;
+      if (Array.isArray(obj)) {
+        return obj.map((it) => sanitizarEstrutura(it, profundidade + 1));
+      }
+      const resultado: Record<string, any> = {};
+      for (const k of Object.keys(obj)) {
+        const v = obj[k];
+        if (k.toLowerCase().includes('base64') || k.toLowerCase().includes('media')) {
+          resultado[k] =
+            typeof v === 'string'
+              ? `[BASE64 DE ${v.length} CARACTERES]`
+              : (v ? `[OBJETO ${typeof v}]` : v);
+        } else {
+          resultado[k] = sanitizarEstrutura(v, profundidade + 1);
+        }
+      }
+      return resultado;
+    }
+
+    console.log('--- ESTRUTURA DOS CAMPOS DO EVENTO (RESUMO SEM BYTES) ---');
+    console.log(JSON.stringify(sanitizarEstrutura(evento), null, 2));
+    console.log('================================================================\n');
+  } catch (err) {
+    console.warn('[Evolution Webhook ⚠️] Erro ao registrar inspeção do primeiro áudio:', err);
+  }
+}
+
+/**
+ * Busca exaustiva por Base64 de áudio em todos os campos possíveis gerados pela Evolution API
+ * (com Webhook Base64 ativado).
+ */
+export function localizarBase64AudioNoEvento(evento: any): { base64: string; campoEncontrado: string } | null {
+  if (!evento) return null;
+
+  const candidatos: Array<{ campo: string; valor: any }> = [
+    { campo: 'message.audioMessage.base64', valor: evento?.message?.audioMessage?.base64 },
+    { campo: 'message.base64', valor: evento?.message?.base64 },
+    { campo: 'base64 (raiz)', valor: evento?.base64 },
+    { campo: 'data.message.audioMessage.base64', valor: evento?.data?.message?.audioMessage?.base64 },
+    { campo: 'data.message.base64', valor: evento?.data?.message?.base64 },
+    { campo: 'data.base64', valor: evento?.data?.base64 },
+    { campo: 'audioMessage.base64', valor: evento?.audioMessage?.base64 },
+    { campo: 'message.ephemeralMessage.message.audioMessage.base64', valor: evento?.message?.ephemeralMessage?.message?.audioMessage?.base64 },
+    { campo: 'message.viewOnceMessage.message.audioMessage.base64', valor: evento?.message?.viewOnceMessage?.message?.audioMessage?.base64 },
+    { campo: 'message.viewOnceMessageV2.message.audioMessage.base64', valor: evento?.message?.viewOnceMessageV2?.message?.audioMessage?.base64 },
+    { campo: 'media', valor: evento?.media },
+    { campo: 'message.media', valor: evento?.message?.media },
+  ];
+
+  for (const c of candidatos) {
+    if (typeof c.valor === 'string' && c.valor.trim().length > 10) {
+      return {
+        base64: c.valor.trim(),
+        campoEncontrado: c.campo,
+      };
+    }
+  }
+
+  return null;
+}
+
 /**
  * Identifica se a mensagem recebida é um áudio (audioMessage / PTT) e extrai seus metadados.
  */
 export function extrairInfoAudio(evento: any): InfoAudioMensagem {
   const message = evento?.message;
-  const audioMsg = message?.audioMessage || (evento?.messageType === 'audioMessage' ? message : null);
+  const audioMsg =
+    message?.audioMessage ||
+    message?.ephemeralMessage?.message?.audioMessage ||
+    message?.viewOnceMessage?.message?.audioMessage ||
+    message?.viewOnceMessageV2?.message?.audioMessage ||
+    (evento?.messageType === 'audioMessage' ? message : null) ||
+    evento?.audioMessage;
 
   if (!audioMsg) {
     return {
@@ -50,18 +155,16 @@ export function extrairInfoAudio(evento: any): InfoAudioMensagem {
   const duracaoSegundos = Math.round(Number(audioMsg.seconds) || 0);
   const mimetype = (audioMsg.mimetype || 'audio/ogg; codecs=opus').split(';')[0].trim();
   const tamanhoBytes = Number(audioMsg.fileLength) || 0;
-  const base64Direto = typeof audioMsg.base64 === 'string' && audioMsg.base64.trim().length > 10
-    ? audioMsg.base64.trim()
-    : typeof evento?.base64 === 'string' && evento.base64.trim().length > 10
-    ? evento.base64.trim()
-    : undefined;
+
+  const base64Localizado = localizarBase64AudioNoEvento(evento);
 
   return {
     isAudio: true,
     duracaoSegundos,
     mimetype,
     tamanhoBytes,
-    base64Direto,
+    base64Direto: base64Localizado?.base64,
+    campoBase64: base64Localizado?.campoEncontrado,
   };
 }
 
@@ -106,13 +209,15 @@ export async function obterAudioBufferEvolution(
     throw new Error('O evento recebido não contém mensagem de áudio válida.');
   }
 
-  // Caminho 1: Base64 presente no payload do webhook
+  // Caminho 1 (PRIORITÁRIO): Base64 presente no próprio evento do webhook (opção Webhook Base64 ativada)
   if (info.base64Direto) {
     try {
       const base64Limpo = info.base64Direto.replace(/^data:[^;]+;base64,/, '').trim();
       const buffer = Buffer.from(base64Limpo, 'base64');
       if (buffer.length > 0) {
-        console.log(`[Evolution Áudio 🎙️] Áudio extraído diretamente do payload do webhook em memória (${buffer.length} bytes, ~${info.duracaoSegundos}s).`);
+        console.log(
+          `[Evolution Áudio 🎙️] Áudio extraído diretamente do payload do webhook via campo "${info.campoBase64 || 'base64'}" (${buffer.length} bytes, ~${info.duracaoSegundos}s).`
+        );
         return {
           buffer,
           mimetype: info.mimetype || 'audio/ogg',
@@ -122,13 +227,25 @@ export async function obterAudioBufferEvolution(
         };
       }
     } catch (err: any) {
-      console.warn('[Evolution Áudio ⚠️] Falha ao decodificar base64 presente no payload, tentando rota da API:', err?.message || err);
+      console.warn(
+        `[Evolution Áudio ⚠️] Falha ao decodificar base64 presente no campo "${info.campoBase64}", tentando rota de download da API:`,
+        err?.message || err
+      );
     }
   }
 
-  // Caminho 2: Baixar mídia via endpoint oficial da Evolution API
+  // Caminho 2 (FALLBACK): Baixar mídia via endpoint oficial da Evolution API v2
+  // A Evolution API v2 espera o objeto completo da mensagem com key e message dentro de "message"
   const urlDownload = `${config.apiUrl}/chat/getBase64FromMediaMessage/${encodeURIComponent(config.instance)}`;
-  console.log(`[Evolution Áudio 🌐] Baixando áudio da Evolution via endpoint oficial: ${urlDownload}`);
+  console.log(`[Evolution Áudio 🌐] Base64 não veio no webhook. Baixando da Evolution API via: ${urlDownload}`);
+
+  const messagePayload = {
+    key: evento.key,
+    message: evento.message,
+    messageTimestamp: evento.messageTimestamp || Math.floor(Date.now() / 1000),
+    pushName: evento.pushName,
+    status: evento.status,
+  };
 
   const resposta = await fetch(urlDownload, {
     method: 'POST',
@@ -137,7 +254,7 @@ export async function obterAudioBufferEvolution(
       apikey: config.apiKey,
     },
     body: JSON.stringify({
-      message: evento.message,
+      message: messagePayload,
       convertToMp4: false,
     }),
   });
