@@ -1,35 +1,111 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { UsuarioWhatsApp } from './types.js';
 import { getSupabaseClient } from '../db/supabaseClient.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const USUARIOS_JSON_PATH = path.resolve(__dirname, '../../../data/usuarios.json');
+
 /**
- * Lê todos os usuários cadastrados no Supabase (tabela usuarios)
+ * Normaliza um identificador @lid para comparação
+ * Ex: "176948374462673@lid" ou "176948374462673:0@lid" -> "176948374462673"
+ */
+export function normalizarLid(lidRaw?: string | null): string {
+  if (!lidRaw) return '';
+  const semSufixo = String(lidRaw).split('@')[0].split(':')[0].trim();
+  return semSufixo.replace(/\D/g, '');
+}
+
+/**
+ * Lê os usuários configurados localmente em data/usuarios.json (se existir)
+ */
+export function obterUsuariosLocais(): UsuarioWhatsApp[] {
+  try {
+    if (fs.existsSync(USUARIOS_JSON_PATH)) {
+      const conteudo = fs.readFileSync(USUARIOS_JSON_PATH, 'utf-8');
+      const lista = JSON.parse(conteudo);
+      if (Array.isArray(lista)) {
+        return lista.map((u: any) => ({
+          id: String(u.id || `usr-${Date.now()}`),
+          numero: String(u.numero || '').replace(/\D/g, ''),
+          lid: u.lid ? String(u.lid).trim() : null,
+          nome: String(u.nome || ''),
+          perfil: u.perfil === 'admin' ? 'admin' : 'comum',
+          pessoa_id: u.pessoa_id || null,
+          ativo: u.ativo !== false,
+          dataCadastro: u.dataCadastro,
+        }));
+      }
+    }
+  } catch (err) {
+    console.warn('[WhatsApp Usuários ⚠️] Não foi possível ler data/usuarios.json local:', err);
+  }
+  return [];
+}
+
+/**
+ * Lê todos os usuários cadastrados no Supabase (tabela usuarios), mesclando
+ * com mapeamentos locais de data/usuarios.json (como o campo "lid").
  */
 export async function obterTodosUsuariosWhatsApp(): Promise<UsuarioWhatsApp[]> {
+  const usuariosLocais = obterUsuariosLocais();
+  let usuariosSupabase: UsuarioWhatsApp[] = [];
+
   try {
     const supabase = getSupabaseClient();
     const { data, error } = await supabase
       .from('usuarios')
-      .select('id, numero, nome, perfil, pessoa_id, ativo, data_cadastro')
+      .select('*')
       .order('created_at', { ascending: true });
 
-    if (error) {
-      console.error('[WhatsApp Usuários ⚠️] Erro ao carregar tabela usuarios no Supabase:', error);
-      return [];
+    if (!error && Array.isArray(data)) {
+      usuariosSupabase = data.map((u: any) => ({
+        id: String(u.id),
+        numero: String(u.numero || '').replace(/\D/g, ''),
+        lid: u.lid ? String(u.lid).trim() : null,
+        nome: String(u.nome || ''),
+        perfil: u.perfil === 'admin' ? 'admin' : 'comum',
+        pessoa_id: u.pessoa_id || null,
+        ativo: u.ativo !== undefined ? u.ativo : true,
+        dataCadastro: u.data_cadastro || u.created_at,
+      }));
+    } else if (error) {
+      console.warn('[WhatsApp Usuários ⚠️] Erro ao consultar tabela usuarios no Supabase:', error.message);
     }
-
-    return (data || []).map((u) => ({
-      id: u.id,
-      numero: u.numero,
-      nome: u.nome,
-      perfil: u.perfil as 'admin' | 'comum',
-      pessoa_id: u.pessoa_id,
-      ativo: u.ativo !== undefined ? u.ativo : true,
-      dataCadastro: u.data_cadastro,
-    }));
   } catch (erro) {
-    console.error('[WhatsApp Usuários ⚠️] Erro de conexão com Supabase:', erro);
-    return [];
+    console.warn('[WhatsApp Usuários ⚠️] Erro de conexão com Supabase:', erro);
   }
+
+  // Se o Supabase estiver indisponível ou vazio, usa diretamente os usuários locais
+  if (usuariosSupabase.length === 0) {
+    return usuariosLocais;
+  }
+
+  // Mesclagem: aplica os campos do data/usuarios.json (especialmente o campo "lid") aos usuários do Supabase
+  const resultado: UsuarioWhatsApp[] = [...usuariosSupabase];
+
+  for (const local of usuariosLocais) {
+    const idx = resultado.findIndex(
+      (u) => u.id === local.id || (local.numero && u.numero === local.numero)
+    );
+
+    if (idx !== -1) {
+      // Se houver "lid" no JSON local e não no Supabase (ou sobreposto localmente), aplica o lid
+      if (local.lid) {
+        resultado[idx].lid = local.lid;
+      }
+      if (local.nome && !resultado[idx].nome) {
+        resultado[idx].nome = local.nome;
+      }
+    } else {
+      // Usuário novo presente apenas no JSON local
+      resultado.push(local);
+    }
+  }
+
+  return resultado;
 }
 
 /**
@@ -118,22 +194,40 @@ export function normalizarNumeroCanonica(numeroRaw: string): string {
 }
 
 /**
- * Busca e valida se um número recebido está autorizado na base de dados (tabela usuarios no Supabase)
+ * Busca e valida se um remetente (por número de telefone ou identificador @lid)
+ * está autorizado na base de dados (Supabase ou data/usuarios.json).
  */
-export async function buscarUsuarioPorNumero(numeroRaw: string): Promise<UsuarioWhatsApp | null> {
-  const variantesRecebidas = gerarVariantesNumeroBrasil(numeroRaw);
-  if (variantesRecebidas.length === 0) return null;
+export async function buscarUsuarioPorNumero(
+  identificadorRaw: string,
+  lidOpcional?: string
+): Promise<UsuarioWhatsApp | null> {
+  if (!identificadorRaw && !lidOpcional) return null;
 
   const usuarios = await obterTodosUsuariosWhatsApp();
+  const usuariosAtivos = usuarios.filter((u) => u.ativo !== false);
 
-  for (const usuario of usuarios) {
-    if (usuario.ativo === false) continue;
+  // 1. Busca prioritária por LID (se o identificador terminar em @lid ou se lidOpcional foi informado)
+  const lidCandidato = normalizarLid(identificadorRaw.endsWith('@lid') ? identificadorRaw : lidOpcional);
 
-    const variantesCadastradas = gerarVariantesNumeroBrasil(usuario.numero);
-    // Verifica se há alguma correspondência entre as variantes (com ou sem 9)
-    const match = variantesRecebidas.some((vRec) => variantesCadastradas.includes(vRec));
-    if (match) {
-      return usuario;
+  if (lidCandidato) {
+    for (const usuario of usuariosAtivos) {
+      if (usuario.lid && normalizarLid(usuario.lid) === lidCandidato) {
+        return usuario;
+      }
+    }
+  }
+
+  // 2. Se o identificador for um número de telefone (não @lid), busca por variantes do Brasil
+  if (!identificadorRaw.endsWith('@lid')) {
+    const variantesRecebidas = gerarVariantesNumeroBrasil(identificadorRaw);
+    if (variantesRecebidas.length > 0) {
+      for (const usuario of usuariosAtivos) {
+        const variantesCadastradas = gerarVariantesNumeroBrasil(usuario.numero);
+        const match = variantesRecebidas.some((vRec) => variantesCadastradas.includes(vRec));
+        if (match) {
+          return usuario;
+        }
+      }
     }
   }
 

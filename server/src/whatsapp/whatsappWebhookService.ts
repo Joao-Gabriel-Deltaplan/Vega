@@ -4,7 +4,11 @@ import {
   ResultadoProcessamentoWebhook,
   UsuarioWhatsApp,
 } from './types.js';
-import { buscarUsuarioPorNumero, normalizarNumeroCanonica } from './usuarioWhatsAppService.js';
+import {
+  buscarUsuarioPorNumero,
+  normalizarNumeroCanonica,
+  normalizarLid,
+} from './usuarioWhatsAppService.js';
 import {
   obterConversaPorId,
   salvarConversa,
@@ -20,6 +24,60 @@ import { ASSISTENTE } from '../config/assistente.js';
 // Mapeia key.id -> timestamp de recebimento
 const cacheMensagensProcessadas = new Map<string, number>();
 const TTL_DEDUPLICACAO_MS = 10 * 60 * 1000; // 10 minutos
+
+// Flag para registrar no terminal a inspeção completa da 1ª mensagem recebida
+let primeiraMensagemInspecionada = false;
+
+/**
+ * Registra a estrutura do evento recebido no terminal na primeira mensagem,
+ * permitindo ao operador conferir em qual campo o número real do WhatsApp está chegando.
+ */
+function registrarInspecaoPrimeiraMensagem(evento: any): void {
+  if (primeiraMensagemInspecionada) return;
+  primeiraMensagemInspecionada = true;
+
+  try {
+    const key = evento?.key || {};
+    console.log('\n================================================================');
+    console.log('🔍 [Evolution Webhook 🔬] PRIMEIRA MENSAGEM RECEBIDA (INSPEÇÃO DE CAMPOS)');
+    console.log(`Data/Hora: ${new Date().toLocaleString('pt-BR')}`);
+    console.log('--- CAMPOS DE IDENTIFICAÇÃO DO REMETENTE ---');
+    console.log(`- key.remoteJid: ${key.remoteJid || '(não informado)'}`);
+    console.log(`- key.participant: ${key.participant || '(não informado)'}`);
+    console.log(`- key.senderPn: ${key.senderPn || '(não informado)'}`);
+    console.log(`- key.participantPn: ${key.participantPn || '(não informado)'}`);
+    console.log(`- key.remoteJidAlt: ${key.remoteJidAlt || '(não informado)'}`);
+    console.log(`- key.previousRemoteJid: ${key.previousRemoteJid || '(não informado)'}`);
+    console.log(`- evento.senderPn: ${evento?.senderPn || '(não informado)'}`);
+    console.log(`- evento.participantPn: ${evento?.participantPn || '(não informado)'}`);
+    console.log(`- evento.sender: ${evento?.sender || '(não informado)'}`);
+    console.log(`- evento.participant: ${evento?.participant || '(não informado)'}`);
+    console.log(`- evento.owner: ${evento?.owner || '(não informado)'}`);
+    console.log(`- evento.pushName: ${evento?.pushName || '(não informado)'}`);
+    console.log(`- evento.messageType: ${evento?.messageType || '(não informado)'}`);
+    console.log('--- ESTRUTURA DO EVENTO (RESUMO SEM DADOS SENSÍVEIS) ---');
+    console.log(
+      JSON.stringify(
+        {
+          event: evento?.event,
+          instance: evento?.instance,
+          key: evento?.key,
+          pushName: evento?.pushName,
+          senderPn: evento?.senderPn,
+          participantPn: evento?.participantPn,
+          sender: evento?.sender,
+          remoteJidAlt: evento?.remoteJidAlt,
+          messageType: evento?.messageType,
+        },
+        null,
+        2
+      )
+    );
+    console.log('================================================================\n');
+  } catch (err) {
+    console.warn('[Evolution Webhook ⚠️] Erro ao registrar inspeção do evento:', err);
+  }
+}
 
 /**
  * Limpa periodicamente chaves expiradas do cache de deduplicação
@@ -148,16 +206,20 @@ export async function processarEventoEvolution(
     cacheMensagensProcessadas.set(mensagemId, Date.now());
   }
 
-  // 2. EXTRAÇÃO DO REMETENTE E VERIFICAÇÃO DE GRUPO (@g.us)
+  // 2. EXTRAÇÃO DO REMETENTE E RESOLUÇÃO DE FORMATO @lid
   const isGrupo = remoteJid.endsWith('@g.us');
-  const remetenteRaw = (isGrupo ? (key.participant || evento.participant) : remoteJid) || '';
+  const participantRaw = (key.participant || evento.participant || '') as string;
+  const remetenteOrigem = (isGrupo ? participantRaw : remoteJid) || '';
+
+  // Registra no terminal a estrutura completa na primeira mensagem
+  registrarInspecaoPrimeiraMensagem(evento);
 
   // A VEGA não deve responder em grupos quando RESPONDER_EM_GRUPOS não estiver ativo
   const responderEmGrupos = process.env.RESPONDER_EM_GRUPOS?.trim().toLowerCase() === 'true';
   if (isGrupo && !responderEmGrupos) {
     const dataHora = new Date().toLocaleString('pt-BR');
     console.log(
-      `[Webhook WhatsApp 👥] Mensagem de grupo ignorada em ${dataHora} | Grupo: ${remoteJid} | Remetente: ${remetenteRaw || 'desconhecido'} | Motivo: RESPONDER_EM_GRUPOS=false`
+      `[Webhook WhatsApp 👥] Mensagem de grupo ignorada em ${dataHora} | Grupo: ${remoteJid} | Remetente: ${remetenteOrigem || 'desconhecido'} | Motivo: RESPONDER_EM_GRUPOS=false`
     );
     return {
       sucesso: true,
@@ -168,13 +230,61 @@ export async function processarEventoEvolution(
     };
   }
 
-  if (!remetenteRaw) {
+  if (!remetenteOrigem) {
     return {
       sucesso: false,
       status: 'ignorado',
       motivo: 'remetente_indefinido',
       mensagemId,
     };
+  }
+
+  // Identificação do formato @lid
+  const isLid = remoteJid.endsWith('@lid') || participantRaw.endsWith('@lid');
+  const lidCompleto = isLid ? (remoteJid.endsWith('@lid') ? remoteJid : participantRaw) : null;
+  const lidLimpo = lidCompleto ? normalizarLid(lidCompleto) : '';
+
+  // Procura pelo número real de telefone em outros campos do evento da Evolution API
+  let numeroTelefoneReal: string | null = null;
+  let campoOrigemNumero: string | null = null;
+
+  const candidatosNumero: Array<{ campo: string; valor: any }> = [
+    { campo: 'key.senderPn', valor: key.senderPn },
+    { campo: 'evento.senderPn', valor: evento.senderPn },
+    { campo: 'key.participantPn', valor: key.participantPn },
+    { campo: 'evento.participantPn', valor: evento.participantPn },
+    { campo: 'key.remoteJidAlt', valor: key.remoteJidAlt },
+    { campo: 'evento.remoteJidAlt', valor: evento.remoteJidAlt },
+    { campo: 'key.previousRemoteJid', valor: key.previousRemoteJid },
+    { campo: 'evento.previousRemoteJid', valor: evento.previousRemoteJid },
+    { campo: 'evento.sender', valor: evento.sender },
+    { campo: 'evento.participant', valor: evento.participant },
+    { campo: 'key.participant', valor: key.participant },
+    { campo: 'evento.owner', valor: evento.owner },
+  ];
+
+  for (const c of candidatosNumero) {
+    if (c.valor && typeof c.valor === 'string') {
+      const v = c.valor.trim();
+      // Não pode ser o próprio LID nem grupo
+      if (!v.endsWith('@lid') && !v.endsWith('@g.us')) {
+        const digitos = v.split('@')[0].split(':')[0].replace(/\D/g, '');
+        if (digitos.length >= 10 && digitos.length <= 15 && digitos !== lidLimpo) {
+          numeroTelefoneReal = digitos;
+          campoOrigemNumero = c.campo;
+          break;
+        }
+      }
+    }
+  }
+
+  // Se o JID não é @lid e não é grupo, o próprio remoteJid contém o número de telefone
+  if (!isLid && !isGrupo && remetenteOrigem && !numeroTelefoneReal) {
+    const digitos = remetenteOrigem.split('@')[0].split(':')[0].replace(/\D/g, '');
+    if (digitos.length >= 10 && digitos.length <= 15) {
+      numeroTelefoneReal = digitos;
+      campoOrigemNumero = 'key.remoteJid';
+    }
   }
 
   // 3. EXTRAÇÃO DO TEXTO DA MENSAGEM
@@ -188,16 +298,49 @@ export async function processarEventoEvolution(
     };
   }
 
-  // 4. VERIFICAÇÃO DO NÚMERO AUTORIZADO
-  const usuarioAutorizado = await buscarUsuarioPorNumero(remetenteRaw);
+  // 4. VERIFICAÇÃO DO USUÁRIO AUTORIZADO
+  let usuarioAutorizado: UsuarioWhatsApp | null = null;
+
+  // 1ª Prioridade: busca pelo número real encontrado em senderPn ou outros campos da Evolution
+  if (numeroTelefoneReal) {
+    usuarioAutorizado = await buscarUsuarioPorNumero(numeroTelefoneReal, lidLimpo || undefined);
+    if (usuarioAutorizado) {
+      console.log(
+        `[Webhook WhatsApp 📱] Remetente @lid resolvido para telefone "${numeroTelefoneReal}" via campo [${campoOrigemNumero}].`
+      );
+    }
+  }
+
+  // 2ª Prioridade: busca por mapeamento manual de LID em data/usuarios.json ou Supabase
+  if (!usuarioAutorizado && lidLimpo) {
+    usuarioAutorizado = await buscarUsuarioPorNumero(lidCompleto || lidLimpo, lidLimpo);
+    if (usuarioAutorizado) {
+      console.log(
+        `[Webhook WhatsApp 🆔] Remetente autorizado pelo mapeamento de LID ("${lidLimpo}") para o usuário "${usuarioAutorizado.nome}".`
+      );
+    }
+  }
+
+  // 3ª Prioridade: busca direta caso seja JID numérico tradicional (@s.whatsapp.net)
+  if (!usuarioAutorizado && remetenteOrigem && !isLid) {
+    usuarioAutorizado = await buscarUsuarioPorNumero(remetenteOrigem);
+  }
 
   if (!usuarioAutorizado) {
     const dataHora = new Date().toLocaleString('pt-BR');
     console.warn(
-      `[Webhook WhatsApp 🚫] Mensagem recusada em ${dataHora} | Número não autorizado: ${remetenteRaw} | Origem: ${ipOrigem}`
+      `[Webhook WhatsApp 🚫] Mensagem recusada em ${dataHora} | Remetente não autorizado: ${remetenteOrigem} ${
+        isLid ? `(LID: ${lidLimpo || 'desconhecido'})` : ''
+      } | Origem: ${ipOrigem}`
     );
 
-    // Resposta curta e fixa, SEM chamar a IA
+    if (isLid) {
+      console.warn(
+        `[Webhook WhatsApp 💡] Dica: Para autorizar este LID manualmente, adicione '"lid": "${lidLimpo}"' ao usuário correspondente em data/usuarios.json.`
+      );
+    }
+
+    // Resposta curta e fixa para o mesmo identificador de onde veio a mensagem (remoteJid @lid)
     return {
       sucesso: false,
       status: 'recusado',
