@@ -10,6 +10,7 @@
     "dev": "concurrently -n \"BACKEND,FRONTEND\" -c \"cyan,green\" \"npm --prefix server run dev\" \"npm --prefix client run dev\"",
     "dev:server": "npm --prefix server run dev",
     "dev:client": "npm --prefix client run dev",
+    "test": "tsx server/src/scripts/testar_regressao_cofre_upload_indexacao.ts",
     "install:all": "npm install && npm --prefix server install && npm --prefix client install"
   },
   "devDependencies": {
