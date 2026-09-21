@@ -80,7 +80,7 @@ export const ContactDetails: React.FC<ContactDetailsProps> = ({
     for (const msg of conversa.mensagens) {
       if (msg.remetente === 'assistente' && msg.anexos) {
         for (const anexo of msg.anexos) {
-          if (anexo.tipo === 'pdf' || anexo.tipo === 'arquivo') {
+          if (anexo.tipo === 'pdf' || anexo.tipo === 'arquivo' || anexo.tipo === 'imagem') {
             lista.push({
               id: `${msg.id}-${anexo.nome?.trim()}`,
               titulo: (anexo.titulo || anexo.nome || '').trim(),

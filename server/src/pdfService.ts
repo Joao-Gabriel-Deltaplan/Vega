@@ -121,11 +121,14 @@ export async function processarEntregaDocumento(
   if (dados.arquivo) {
     const nomeArquivo = path.basename(docCorrespondente?.arquivo || dados.arquivo).trim();
     const caminho = path.join(ARQUIVOS_DIR, nomeArquivo);
+    const ext = path.extname(nomeArquivo).toLowerCase();
+    const isImagem = ['.png', '.jpg', '.jpeg', '.webp'].includes(ext);
+    const tipoAnexo: 'imagem' | 'pdf' | 'arquivo' = isImagem ? 'imagem' : (ext === '.pdf' ? 'pdf' : 'arquivo');
 
     if (fs.existsSync(caminho)) {
       const stats = fs.statSync(caminho);
       anexo = {
-        tipo: 'pdf',
+        tipo: tipoAnexo,
         url: `/arquivos/${encodeURIComponent(nomeArquivo)}`,
         nome: nomeArquivo,
         titulo: titulo.trim(),
@@ -137,13 +140,13 @@ export async function processarEntregaDocumento(
     } else {
       // Arquivo está no Supabase Storage (ou em nuvem)
       anexo = {
-        tipo: 'pdf',
+        tipo: tipoAnexo,
         url: `/arquivos/${encodeURIComponent(nomeArquivo)}`,
         nome: nomeArquivo,
         titulo: titulo.trim(),
         titular: docCorrespondente?.titular?.trim(),
         dataCadastro: docCorrespondente?.dataCadastro || new Date().toLocaleDateString('pt-BR'),
-        tamanho: docCorrespondente?.tamanho || 'PDF',
+        tamanho: docCorrespondente?.tamanho || (isImagem ? 'Imagem' : 'PDF'),
         visibilidade: docCorrespondente?.visibilidade,
       };
     }
@@ -186,8 +189,11 @@ export async function processarEntregaDocumento(
 export async function criarAnexoParaDocumento(doc: DocumentoRegistro): Promise<Anexo> {
   const nomeArquivo = path.basename(doc.arquivo).trim();
   const caminho = path.join(ARQUIVOS_DIR, nomeArquivo);
+  const ext = path.extname(nomeArquivo).toLowerCase();
+  const isImagem = ['.png', '.jpg', '.jpeg', '.webp'].includes(ext);
+  const tipoAnexo: 'imagem' | 'pdf' | 'arquivo' = isImagem ? 'imagem' : (ext === '.pdf' ? 'pdf' : 'arquivo');
 
-  let tamanho = doc.tamanho || 'PDF';
+  let tamanho = doc.tamanho || (isImagem ? 'Imagem' : 'PDF');
   if (fs.existsSync(caminho)) {
     try {
       const stats = fs.statSync(caminho);
@@ -196,7 +202,7 @@ export async function criarAnexoParaDocumento(doc: DocumentoRegistro): Promise<A
   }
 
   return {
-    tipo: 'pdf',
+    tipo: tipoAnexo,
     url: `/arquivos/${encodeURIComponent(nomeArquivo)}`,
     nome: nomeArquivo,
     titulo: doc.titulo.trim(),

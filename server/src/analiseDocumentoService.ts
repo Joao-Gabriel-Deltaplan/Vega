@@ -1,11 +1,14 @@
+import path from 'path';
+import OpenAI from 'openai';
 import { extractText } from 'unpdf';
 import { AnaliseDocumentoResponse, VisibilidadeDoc } from './types.js';
 import { extrairCamposTitularDeDocumento } from './extracaoTitularService.js';
+import { extrairTextoImagemComVisao } from './indexador/indexadorService.js';
 
 /**
- * Analisa o arquivo enviado (pelo nome e conteúdo do PDF quando disponível)
- * de forma 100% local, sem chamada a nenhuma API ou modelo externo de IA.
- * O texto extraído é utilizado apenas em memória para detecção de regras e descartado.
+ * Analisa o arquivo enviado (pelo nome e conteúdo do PDF ou imagem quando disponível).
+ * Para PDFs com texto vetorial, extrai diretamente. Para imagens ou PDFs escaneados,
+ * utiliza visão quando apropriado para sugerir metadados cadastrais com máxima precisão.
  */
 export async function analisarDocumentoParaCofre(dados: {
   nomeArquivo: string;
@@ -40,19 +43,39 @@ export async function analisarDocumentoParaCofre(dados: {
   nomeLower
     .split(/\s+/)
     .map((p) => p.replace(/[.,;:!?]/g, ''))
-    .filter((p) => p.length >= 3 && !['pdf', 'png', 'jpg', 'jpeg', 'doc', 'docx', 'para', 'com'].includes(p))
+    .filter((p) => p.length >= 3 && !['pdf', 'png', 'jpg', 'jpeg', 'webp', 'doc', 'docx', 'para', 'com'].includes(p))
     .forEach((p) => apelidosSet.add(p));
 
-  // Extração de texto em memória caso seja PDF com base64
+  // Extração de texto em memória caso seja PDF ou Imagem com base64
   let textoExtraido = '';
-  if (base64 && (dados.mimeType === 'application/pdf' || nomeArquivo.toLowerCase().endsWith('.pdf'))) {
+  const isPdf = dados.mimeType === 'application/pdf' || nomeArquivo.toLowerCase().endsWith('.pdf');
+  const isImagem = dados.mimeType?.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(nomeArquivo);
+
+  if (base64 && isPdf) {
     try {
       const base64Limpo = base64.replace(/^data:.*?;base64,/, '');
       const buffer = Buffer.from(base64Limpo, 'base64');
       const { text } = await extractText(new Uint8Array(buffer), { mergePages: true });
       textoExtraido = (text || '').toUpperCase();
     } catch (err) {
-      // Se falhar a extração do PDF (arquivo corrompido, protegido ou imagem pura), segue com o nome do arquivo
+      textoExtraido = '';
+    }
+  } else if (base64 && isImagem) {
+    try {
+      const apiKey = process.env.OPENAI_API_KEY?.trim();
+      if (apiKey) {
+        const openai = new OpenAI({ apiKey });
+        const base64Limpo = base64.replace(/^data:.*?;base64,/, '');
+        const buffer = Buffer.from(base64Limpo, 'base64');
+        const ext = path.extname(nomeArquivo).toLowerCase();
+        let mime = dados.mimeType || 'image/jpeg';
+        if (ext === '.png') mime = 'image/png';
+        else if (ext === '.webp') mime = 'image/webp';
+        else if (ext === '.jpg' || ext === '.jpeg') mime = 'image/jpeg';
+        const txt = await extrairTextoImagemComVisao(buffer, mime, openai);
+        textoExtraido = (txt || '').toUpperCase();
+      }
+    } catch (err) {
       textoExtraido = '';
     }
   }

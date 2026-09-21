@@ -490,6 +490,8 @@ export async function atualizarDocumento(
     if (dados.silenciarAlertas !== undefined) payload.silenciar_alertas = dados.silenciarAlertas;
     if (dados.trechoValidade !== undefined) payload.trecho_validade = dados.trechoValidade;
     if (dados.storagePath !== undefined) payload.storage_path = dados.storagePath.trim();
+    if (dados.statusIndexacao !== undefined) payload.status_indexacao = dados.statusIndexacao;
+    if (dados.erroIndexacao !== undefined) payload.erro_indexacao = dados.erroIndexacao || null;
 
     // Busca se é UUID ou id_legado
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);

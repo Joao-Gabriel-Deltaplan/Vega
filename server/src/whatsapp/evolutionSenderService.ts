@@ -1,3 +1,4 @@
+import path from 'path';
 import { Anexo } from '../types.js';
 import { obterBufferArquivo, gerarSignedUrlArquivo } from '../utils/storageUtils.js';
 
@@ -193,9 +194,13 @@ export async function enviarMediaEvolution(
       metodo = 'base64';
     }
 
+    const ext = path.extname(nomeLimpo).toLowerCase();
+    const isImage = mimeType?.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.webp'].includes(ext);
+    const mediatype = isImage ? 'image' : 'document';
+
     const body = {
       number: numeroNormalizado,
-      mediatype: 'document',
+      mediatype,
       mimetype: mimeType,
       caption: legenda || nomeLimpo,
       media: mediaParam,
@@ -203,7 +208,7 @@ export async function enviarMediaEvolution(
     };
 
     console.log(
-      `[Evolution API 📎] Iniciando envio do documento "${nomeLimpo}" para ${numeroNormalizado} via [${metodo}]...`
+      `[Evolution API 📎] Iniciando envio do arquivo "${nomeLimpo}" (${mediatype}) para ${numeroNormalizado} via [${metodo}]...`
     );
 
     const response = await fetch(url, {
@@ -308,7 +313,12 @@ export async function enviarRespostaCompletaWhatsApp(
         // 1. Obtém buffer do arquivo para checar tamanho real
         const arquivo = await obterBufferArquivo(nomeDoc);
         const tamanhoBytes = arquivo?.buffer ? arquivo.buffer.length : 0;
-        const contentType = arquivo?.contentType || 'application/pdf';
+        const ext = path.extname(nomeDoc).toLowerCase();
+        let mimePadrao = 'application/pdf';
+        if (ext === '.png') mimePadrao = 'image/png';
+        else if (ext === '.jpg' || ext === '.jpeg') mimePadrao = 'image/jpeg';
+        else if (ext === '.webp') mimePadrao = 'image/webp';
+        const contentType = arquivo?.contentType || mimePadrao;
 
         console.log(
           `[Evolution API 📄] Processando anexo "${nomeDoc}" | Tamanho: ${(tamanhoBytes / 1024).toFixed(1)} KB`

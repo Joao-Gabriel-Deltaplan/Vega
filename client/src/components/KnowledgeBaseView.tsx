@@ -385,11 +385,11 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
       return;
     }
 
-    // Aceita apenas PDF ou imagem
+    // Aceita apenas PDF ou imagem (.png, .jpg, .jpeg, .webp)
     const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-    const isImg = file.type.startsWith('image/');
+    const isImg = file.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(file.name);
     if (!isPdf && !isImg) {
-      setErroUpload('Formato não suportado. Por favor envie arquivos PDF ou imagens (.png, .jpg, .webp).');
+      setErroUpload('Formato não suportado. Por favor envie arquivos PDF ou imagens (.png, .jpg, .jpeg, .webp).');
       return;
     }
 
@@ -525,7 +525,8 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
         setMensagemSucessoDoc(`Documento "${novoDoc.titulo}" cadastrado com sucesso no cofre!`);
         setTimeout(() => setMensagemSucessoDoc(''), 3500);
       } else {
-        setErroUpload('Erro ao salvar documento no cofre.');
+        const erroJson = await res.json().catch(() => ({}));
+        setErroUpload(erroJson.erro || 'Erro ao salvar documento no cofre. Verifique o formato ou tente novamente.');
       }
     } catch (err) {
       console.error('Erro ao cadastrar documento:', err);
@@ -741,6 +742,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   // Renderizador reutilizável de cards de documento
   const renderCardDocumento = (doc: DocumentoRegistro) => {
     const isPdf = doc.arquivo.toLowerCase().endsWith('.pdf');
+    const isImg = /\.(png|jpe?g|webp)$/i.test(doc.arquivo);
 
     return (
       <div
@@ -751,13 +753,27 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
           {/* Cabeçalho do Card com Título e Badges */}
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-start gap-2.5 min-w-0">
-              <div className="p-2 rounded-lg bg-wa-bg border border-wa-border flex-shrink-0 mt-0.5">
-                {isPdf ? (
+              {isPdf ? (
+                <div className="p-2 rounded-lg bg-wa-bg border border-wa-border flex-shrink-0 mt-0.5">
                   <FileText className="w-5 h-5 text-rose-400" />
-                ) : (
-                  <ImageIcon className="w-5 h-5 text-sky-400" />
-                )}
-              </div>
+                </div>
+              ) : isImg ? (
+                <div className="w-10 h-10 rounded-lg bg-wa-bg border border-wa-border flex-shrink-0 mt-0.5 overflow-hidden flex items-center justify-center relative shadow-sm">
+                  <img
+                    src={`/arquivos/${encodeURIComponent(doc.arquivo)}`}
+                    alt={doc.titulo}
+                    className="w-full h-full object-cover rounded-lg"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLElement).style.display = 'none';
+                    }}
+                  />
+                  <ImageIcon className="w-5 h-5 text-sky-400 pointer-events-none" style={{ position: 'absolute', zIndex: 0 }} />
+                </div>
+              ) : (
+                <div className="p-2 rounded-lg bg-wa-bg border border-wa-border flex-shrink-0 mt-0.5">
+                  <FileText className="w-5 h-5 text-amber-400" />
+                </div>
+              )}
               <div className="min-w-0">
                 <h3 className="font-semibold text-sm text-wa-textPrimary truncate" title={doc.titulo}>
                   {doc.titulo}
@@ -800,6 +816,17 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
               </span>
             </div>
           </div>
+
+          {/* Alerta explicativo se a indexação falhar */}
+          {doc.statusIndexacao === 'erro' && (
+            <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/25 text-[11px] text-rose-300 flex items-start gap-1.5 shadow-sm">
+              <AlertCircle className="w-3.5 h-3.5 text-rose-400 flex-shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <span className="font-semibold text-rose-200">Falha na indexação: </span>
+                <span className="leading-tight break-words">{doc.erroIndexacao || 'Não foi possível extrair o conteúdo deste documento.'}</span>
+              </div>
+            </div>
+          )}
 
           {/* Metadados adicionais: Tipo, Titular e Selo de Validade */}
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-wa-textSecondary">
@@ -1166,7 +1193,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
               type="file"
               ref={fileInputRef}
               onChange={handleFileChange}
-              accept="application/pdf,image/*"
+              accept=".pdf,.png,.jpg,.jpeg,.webp,image/*,application/pdf"
               className="hidden"
             />
 
@@ -1202,7 +1229,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                       Arraste e solte o arquivo aqui ou <span className="text-wa-greenLight underline">clique para selecionar</span>
                     </p>
                     <p className="text-xs text-wa-textSecondary mt-1">
-                      Aceita documentos PDF e imagens (.png, .jpg, .webp) até <strong>50MB</strong>
+                      Aceita documentos PDF e imagens (.png, .jpg, .jpeg, .webp) até <strong>50MB</strong>
                     </p>
                   </div>
                 </div>

@@ -173,21 +173,91 @@ export function verificarSePaginaTemImagensRelevantes(caminhoPdf: string, numPag
 }
 
 /**
- * Extrai texto página por página do PDF, recorrendo a OCR com gpt-5.4-mini caso a página
- * contenha menos de 300 caracteres úteis, imagens relevantes ou apenas texto de capa da VEGA.
+ * Extrai texto completo de uma imagem usando gpt-5.4-mini com visão
+ */
+export async function extrairTextoImagemComVisao(
+  bufferImg: Buffer,
+  mimetype: string,
+  openai: OpenAI
+): Promise<string> {
+  const base64Img = bufferImg.toString('base64');
+  const chatModel = process.env.OPENAI_CHAT_MODEL?.trim() || 'gpt-5.4-mini';
+
+  let mediaType = mimetype.toLowerCase();
+  if (!mediaType.startsWith('image/')) {
+    mediaType = 'image/jpeg';
+  }
+
+  const response = await openai.chat.completions.create({
+    model: chatModel,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: 'Transcreva todo o texto contido nesta imagem de documento com máxima fidelidade, preservando nomes próprios, datas, números, filiação e campos estruturados. Não adicione comentários adicionais, apenas o texto transcrito.',
+          },
+          {
+            type: 'image_url',
+            image_url: {
+              url: `data:${mediaType};base64,${base64Img}`,
+              detail: 'high',
+            },
+          },
+        ],
+      },
+    ],
+    max_completion_tokens: 3000,
+    temperature: 0.1,
+  });
+
+  return response.choices[0]?.message?.content?.trim() || '';
+}
+
+/**
+ * Extrai texto página por página de documentos (PDF ou imagens JPG/PNG/WEBP),
+ * recorrendo a OCR com gpt-5.4-mini caso seja imagem ou página com pouco texto/escaneada.
  */
 export async function extrairTextoDocumento(
-  caminhoPdf: string,
+  caminhoArquivo: string,
   openai: OpenAI,
   docInfo?: { titulo: string; descricao?: string; titular?: string }
 ): Promise<{ paginas: PaginaExtraida[]; usouOCR: boolean; custoOcrUSD: number }> {
-  const buf = fs.readFileSync(caminhoPdf);
+  const ext = path.extname(caminhoArquivo).toLowerCase();
+  const isImagem = ['.jpg', '.jpeg', '.png', '.webp'].includes(ext);
+
+  // SUPORTE NATIVO A IMAGENS (JPG, JPEG, PNG, WEBP)
+  if (isImagem) {
+    console.log(`   [OCR com Visão 🖼️] Processando arquivo de imagem "${path.basename(caminhoArquivo)}" com gpt-5.4-mini...`);
+    const buf = fs.readFileSync(caminhoArquivo);
+    let mime = 'image/jpeg';
+    if (ext === '.png') mime = 'image/png';
+    else if (ext === '.webp') mime = 'image/webp';
+
+    const textoOcr = await extrairTextoImagemComVisao(buf, mime, openai);
+    const textoLimpo = limparTextoCapaVega(textoOcr);
+    const textoFinal =
+      textoLimpo ||
+      (docInfo
+        ? `${docInfo.titulo}. ${docInfo.descricao || ''} Titular: ${docInfo.titular || ''}`.trim()
+        : '');
+
+    return {
+      paginas: [{ pagina: 1, texto: textoFinal, usouOCR: true }],
+      usouOCR: true,
+      custoOcrUSD: 0.00055,
+    };
+  }
+
+  // SUPORTE A ARQUIVOS PDF
+  const buf = fs.readFileSync(caminhoArquivo);
   const { text: paginasTexto, totalPages: paginasDetectadas } = await extractText(new Uint8Array(buf), { mergePages: false });
   const paginasValidas = (Array.isArray(paginasTexto) ? paginasTexto : [paginasTexto]).map((b) => (b || '').trim());
 
   let totalPaginas = paginasValidas.length;
   try {
-    const outputInfo = execSync(`pdfinfo "${caminhoPdf}"`, { encoding: 'utf-8' });
+    const outputInfo = execSync(`pdfinfo "${caminhoArquivo}"`, { encoding: 'utf-8' });
     const matchP = outputInfo.match(/Pages:\s+(\d+)/i);
     if (matchP) totalPaginas = parseInt(matchP[1], 10);
   } catch {
@@ -202,19 +272,18 @@ export async function extrairTextoDocumento(
     const textoPagOriginal = paginasValidas[i - 1] || '';
     const textoPagLimpo = limparTextoCapaVega(textoPagOriginal);
 
-    // Regra atualizada: aplica OCR com visão se tiver imagens relevantes OU se a página tiver menos de 300 caracteres úteis!
+    // Regra: aplica OCR com visão se tiver imagens relevantes OU se a página tiver menos de 300 caracteres úteis!
     const caracteresUteis = textoPagLimpo.replace(/[^a-zA-Z0-9]/g, '').length;
-    const temImagensRelevantes = verificarSePaginaTemImagensRelevantes(caminhoPdf, i);
+    const temImagensRelevantes = verificarSePaginaTemImagensRelevantes(caminhoArquivo, i);
     const requerOCR = caracteresUteis < 300 || temImagensRelevantes;
 
     if (requerOCR) {
-      console.log(`   [OCR com Visão] Página ${i}/${totalPaginas} (caracteres úteis: ${caracteresUteis}, imagens relevantes: ${temImagensRelevantes ? 'SIM' : 'NÃO'}). Aplicando OCR com gpt-5.4-mini...`);
-      const textoOcrBruto = await executarOcrPaginaComVisao(caminhoPdf, i, openai);
+      console.log(`   [OCR com Visão 📄] Página ${i}/${totalPaginas} (caracteres úteis: ${caracteresUteis}, imagens: ${temImagensRelevantes ? 'SIM' : 'NÃO'}). Aplicando OCR com gpt-5.4-mini...`);
+      const textoOcrBruto = await executarOcrPaginaComVisao(caminhoArquivo, i, openai);
       const textoOcrFinal = limparTextoCapaVega(textoOcrBruto);
 
       let textoPagina = textoOcrFinal;
       if (!textoPagina || textoPagina.length < 15) {
-        // Se a página for apenas a capa/rodapé da VEGA, usa dados do documento do cofre
         textoPagina = docInfo ? `${docInfo.titulo}. ${docInfo.descricao || ''} Titular: ${docInfo.titular || ''}`.trim() : textoPagLimpo;
       }
 

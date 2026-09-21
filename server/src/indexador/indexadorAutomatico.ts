@@ -11,7 +11,12 @@ import {
   extrairCamposSugeridosFicha,
   salvarCamposSugeridosNoTitular,
 } from './indexadorService.js';
-import { obterTodosDocumentos, salvarDocumentos, obterTodosConhecimentos } from '../storage.js';
+import {
+  obterTodosDocumentos,
+  salvarDocumentos,
+  obterTodosConhecimentos,
+  atualizarDocumento,
+} from '../storage.js';
 import { DocumentoRegistro, ItemConhecimento } from '../types.js';
 import { atualizarValidadeDocumento } from '../vencimentos/alertaVencimentoService.js';
 import { obterBufferArquivo } from '../utils/storageUtils.js';
@@ -29,7 +34,7 @@ function calcularHashTexto(texto: string): string {
 }
 
 /**
- * Atualiza o status de indexação de um documento em data/documentos.json
+ * Atualiza o status de indexação de um documento diretamente no Supabase e em memória
  */
 async function atualizarStatusIndexacaoDoc(
   docId: string,
@@ -37,19 +42,12 @@ async function atualizarStatusIndexacaoDoc(
   erro?: string
 ): Promise<void> {
   try {
-    const docs = await obterTodosDocumentos();
-    const doc = docs.find((d) => d.id === docId);
-    if (doc) {
-      doc.statusIndexacao = status;
-      if (erro) {
-        doc.erroIndexacao = erro;
-      } else {
-        delete doc.erroIndexacao;
-      }
-      await salvarDocumentos(docs);
-    }
+    await atualizarDocumento(docId, {
+      statusIndexacao: status,
+      erroIndexacao: erro || '',
+    });
   } catch (err) {
-    console.error('[Indexador Automático] Erro ao atualizar status no JSON:', err);
+    console.error('[Indexador Automático] Erro ao atualizar status do documento:', err);
   }
 }
 
@@ -96,18 +94,8 @@ export async function indexarDocumentoBackground(doc: DocumentoRegistro): Promis
       const supabase = getSupabaseClient();
       const hashAtual = calcularHashBuffer(buffer);
 
-      // 1. Prevenção de duplicatas: remove registros antigos do mesmo arquivo no Supabase
-      const { data: docsAntigos } = await supabase
-        .from('documentos')
-        .select('id')
-        .eq('arquivo', doc.arquivo);
-
-      if (docsAntigos && docsAntigos.length > 0) {
-        for (const antigo of docsAntigos) {
-          await supabase.from('trechos').delete().eq('documento_id', antigo.id);
-          await supabase.from('documentos').delete().eq('id', antigo.id);
-        }
-      }
+      // 1. Limpeza de trechos antigos associados a este documento (sem apagar o documento!)
+      await supabase.from('trechos').delete().eq('documento_id', doc.id);
 
       // 2. Extração de texto (com OCR via visão se houver imagens relevantes ou < 300 caracteres úteis)
       const { paginas, usouOCR } = await extrairTextoDocumento(caminhoArquivo, openai, {
@@ -131,7 +119,7 @@ export async function indexarDocumentoBackground(doc: DocumentoRegistro): Promis
       const textosParaEmbedding = trechos.map((t) => t.conteudo);
       const embeddings = await gerarEmbeddingsEmLote(textosParaEmbedding, openai);
 
-      // 5. Inserção no Supabase
+      // 5. Atualiza o documento no Supabase com hash e vincula trechos ao doc.id existente
       const ehCorporativo = doc.titular?.toLowerCase().includes('delta') || !doc.titular;
       const pessoaId = ehCorporativo
         ? null
@@ -139,26 +127,19 @@ export async function indexarDocumentoBackground(doc: DocumentoRegistro): Promis
         ? 'tit_thomaz'
         : `tit_${doc.titular?.toLowerCase().replace(/\s+/g, '_')}`;
 
-      const { data: novoDocSupabase, error: errDoc } = await supabase
+      await supabase
         .from('documentos')
-        .insert({
-          titulo: doc.titulo,
-          arquivo: doc.arquivo,
+        .update({
           hash_arquivo: hashAtual,
-          tipo: doc.tipo || 'Documento',
           pessoa_id: pessoaId,
           corporativo: ehCorporativo,
-          visibilidade: doc.visibilidade || 'diretoria',
+          status_indexacao: 'indexado',
+          erro_indexacao: null,
         })
-        .select('id')
-        .single();
-
-      if (errDoc || !novoDocSupabase) {
-        throw new Error(`Erro ao salvar documento no Supabase: ${errDoc?.message}`);
-      }
+        .eq('id', doc.id);
 
       const payloadTrechos = trechos.map((t, idx) => ({
-        documento_id: novoDocSupabase.id,
+        documento_id: doc.id,
         pessoa_id: pessoaId,
         corporativo: ehCorporativo,
         pagina: t.pagina,
@@ -168,7 +149,6 @@ export async function indexarDocumentoBackground(doc: DocumentoRegistro): Promis
 
       const { error: errTrechos } = await supabase.from('trechos').insert(payloadTrechos);
       if (errTrechos) {
-        await supabase.from('documentos').delete().eq('id', novoDocSupabase.id);
         throw new Error(`Erro ao salvar trechos no Supabase: ${errTrechos?.message}`);
       }
 
