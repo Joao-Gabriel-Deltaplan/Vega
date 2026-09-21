@@ -1,7 +1,17 @@
 import React from 'react';
-import { Users, Brain, Settings, Bot, ShieldCheck, Bell, LogOut } from 'lucide-react';
+import {
+  MessageSquare,
+  Sparkles,
+  Users,
+  Brain,
+  Settings,
+  Bot,
+  ShieldCheck,
+  Bell,
+  LogOut,
+} from 'lucide-react';
 
-export type AbaNavegacao = 'conversas' | 'conhecimento' | 'admin';
+export type AbaNavegacao = 'whatsapp' | 'simulador' | 'usuarios' | 'conhecimento' | 'admin';
 
 interface NavigationSidebarProps {
   abaAtiva: AbaNavegacao;
@@ -28,67 +38,99 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
       <div className="flex flex-col items-center gap-6">
         <div
           className="w-10 h-10 rounded-xl bg-gradient-to-br from-wa-green to-emerald-700 flex items-center justify-center shadow-lg shadow-emerald-950/40 text-slate-950 font-bold"
-          title="Delta Plan Atendimento"
+          title="Delta Plan • VEGA Atendimento"
         >
           <Bot className="w-6 h-6 fill-slate-950" />
         </div>
 
         {/* Itens de Navegação */}
         <div className="flex flex-col items-center gap-2">
-          {/* Botão 1: Usuários e Documentos */}
+          {/* Aba 1: WhatsApp Real em Tempo Real */}
           <button
-            onClick={() => onSelecionarAba('conversas')}
-            title="Usuários e Documentos"
-            className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all relative group ${
-              abaAtiva === 'conversas'
+            onClick={() => onSelecionarAba('whatsapp')}
+            title="WhatsApp (Tempo Real)"
+            className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all relative group cursor-pointer ${
+              abaAtiva === 'whatsapp'
+                ? 'bg-wa-panel text-wa-greenLight shadow-md border-l-2 border-wa-green'
+                : 'text-wa-textSecondary hover:text-wa-textPrimary hover:bg-wa-panel/60'
+            }`}
+          >
+            <MessageSquare className="w-5 h-5" />
+            {totalNaoLidas > 0 && (
+              <span className="absolute -top-1 -right-1 bg-wa-green text-slate-950 text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center shadow-sm animate-pulse">
+                {totalNaoLidas}
+              </span>
+            )}
+            <span className="absolute left-16 bg-slate-900 text-white text-xs px-2.5 py-1 rounded-md shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
+              WhatsApp em Tempo Real
+            </span>
+          </button>
+
+          {/* Aba 2: Simulador da VEGA */}
+          <button
+            onClick={() => onSelecionarAba('simulador')}
+            title="Simulador da VEGA"
+            className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all relative group cursor-pointer ${
+              abaAtiva === 'simulador'
+                ? 'bg-wa-panel text-indigo-400 shadow-md border-l-2 border-indigo-500'
+                : 'text-wa-textSecondary hover:text-indigo-300 hover:bg-wa-panel/60'
+            }`}
+          >
+            <Sparkles className="w-5 h-5" />
+            <span className="absolute left-16 bg-slate-900 text-white text-xs px-2.5 py-1 rounded-md shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
+              Simulador da VEGA (Testes)
+            </span>
+          </button>
+
+          {/* Aba 3: Usuários Autorizados */}
+          <button
+            onClick={() => onSelecionarAba('usuarios')}
+            title="Usuários Autorizados"
+            className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all relative group cursor-pointer ${
+              abaAtiva === 'usuarios'
                 ? 'bg-wa-panel text-wa-greenLight shadow-md border-l-2 border-wa-green'
                 : 'text-wa-textSecondary hover:text-wa-textPrimary hover:bg-wa-panel/60'
             }`}
           >
             <Users className="w-5 h-5" />
-            {totalNaoLidas > 0 && (
-              <span className="absolute -top-1 -right-1 bg-wa-green text-slate-950 text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
-                {totalNaoLidas}
-              </span>
-            )}
-            <span className="absolute left-16 bg-slate-900 text-white text-xs px-2 py-1 rounded shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
-              Usuários e Documentos
+            <span className="absolute left-16 bg-slate-900 text-white text-xs px-2.5 py-1 rounded-md shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
+              Usuários Autorizados (Supabase)
             </span>
           </button>
 
-          {/* Botão 2: Base da VEGA (Conhecimento e Documentos) */}
+          {/* Aba 4: Base da VEGA (Conhecimento & Documentos) */}
           <button
             onClick={() => onSelecionarAba('conhecimento')}
             title="Base da VEGA"
-            className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all relative group ${
+            className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all relative group cursor-pointer ${
               abaAtiva === 'conhecimento'
                 ? 'bg-wa-panel text-wa-greenLight shadow-md border-l-2 border-wa-green'
                 : 'text-wa-textSecondary hover:text-wa-textPrimary hover:bg-wa-panel/60'
             }`}
           >
             <Brain className="w-5 h-5" />
-            <span className="absolute left-16 bg-slate-900 text-white text-xs px-2 py-1 rounded shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
-              Base da VEGA
+            <span className="absolute left-16 bg-slate-900 text-white text-xs px-2.5 py-1 rounded-md shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
+              Base da VEGA (Cofre & Conhecimento)
             </span>
           </button>
 
-          {/* Botão 3: Painel Admin */}
+          {/* Aba 5: Painel Admin */}
           <button
             onClick={() => onSelecionarAba('admin')}
             title="Painel de Administração"
-            className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all relative group ${
+            className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all relative group cursor-pointer ${
               abaAtiva === 'admin'
                 ? 'bg-wa-panel text-wa-greenLight shadow-md border-l-2 border-wa-green'
                 : 'text-wa-textSecondary hover:text-wa-textPrimary hover:bg-wa-panel/60'
             }`}
           >
             <Settings className="w-5 h-5" />
-            <span className="absolute left-16 bg-slate-900 text-white text-xs px-2 py-1 rounded shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
-              Painel Admin
+            <span className="absolute left-16 bg-slate-900 text-white text-xs px-2.5 py-1 rounded-md shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
+              Painel Admin (Custos & Métricas)
             </span>
           </button>
 
-          {/* Botão 4: Alertas de Vencimento de Documentos */}
+          {/* Botão 6: Alertas de Vencimento de Documentos */}
           <button
             onClick={onAbrirAlertas}
             title="Alertas de Vencimento"
@@ -100,7 +142,7 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
                 {totalAlertasVencimento}
               </span>
             )}
-            <span className="absolute left-16 bg-slate-900 text-white text-xs px-2 py-1 rounded shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
+            <span className="absolute left-16 bg-slate-900 text-white text-xs px-2.5 py-1 rounded-md shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
               Alertas de Vencimento {totalAlertasVencimento > 0 ? `(${totalAlertasVencimento} novos)` : ''}
             </span>
           </button>
@@ -115,7 +157,7 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
         >
           <ShieldCheck className="w-4 h-4 text-wa-green" />
           <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-wa-green border-2 border-[#0c1317]"></span>
-          <span className="absolute left-16 bg-slate-900 text-white text-xs px-2 py-1 rounded shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
+          <span className="absolute left-16 bg-slate-900 text-white text-xs px-2.5 py-1 rounded-md shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
             {nomeUsuario ? `${nomeUsuario} • Online` : 'Delta Admin • Online'}
           </span>
         </div>
@@ -128,7 +170,7 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
             className="w-9 h-9 rounded-xl flex items-center justify-center text-wa-textSecondary hover:text-rose-400 hover:bg-rose-500/10 transition-all relative group cursor-pointer"
           >
             <LogOut className="w-4 h-4" />
-            <span className="absolute left-16 bg-slate-900 text-white text-xs px-2 py-1 rounded shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
+            <span className="absolute left-16 bg-slate-900 text-white text-xs px-2.5 py-1 rounded-md shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
               Sair do Painel
             </span>
           </button>

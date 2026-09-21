@@ -53,46 +53,82 @@ function atualizarCacheNomes(nomes: string[]): void {
 // CONVERSAS (HISTÓRICO NO SUPABASE)
 // ==========================================
 
-export async function obterTodasConversas(): Promise<Conversa[]> {
+export async function obterTodasConversas(
+  filtro?: 'whatsapp' | 'simulador' | 'todos'
+): Promise<Conversa[]> {
   try {
     const supabase = getSupabaseClient();
-    const { data, error } = await supabase
+    let query = supabase
       .from('conversas')
       .select('id, contato, nao_lidas, ultima_atualizacao, mensagens')
       .order('ultima_atualizacao', { ascending: false });
+
+    const { data, error } = await query;
 
     if (error) {
       console.error('[Storage Supabase ⚠️] Erro ao obter conversas:', error);
       return [];
     }
 
-    return (data || []).map((c: any) => {
+    // Carrega usuários autorizados para enriquecer as conversas reais
+    let usuariosAutorizados: any[] = [];
+    try {
+      const { data: uData } = await supabase.from('usuarios').select('*');
+      if (uData) usuariosAutorizados = uData;
+    } catch (e) {
+      console.warn('[Storage Supabase ⚠️] Aviso ao carregar usuarios para enriquecimento:', e);
+    }
+
+    let conversasFiltradas = data || [];
+    if (filtro === 'whatsapp') {
+      conversasFiltradas = conversasFiltradas.filter((c: any) => typeof c.id === 'string' && c.id.startsWith('wa-'));
+    } else if (filtro === 'simulador') {
+      conversasFiltradas = conversasFiltradas.filter((c: any) => typeof c.id === 'string' && !c.id.startsWith('wa-'));
+    }
+
+    return conversasFiltradas.map((c: any) => {
       const contatoRaw = c.contato || {};
-      const nivel: NivelAcesso =
-        contatoRaw.nivelAcesso === 'diretoria' || contatoRaw.ficha?.nivelAcesso === 'diretoria'
-          ? 'diretoria'
-          : 'geral';
-      const cargo = contatoRaw.cargo || contatoRaw.ficha?.cargo || 'Colaborador';
-      const setor = normalizarSetor(contatoRaw.setor || contatoRaw.ficha?.setor);
-      const observacoes = contatoRaw.ficha?.observacoes || '';
+      const isWa = typeof c.id === 'string' && c.id.startsWith('wa-');
+
+      // Tenta cruzar com usuário autorizado da tabela usuarios
+      let usuarioMatch: any = null;
+      if (isWa) {
+        const telLimpo = (contatoRaw.telefone || c.id.replace('wa-', '')).replace(/\D/g, '');
+        usuarioMatch = usuariosAutorizados.find((u) => {
+          const uNum = (u.numero || '').replace(/\D/g, '');
+          return (
+            (uNum && (telLimpo.endsWith(uNum) || uNum.endsWith(telLimpo))) ||
+            (u.lid && (c.id.includes(u.lid) || (contatoRaw.telefone && contatoRaw.telefone.includes(u.lid))))
+          );
+        });
+      }
+
+      const nomeContato = usuarioMatch?.nome || contatoRaw.nome || 'Usuário Delta';
+      const telefoneContato = usuarioMatch?.numero ? `+${usuarioMatch.numero}` : (contatoRaw.telefone || '+55 (11) 99999-0000');
+      const perfilEfetivo = usuarioMatch ? usuarioMatch.perfil : (contatoRaw.nivelAcesso === 'diretoria' ? 'admin' : 'comum');
+      const nivel: NivelAcesso = perfilEfetivo === 'admin' ? 'diretoria' : 'geral';
+      const cargo = usuarioMatch ? (perfilEfetivo === 'admin' ? 'Administrador' : 'Colaborador') : (contatoRaw.cargo || contatoRaw.ficha?.cargo || 'Colaborador');
+      const setor = normalizarSetor(usuarioMatch ? (perfilEfetivo === 'admin' ? 'Diretoria' : 'Administrativo') : (contatoRaw.setor || contatoRaw.ficha?.setor));
+      const observacoes = contatoRaw.ficha?.observacoes || (usuarioMatch ? `WhatsApp ${usuarioMatch.perfil} (ID: ${usuarioMatch.id})` : '');
+      const titularVinculado = usuarioMatch?.pessoa_id || contatoRaw.titularVinculado;
 
       return {
         id: c.id,
         contato: {
-          id: contatoRaw.id || `cont-${Date.now()}`,
-          nome: contatoRaw.nome || 'Usuário Delta',
-          telefone: contatoRaw.telefone || '+55 (11) 99999-0000',
-          avatarCor: contatoRaw.avatarCor || '#00a884',
+          id: contatoRaw.id || (usuarioMatch ? `ct-${usuarioMatch.id}` : `cont-${Date.now()}`),
+          nome: nomeContato,
+          telefone: telefoneContato,
+          avatarCor: isWa ? '#25D366' : (contatoRaw.avatarCor || '#00a884'),
           cargo,
           setor,
           nivelAcesso: nivel,
-          titularVinculado: contatoRaw.titularVinculado,
+          titularVinculado,
           ficha: {
             cargo,
             setor,
             nivelAcesso: nivel,
             observacoes,
-            titularVinculado: contatoRaw.titularVinculado,
+            titularVinculado,
           },
         },
         naoLidas: c.nao_lidas || 0,
@@ -103,6 +139,21 @@ export async function obterTodasConversas(): Promise<Conversa[]> {
   } catch (err) {
     console.error('[Storage Supabase ⚠️] Erro ao ler conversas:', err);
     return [];
+  }
+}
+
+export async function removerConversa(id: string): Promise<boolean> {
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from('conversas').delete().eq('id', id);
+    if (error) {
+      console.error(`[Storage Supabase ⚠️] Erro ao remover conversa ${id}:`, error);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error(`[Storage Supabase ⚠️] Erro ao deletar conversa ${id}:`, err);
+    return false;
   }
 }
 
@@ -653,54 +704,60 @@ const CORES_AVATAR = [
   '#14b8a6',
 ];
 
-export async function criarConversaTeste(): Promise<Conversa> {
-  const nomeAleatorio = NOMES_BRASILEIROS[Math.floor(Math.random() * NOMES_BRASILEIROS.length)];
-  const cargoAleatorio = CARGOS_TESTE[Math.floor(Math.random() * CARGOS_TESTE.length)];
-  const setorAleatorio = SETORES_VALIDOS[Math.floor(Math.random() * SETORES_VALIDOS.length)];
-  const nivelAcessoAleatorio: NivelAcesso = Math.random() < 0.5 ? 'diretoria' : 'geral';
-  const sufixoTelefone = Math.floor(1000 + Math.random() * 9000);
-  const corAleatoria = CORES_AVATAR[Math.floor(Math.random() * CORES_AVATAR.length)];
-
-  const novoId = `conv-${Date.now()}`;
-  const novoContatoId = `cont-${Date.now()}`;
-
-  const mensagemInicial =
-    nivelAcessoAleatorio === 'diretoria'
-      ? 'Olá Vega, você pode me enviar o Contrato Social consolidado da empresa?'
-      : 'Olá Vega, onde encontro o Regimento Interno e Código de Conduta da Delta Plan?';
+export async function criarConversaSimulador(usuarioSelecionado?: {
+  id?: string;
+  nome?: string;
+  numero?: string;
+  perfil?: 'admin' | 'comum';
+  pessoa_id?: string | null;
+}): Promise<Conversa> {
+  const novoId = `sim-${Date.now()}`;
+  const novoContatoId = usuarioSelecionado?.id ? `ct-${usuarioSelecionado.id}` : `cont-${Date.now()}`;
+  const nome = usuarioSelecionado?.nome || 'Usuário Simulado';
+  const numero = usuarioSelecionado?.numero || '+55 (11) 98000-0000';
+  const perfil = usuarioSelecionado?.perfil || 'admin';
+  const nivelAcesso: NivelAcesso = perfil === 'admin' ? 'diretoria' : 'geral';
+  const cargo = perfil === 'admin' ? 'Administrador' : 'Colaborador';
+  const setor: SetorUsuario = perfil === 'admin' ? 'Diretoria' : 'Administrativo';
 
   const novaConversa: Conversa = {
     id: novoId,
     contato: {
       id: novoContatoId,
-      nome: nomeAleatorio,
-      telefone: `+55 (11) 9${Math.floor(8000 + Math.random() * 1000)}-${sufixoTelefone}`,
-      avatarCor: corAleatoria,
-      cargo: cargoAleatorio,
-      setor: setorAleatorio,
-      nivelAcesso: nivelAcessoAleatorio,
+      nome,
+      telefone: numero,
+      avatarCor: '#6366f1',
+      cargo,
+      setor,
+      nivelAcesso,
+      titularVinculado: usuarioSelecionado?.pessoa_id || undefined,
       ficha: {
-        cargo: cargoAleatorio,
-        setor: setorAleatorio,
-        nivelAcesso: nivelAcessoAleatorio,
-        observacoes: 'Usuário de teste criado no painel.',
+        cargo,
+        setor,
+        nivelAcesso,
+        observacoes: 'Sessão do Simulador da VEGA',
+        titularVinculado: usuarioSelecionado?.pessoa_id || undefined,
       },
     },
     naoLidas: 0,
     ultimaAtualizacao: new Date().toISOString(),
     mensagens: [
       {
-        id: `msg-${Date.now()}-1`,
-        remetente: 'cliente',
-        nomeRemetente: nomeAleatorio,
+        id: `sim-msg-${Date.now()}-1`,
+        remetente: 'assistente',
+        nomeRemetente: 'VEGA',
         horario: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-        texto: mensagemInicial,
+        texto: `Olá, ${nome}! Estou pronta para simular seu atendimento. O que você gostaria de consultar ou testar?`,
       },
     ],
   };
 
   await salvarConversa(novaConversa);
   return novaConversa;
+}
+
+export async function criarConversaTeste(): Promise<Conversa> {
+  return criarConversaSimulador();
 }
 
 // ==========================================

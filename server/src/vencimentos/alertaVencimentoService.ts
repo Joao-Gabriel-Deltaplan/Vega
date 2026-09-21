@@ -10,6 +10,10 @@ import {
   atualizarDocumento,
 } from '../storage.js';
 import { getSupabaseClient } from '../db/supabaseClient.js';
+import {
+  obterAgoraBrasilia,
+  obterAgoraIsoUtc,
+} from '../utils/dataHoraUtils.js';
 
 /**
  * Lê todos os alertas gravados na tabela alertas_vencimento do Supabase
@@ -94,16 +98,17 @@ export function parseDataBr(dataStr: string): Date | null {
 }
 
 /**
- * Calcula os dias restantes até a data de validade em relação ao dia de hoje
+ * Calcula os dias restantes até a data de validade em relação ao dia de hoje no fuso de Brasília
  */
-export function calcularDiasRestantes(dataValidadeStr: string, dataReferencia: Date = new Date()): number | null {
+export function calcularDiasRestantes(dataValidadeStr: string, dataReferencia?: Date): number | null {
   const dValidade = parseDataBr(dataValidadeStr);
   if (!dValidade) return null;
 
+  const dataBase = dataReferencia || obterAgoraBrasilia().dataRef;
   const ref = new Date(
-    dataReferencia.getFullYear(),
-    dataReferencia.getMonth(),
-    dataReferencia.getDate(),
+    dataBase.getFullYear(),
+    dataBase.getMonth(),
+    dataBase.getDate(),
     0, 0, 0, 0
   );
 
@@ -245,7 +250,7 @@ export async function atualizarValidadeDocumento(
       valorAnterior: validadeAnterior,
       valorNovo: novaValidade || '',
       corrigidoPor: autor || 'Chat VEGA',
-      dataHora: new Date().toISOString(),
+      dataHora: obterAgoraIsoUtc(),
     };
   }
 
@@ -284,10 +289,12 @@ export async function executarRotinaVerificacaoVencimentos(): Promise<{
   totalAlertas: number;
   totalNaoLidos: number;
 }> {
-  console.log('\n[Vencimentos ⏱️] Executando rotina diária de checagem de validades...');
+  console.log('\n[Vencimentos ⏱️] Executando rotina diária de checagem de validades (Fuso: America/Sao_Paulo)...');
   const documentos = await obterTodosDocumentos();
   const alertasExistentes = await obterTodosAlertas();
-  const agora = new Date();
+  const agoraBrasilia = obterAgoraBrasilia();
+  const agora = agoraBrasilia.dataRef;
+  const agoraIsoUtc = obterAgoraIsoUtc();
   const alertasGerados: AlertaVencimento[] = [];
 
   for (const doc of documentos) {
@@ -338,7 +345,7 @@ export async function executarRotinaVerificacaoVencimentos(): Promise<{
       diasRestantes,
       status,
       prazoAlerta,
-      dataGeracao: agora.toISOString(),
+      dataGeracao: agoraIsoUtc,
       lido: false,
       notificadoWhatsApp: false,
     };
@@ -367,7 +374,7 @@ export async function executarRotinaVerificacaoVencimentos(): Promise<{
 
 /**
  * Função para sincronizar as validades extraídas com IA dos documentos existentes:
- * - CNH Thomaz: 26/08/2034 ("4b VALIDADE 26/08/2034")
+ * - CNH do Titular: 26/08/2034 ("4b VALIDADE 26/08/2034")
  * - CREA-SP: 30/06/2015 ("Válida até: 30/06/2015")
  * - CRT: sem validade temporal (Carteira de Identidade Profissional permanente)
  * - Demais: sem validade
@@ -375,8 +382,8 @@ export async function executarRotinaVerificacaoVencimentos(): Promise<{
 export async function sincronizarValidadesDocumentosExistentes(): Promise<DocumentoRegistro[]> {
   const documentos = await obterTodosDocumentos();
   const titulares = await obterTodosTitulares();
-  const thomaz = titulares.find((t) => t.id === 'tit_thomaz');
-  const validadeCnhFicha = thomaz?.campos.validadeCnh?.valor?.trim();
+  const titularPrincipal = titulares.find((t) => t.id === 'tit_thomaz') || titulares[0];
+  const validadeCnhFicha = titularPrincipal?.campos.validadeCnh?.valor?.trim();
 
   let alterados = 0;
 

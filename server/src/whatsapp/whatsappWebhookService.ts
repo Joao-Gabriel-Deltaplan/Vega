@@ -29,6 +29,9 @@ import { processarMensagemChat } from '../chat/chatOrquestrador.js';
 import { salvarRastro } from '../rastros/rastroService.js';
 import { Contato, Mensagem, RastroRegistro, NivelAcesso, SetorUsuario, Anexo } from '../types.js';
 import { ASSISTENTE } from '../config/assistente.js';
+import { eventosPainel } from '../eventos/eventosService.js';
+import { salvarAudioOriginalStorage } from './audioStorageService.js';
+import { formatarHorarioBrasilia, obterAgoraIsoUtc } from '../utils/dataHoraUtils.js';
 
 // Cache em memória para deduplicação de mensagens recebidas
 // Mapeia key.id -> timestamp de recebimento
@@ -357,6 +360,8 @@ export async function processarEventoEvolution(
   let modeloTranscricao = '';
   let tempoTranscricaoMs = 0;
   let metodoDownload: 'base64_payload' | 'api_download' | undefined;
+  let audioOriginalBuffer: Buffer | undefined;
+  let audioOriginalMimetype: string | undefined;
 
   const infoAudio = extrairInfoAudio(evento);
 
@@ -401,6 +406,8 @@ export async function processarEventoEvolution(
     let downloadAudio;
     try {
       downloadAudio = await obterAudioBufferEvolution(evento, configEvolution);
+      audioOriginalBuffer = downloadAudio.buffer;
+      audioOriginalMimetype = downloadAudio.mimetype;
     } catch (err: any) {
       console.error('[Webhook WhatsApp ❌] Falha ao obter áudio da Evolution API:', err?.message || err);
       return {
@@ -488,6 +495,27 @@ export async function processarEventoEvolution(
     tipoMensagem = 'texto';
   }
 
+  // 4.1 SALVA O ÁUDIO ORIGINAL NO SUPABASE STORAGE (BUCKET PRIVADO)
+  let audioStoragePath: string | undefined;
+  let audioMimeType: string | undefined;
+
+  if (infoAudio.isAudio && audioOriginalBuffer && audioOriginalMimetype) {
+    try {
+      const caminhoSalvo = await salvarAudioOriginalStorage(
+        audioOriginalBuffer,
+        audioOriginalMimetype,
+        normalizarNumeroCanonica(usuarioAutorizado.numero),
+        mensagemId || `msg_${Date.now()}`
+      );
+      if (caminhoSalvo) {
+        audioStoragePath = caminhoSalvo;
+        audioMimeType = audioOriginalMimetype;
+      }
+    } catch (err) {
+      console.warn('[Webhook WhatsApp ⚠️] Falha ao persistir áudio no Storage:', err);
+    }
+  }
+
   // 5. REMETENTE AUTORIZADO: PROCESSAMENTO COM A VEGA (IA E COFRE)
   const inicioProcessamento = Date.now();
   console.log(
@@ -531,18 +559,24 @@ export async function processarEventoEvolution(
     await salvarConversa(conversa);
   }
 
-  // Registra mensagem do usuário no histórico (com marcador de áudio se aplicável)
+  // Registra mensagem do usuário no histórico com fuso de Brasília e timestamp ISO UTC
   const msgUsuario: Mensagem = {
     id: mensagemId || `wa-msg-${Date.now()}-user`,
     remetente: 'cliente',
     nomeRemetente: contato.nome,
-    horario: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+    horario: formatarHorarioBrasilia(),
+    timestamp: obterAgoraIsoUtc(),
     texto: textoMensagem,
     tipoMensagem,
     duracaoAudioSegundos,
     audioOriginal: tipoMensagem === 'audio',
+    audioStoragePath,
+    audioMimeType,
   };
-  await adicionarMensagem(conversaId, msgUsuario);
+  const conversaAtualizadaUsuario = await adicionarMensagem(conversaId, msgUsuario);
+  if (conversaAtualizadaUsuario) {
+    eventosPainel.emitirNovaMensagem(conversaId, msgUsuario, conversaAtualizadaUsuario);
+  }
 
   // Obtém os documentos disponíveis para o nível de acesso do usuário
   const docsDisponiveis = await obterDocumentosPorNivelAcesso(contato.nivelAcesso);
@@ -610,14 +644,18 @@ export async function processarEventoEvolution(
     id: assistenteMsgId,
     remetente: 'assistente',
     nomeRemetente: ASSISTENTE.nomeExibicao,
-    horario: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+    horario: formatarHorarioBrasilia(),
+    timestamp: obterAgoraIsoUtc(),
     texto: textoResposta,
     origem: resultadoChat.origem,
     rastro: resultadoChat.rastro,
     documentoOferecidoId: resultadoChat.documentoOferecidoId,
     anexos: resultadoChat.anexos,
   };
-  await adicionarMensagem(conversaId, msgAssistente);
+  const conversaAtualizadaAssistente = await adicionarMensagem(conversaId, msgAssistente);
+  if (conversaAtualizadaAssistente) {
+    eventosPainel.emitirNovaMensagem(conversaId, msgAssistente, conversaAtualizadaAssistente);
+  }
 
   const tempoTotal = Date.now() - inicioProcessamento;
   console.log(`[Webhook WhatsApp 🤖] Resposta gerada pela VEGA em ${tempoTotal} ms para "${usuarioAutorizado.nome}".`);

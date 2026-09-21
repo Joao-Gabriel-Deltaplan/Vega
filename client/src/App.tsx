@@ -5,22 +5,27 @@ import { ChatThread } from './components/ChatThread.js';
 import { ContactDetails } from './components/ContactDetails.js';
 import { KnowledgeBaseView } from './components/KnowledgeBaseView.js';
 import { AdminView } from './components/AdminView.js';
+import { UsuariosView } from './components/UsuariosView.js';
+import { SimuladorView } from './components/SimuladorView.js';
 import { ModalAlertasVencimento } from './components/ModalAlertasVencimento.js';
 import { Conversa, Contato, Anexo, Mensagem, SetorUsuario, AlertaVencimento } from './types/chat.js';
-import { Users, Bot } from 'lucide-react';
+import { MessageSquare, Bot } from 'lucide-react';
 import { LoginView } from './components/LoginView.js';
+import { useSSE } from './hooks/useSSE.js';
 
 export function App() {
   // Estados de Autenticação
   const [autenticado, setAutenticado] = useState<boolean | null>(null);
   const [usuarioLogado, setUsuarioLogado] = useState<{ userId: string; nome: string; role: string } | null>(null);
 
-  const [abaAtiva, setAbaAtiva] = useState<AbaNavegacao>('conversas');
+  // Navegação: 'whatsapp' é a aba principal
+  const [abaAtiva, setAbaAtiva] = useState<AbaNavegacao>('whatsapp');
   const [subAbaBaseVega, setSubAbaBaseVega] = useState<'conhecimento' | 'documentos'>('conhecimento');
+
+  // Conversas do WhatsApp Real
   const [conversas, setConversas] = useState<Conversa[]>([]);
   const [conversaAtivaId, setConversaAtivaId] = useState<string | null>(null);
   const [carregandoConversas, setCarregandoConversas] = useState(true);
-  const [carregandoTeste, setCarregandoTeste] = useState(false);
 
   // Estados de Alertas de Vencimento
   const [alertasVencimento, setAlertasVencimento] = useState<AlertaVencimento[]>([]);
@@ -67,7 +72,7 @@ export function App() {
     checarAutenticacao();
   }, []);
 
-  // Atualiza alertas periodicamente apenas se estiver autenticado
+  // Atualiza alertas periodicamente se autenticado
   useEffect(() => {
     if (autenticado) {
       carregarAlertasVencimento();
@@ -119,15 +124,15 @@ export function App() {
   const [emStreaming, setEmStreaming] = useState(false);
   const [textoStreaming, setTextoStreaming] = useState('');
 
-  // Total de mensagens não lidas
+  // Total de mensagens não lidas no WhatsApp
   const totalNaoLidas = useMemo(() => {
     return conversas.reduce((acc, curr) => acc + (curr.naoLidas || 0), 0);
   }, [conversas]);
 
-  // Busca lista inicial de conversas
-  const carregarConversas = useCallback(async () => {
+  // Busca lista de conversas reais do WhatsApp
+  const carregarConversasWhatsApp = useCallback(async () => {
     try {
-      const res = await fetch('/api/conversas');
+      const res = await fetch('/api/conversas?tipo=whatsapp');
       if (res.status === 401) {
         setAutenticado(false);
         return;
@@ -142,7 +147,7 @@ export function App() {
         });
       }
     } catch (err) {
-      console.error('Erro ao buscar conversas:', err);
+      console.error('Erro ao buscar conversas do WhatsApp:', err);
     } finally {
       setCarregandoConversas(false);
     }
@@ -150,9 +155,68 @@ export function App() {
 
   useEffect(() => {
     if (autenticado) {
-      carregarConversas();
+      carregarConversasWhatsApp();
     }
-  }, [autenticado, carregarConversas]);
+  }, [autenticado, carregarConversasWhatsApp]);
+
+  // Hook SSE para atualização em tempo real
+  useSSE({
+    habilitado: Boolean(autenticado),
+    onNovaMensagem: (conversaId, msg, conversaAtualizada) => {
+      // Processa apenas mensagens do WhatsApp real
+      if (!conversaId.startsWith('wa-')) return;
+
+      console.log(`[SSE 💬] Mensagem em tempo real recebida para ${conversaId}:`, msg.texto);
+
+      setConversas((prev) => {
+        const existe = prev.some((c) => c.id === conversaId);
+        let lista: Conversa[];
+
+        if (existe) {
+          lista = prev.map((c) => {
+            if (c.id === conversaId) {
+              const novasMsgs = [...c.mensagens, msg];
+              const naoLidas =
+                conversaId === conversaAtivaId
+                  ? 0
+                  : msg.remetente === 'cliente'
+                  ? (c.naoLidas || 0) + 1
+                  : c.naoLidas;
+
+              return {
+                ...c,
+                ultimaAtualizacao: new Date().toISOString(),
+                naoLidas,
+                mensagens: novasMsgs,
+                contato: conversaAtualizada?.contato || c.contato,
+              };
+            }
+            return c;
+          });
+        } else if (conversaAtualizada) {
+          lista = [conversaAtualizada, ...prev];
+        } else {
+          return prev;
+        }
+
+        // Ordena com a mais recente no topo
+        return lista.sort((a, b) => {
+          const tA = new Date(a.ultimaAtualizacao || 0).getTime();
+          const tB = new Date(b.ultimaAtualizacao || 0).getTime();
+          return tB - tA;
+        });
+      });
+    },
+    onConversaAtualizada: (conversaAtualizada) => {
+      if (!conversaAtualizada.id.startsWith('wa-')) return;
+      setConversas((prev) =>
+        prev.map((c) => (c.id === conversaAtualizada.id ? conversaAtualizada : c))
+      );
+    },
+    onAlertaVencimento: () => {
+      carregarAlertasVencimento();
+    },
+  });
 
   // Função para efetuar logout
   const handleLogout = async () => {
@@ -189,34 +253,25 @@ export function App() {
     }
   };
 
-  // Criar nova conversa de teste
-  const handleNovaConversaTeste = async () => {
-    setCarregandoTeste(true);
-    try {
-      const res = await fetch('/api/conversas/nova-teste', { method: 'POST' });
-      if (res.ok) {
-        const nova: Conversa = await res.json();
-        setConversas((prev) => [nova, ...prev]);
-        setConversaAtivaId(nova.id);
-        setTextoStreaming('');
-        setEmStreaming(false);
-      }
-    } catch (err) {
-      console.error('Erro ao criar conversa de teste:', err);
-    } finally {
-      setCarregandoTeste(false);
-    }
-  };
-
-  // Atualizar perfil do usuário interno (Cargo / Setor / Nível de Acesso / Observações)
+  // Atualizar perfil do usuário interno
   const handleAtualizarContato = async (dadosAtualizados: Partial<Contato>) => {
     if (!conversaAtiva) return;
 
-    const novoNivel = dadosAtualizados.nivelAcesso || dadosAtualizados.ficha?.nivelAcesso || conversaAtiva.contato.nivelAcesso || 'geral';
-    const novoCargo = dadosAtualizados.cargo || dadosAtualizados.ficha?.cargo || conversaAtiva.contato.cargo || '';
-    const novoSetor = (dadosAtualizados.setor || dadosAtualizados.ficha?.setor || conversaAtiva.contato.setor || 'Administrativo') as SetorUsuario;
+    const novoNivel =
+      dadosAtualizados.nivelAcesso ||
+      dadosAtualizados.ficha?.nivelAcesso ||
+      conversaAtiva.contato.nivelAcesso ||
+      'geral';
+    const novoCargo =
+      dadosAtualizados.cargo ||
+      dadosAtualizados.ficha?.cargo ||
+      conversaAtiva.contato.cargo ||
+      '';
+    const novoSetor = (dadosAtualizados.setor ||
+      dadosAtualizados.ficha?.setor ||
+      conversaAtiva.contato.setor ||
+      'Administrativo') as SetorUsuario;
 
-    // Atualização otimista no estado local
     setConversas((prev) =>
       prev.map((c) => {
         if (c.id === conversaAtiva.id) {
@@ -253,7 +308,7 @@ export function App() {
     }
   };
 
-  // Enviar mensagem com Streaming SSE
+  // Enviar mensagem no WhatsApp pelo painel
   const handleEnviarMensagem = async (texto: string, anexos?: Anexo[], documentoId?: string) => {
     if (!conversaAtiva || emStreaming) return;
 
@@ -261,7 +316,7 @@ export function App() {
     const agora = new Date();
     const horarioAtual = agora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
-    // 1. Mensagem otimista do cliente na tela
+    // Mensagem otimista do cliente na tela
     const msgUsuarioOtimista: Mensagem = {
       id: `temp-${Date.now()}`,
       remetente: 'cliente',
@@ -284,7 +339,6 @@ export function App() {
       })
     );
 
-    // Inicia estado de streaming
     setEmStreaming(true);
     setTextoStreaming('');
 
@@ -327,7 +381,6 @@ export function App() {
                 acumuladorTexto += evento.delta;
                 setTextoStreaming(acumuladorTexto);
               } else if (evento.tipo === 'fim') {
-                // Mensagem final do assistente (já processada e com eventuais PDFs gerados)
                 const msgFinal: Mensagem = evento.mensagem;
 
                 setConversas((prev) =>
@@ -350,7 +403,7 @@ export function App() {
                 setEmStreaming(false);
               }
             } catch {
-              // Fragmento incompleto de chunk JSON
+              // Fragmento JSON incompleto
             }
           }
         }
@@ -400,16 +453,14 @@ export function App() {
         nomeUsuario={usuarioLogado?.nome}
       />
 
-      {/* Visualização de acordo com a aba selecionada */}
-      {abaAtiva === 'conversas' && (
+      {/* Aba 1: WhatsApp Real em Tempo Real */}
+      {abaAtiva === 'whatsapp' && (
         <div className="flex flex-1 h-full overflow-hidden">
-          {/* Coluna 1: Lista de Conversas (~300px) */}
+          {/* Coluna 1: Lista de Conversas Reais (~320px) */}
           <SidebarConversas
             conversas={conversas}
             conversaAtivaId={conversaAtivaId}
             onSelecionarConversa={handleSelecionarConversa}
-            onNovaConversaTeste={handleNovaConversaTeste}
-            carregandoTeste={carregandoTeste}
           />
 
           {/* Coluna 2: Thread do Chat (flex-1) */}
@@ -419,7 +470,9 @@ export function App() {
               emStreaming={emStreaming}
               textoStreaming={textoStreaming}
               onEnviarMensagem={handleEnviarMensagem}
-              onSelecionarOpcaoDocumento={(docId, titulo) => handleEnviarMensagem(titulo, undefined, docId)}
+              onSelecionarOpcaoDocumento={(docId, titulo) =>
+                handleEnviarMensagem(titulo, undefined, docId)
+              }
               onNavegarParaDocumentos={() => {
                 setSubAbaBaseVega('documentos');
                 setAbaAtiva('conhecimento');
@@ -428,15 +481,15 @@ export function App() {
           ) : (
             <div className="flex-1 h-full flex flex-col items-center justify-center bg-wa-chat text-wa-textSecondary p-6 text-center">
               <div className="w-16 h-16 rounded-2xl bg-wa-green/10 flex items-center justify-center mb-4">
-                <Users className="w-8 h-8 text-wa-green animate-pulse" />
+                <MessageSquare className="w-8 h-8 text-wa-green animate-pulse" />
               </div>
               <h2 className="text-xl font-semibold text-wa-textPrimary mb-1">
-                Delta Plan • Cofre Corporativo & VEGA
+                WhatsApp Delta Plan • VEGA
               </h2>
               <p className="text-sm max-w-md text-wa-textSecondary">
                 {carregandoConversas
-                  ? 'Carregando usuários...'
-                  : 'Selecione um usuário ao lado ou crie um novo usuário de teste para consultar documentos do cofre.'}
+                  ? 'Carregando conversas do WhatsApp...'
+                  : 'Nenhuma conversa selecionada. As mensagens trocadas pelo WhatsApp espelham aqui em tempo real.'}
               </p>
             </div>
           )}
@@ -451,12 +504,18 @@ export function App() {
         </div>
       )}
 
-      {/* Aba 2: Base da VEGA (Conhecimento & Documentos) */}
+      {/* Aba 2: Simulador da VEGA */}
+      {abaAtiva === 'simulador' && <SimuladorView />}
+
+      {/* Aba 3: Gestão de Usuários Autorizados */}
+      {abaAtiva === 'usuarios' && <UsuariosView />}
+
+      {/* Aba 4: Base da VEGA (Conhecimento & Documentos) */}
       {abaAtiva === 'conhecimento' && (
         <KnowledgeBaseView subAbaInicial={subAbaBaseVega} />
       )}
 
-      {/* Aba 3: Painel Admin */}
+      {/* Aba 5: Painel Admin */}
       {abaAtiva === 'admin' && <AdminView conversas={conversas} />}
 
       {/* Modal de Alertas de Vencimento de Documentos */}

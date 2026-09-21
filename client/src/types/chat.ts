@@ -44,6 +44,10 @@ export interface Mensagem {
   tipoMensagem?: 'texto' | 'audio';
   duracaoAudioSegundos?: number;
   audioOriginal?: boolean;
+  audioStoragePath?: string;
+  audioMimeType?: string;
+  audioExpirado?: boolean;
+  timestamp?: string;
 }
 
 export interface FichaContato {
@@ -52,6 +56,19 @@ export interface FichaContato {
   nivelAcesso: NivelAcesso;
   observacoes: string;
   titularVinculado?: string;
+}
+
+export interface UsuarioAutorizado {
+  id: string;
+  numero: string;
+  lid?: string | null;
+  nome: string;
+  perfil: 'admin' | 'comum';
+  pessoa_id?: string | null;
+  nomeTitularVinculado?: string | null;
+  ativo: boolean;
+  dataCadastro?: string;
+  createdAt?: string;
 }
 
 export interface DocumentoRegistro {

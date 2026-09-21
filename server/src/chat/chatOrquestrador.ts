@@ -38,6 +38,10 @@ import {
   silenciarAlertasDocumento,
   parseDataBr,
 } from '../vencimentos/alertaVencimentoService.js';
+import {
+  obterAgoraBrasilia,
+  obterAgoraIsoUtc,
+} from '../utils/dataHoraUtils.js';
 
 export type IntencaoChat =
   | 'saudacao_ou_vago'
@@ -827,8 +831,10 @@ export async function responderComTrechos(
     )
     .join('\n\n---\n\n');
 
+  const agoraBrasilia = obterAgoraBrasilia();
   const systemPrompt = `Você é a assistente corporativa VEGA da Delta Plan.
 Sua tarefa é responder à pergunta do usuário usando ESTRITAMENTE as informações presentes nos trechos fornecidos abaixo.
+Data e hora atual de referência: ${agoraBrasilia.dataHoraStr} (Fuso Oficial de Brasília - America/Sao_Paulo). Ao se referir a prazos ou termos como "hoje", "este mês" ou "ano atual", use sempre essa referência.
 
 REGRAS OBRIGATÓRIAS:
 1. Se a informação NÃO estiver contida nem mencionada nos trechos, responda exatamente: "Não encontrei nos documentos."
@@ -1963,7 +1969,8 @@ export async function processarMensagemChat(dados: {
   if (intencao === 'consultar_vencimentos') {
     const inicioVenc = Date.now();
     const todosDocs = documentosDisponiveis.length > 0 ? documentosDisponiveis : await obterTodosDocumentos();
-    const agora = new Date();
+    const agoraBrasilia = obterAgoraBrasilia();
+    const agora = agoraBrasilia.dataRef;
 
     // Filtra documentos que possuem data de validade cadastrada
     const docsComValidade = todosDocs
@@ -1989,7 +1996,7 @@ export async function processarMensagemChat(dados: {
         const d = parseDataBr(item.doc.dataValidade!);
         if (!d) return false;
         return (
-          (d.getMonth() === agora.getMonth() && d.getFullYear() === agora.getFullYear()) ||
+          (d.getMonth() === (agoraBrasilia.mes - 1) && d.getFullYear() === agoraBrasilia.ano) ||
           (item.diasRestantes >= 0 && item.diasRestantes <= 30)
         );
       });

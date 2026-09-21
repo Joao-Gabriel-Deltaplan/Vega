@@ -12,6 +12,8 @@ import {
   adicionarMensagem,
   marcarComoLida,
   criarConversaTeste,
+  criarConversaSimulador,
+  removerConversa,
   obterTodosDocumentos,
   obterDocumentosPorNivelAcesso,
   adicionarDocumento,
@@ -108,6 +110,21 @@ import {
 } from './utils/storageUtils.js';
 import { autenticarPainel, validarTokenSessao } from './auth/authService.js';
 import { authMiddleware } from './auth/authMiddleware.js';
+import { eventosPainel } from './eventos/eventosService.js';
+import {
+  listarUsuariosAutorizados,
+  criarUsuarioAutorizado,
+  atualizarUsuarioAutorizado,
+  removerUsuarioAutorizado,
+} from './usuarios/usuarioService.js';
+import {
+  obterAudioOriginalStorage,
+  limparAudiosExpirados,
+} from './whatsapp/audioStorageService.js';
+import {
+  formatarHorarioBrasilia,
+  obterAgoraIsoUtc,
+} from './utils/dataHoraUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -254,10 +271,108 @@ app.get('/arquivos/:nome', async (req, res) => {
 // Fallback estático
 app.use('/arquivos', express.static(ARQUIVOS_DIR));
 
-// GET /api/conversas
+// ================================================================
+// ENDPOINT SSE (SERVER-SENT EVENTS) EM TEMPO REAL
+// ================================================================
+
+// GET /api/eventos (Stream SSE autenticado via cookie de sessão do painel)
+app.get('/api/eventos', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Impede buffering em Nginx / proxies reversos
+  if (typeof (res as any).flushHeaders === 'function') {
+    (res as any).flushHeaders();
+  }
+
+  eventosPainel.adicionarCliente(res, req.usuario?.userId);
+});
+
+// ================================================================
+// ROTAS DE USUÁRIOS AUTORIZADOS (TABELA 'usuarios' DO SUPABASE)
+// ================================================================
+
+// GET /api/usuarios (Lista todos os usuários autorizados do Supabase)
+app.get('/api/usuarios', async (_req, res) => {
+  try {
+    const usuarios = await listarUsuariosAutorizados();
+    res.json(usuarios);
+  } catch (erro) {
+    console.error('Erro ao listar usuários:', erro);
+    res.status(500).json({ erro: 'Erro ao listar usuários autorizados' });
+  }
+});
+
+// POST /api/usuarios (Cadastra novo usuário autorizado)
+app.post('/api/usuarios', async (req, res) => {
+  try {
+    const { nome, numero, perfil, pessoa_id, lid, ativo } = req.body;
+    if (!nome || !numero) {
+      return res.status(400).json({ erro: 'Nome e número são obrigatórios.' });
+    }
+
+    const novoUsuario = await criarUsuarioAutorizado({
+      nome,
+      numero,
+      perfil,
+      pessoa_id,
+      lid,
+      ativo,
+    });
+
+    if (!novoUsuario) {
+      return res.status(500).json({ erro: 'Não foi possível cadastrar o usuário no Supabase.' });
+    }
+
+    eventosPainel.emitirUsuarioAlterado('criado', novoUsuario);
+    res.status(201).json(novoUsuario);
+  } catch (erro) {
+    console.error('Erro ao cadastrar usuário:', erro);
+    res.status(500).json({ erro: 'Erro ao cadastrar usuário' });
+  }
+});
+
+// PUT /api/usuarios/:id (Atualiza dados do usuário autorizado)
+app.put('/api/usuarios/:id', async (req, res) => {
+  try {
+    const usuarioAtualizado = await atualizarUsuarioAutorizado(req.params.id, req.body);
+    if (!usuarioAtualizado) {
+      return res.status(404).json({ erro: 'Usuário não encontrado' });
+    }
+
+    eventosPainel.emitirUsuarioAlterado('atualizado', usuarioAtualizado);
+    res.json(usuarioAtualizado);
+  } catch (erro) {
+    console.error('Erro ao atualizar usuário:', erro);
+    res.status(500).json({ erro: 'Erro ao atualizar usuário' });
+  }
+});
+
+// DELETE /api/usuarios/:id (Remove usuário autorizado)
+app.delete('/api/usuarios/:id', async (req, res) => {
+  try {
+    const sucesso = await removerUsuarioAutorizado(req.params.id);
+    if (!sucesso) {
+      return res.status(404).json({ erro: 'Usuário não encontrado ou não pôde ser removido' });
+    }
+
+    eventosPainel.emitirUsuarioAlterado('removido', { id: req.params.id });
+    res.json({ sucesso: true });
+  } catch (erro) {
+    console.error('Erro ao remover usuário:', erro);
+    res.status(500).json({ erro: 'Erro ao remover usuário' });
+  }
+});
+
+// ================================================================
+// ROTAS DE CONVERSAS (WHATSAPP REAL & SIMULADOR)
+// ================================================================
+
+// GET /api/conversas (Filtra por tipo: whatsapp | simulador | todos)
 app.get('/api/conversas', async (req, res) => {
   try {
-    const conversas = await obterTodasConversas();
+    const tipo = req.query.tipo as 'whatsapp' | 'simulador' | 'todos' | undefined;
+    const conversas = await obterTodasConversas(tipo);
     res.json(conversas);
   } catch (erro) {
     console.error('Erro ao buscar conversas:', erro);
@@ -272,8 +387,12 @@ app.get('/api/conversas/:id', async (req, res) => {
     if (!conversa) {
       return res.status(404).json({ erro: 'Conversa não encontrada' });
     }
-    // Marca como lida ao abrir
-    await marcarComoLida(req.params.id);
+    // Marca como lida ao abrir se houver não lidas e notifica SSE
+    if (conversa.naoLidas > 0) {
+      await marcarComoLida(req.params.id);
+      conversa.naoLidas = 0;
+      eventosPainel.emitirConversaAtualizada(conversa);
+    }
     res.json(conversa);
   } catch (erro) {
     console.error('Erro ao buscar conversa:', erro);
@@ -281,10 +400,49 @@ app.get('/api/conversas/:id', async (req, res) => {
   }
 });
 
-// POST /api/conversas/nova-teste
+// POST /api/conversas/simulador (Cria conversa no simulador escolhendo usuário)
+app.post('/api/conversas/simulador', async (req, res) => {
+  try {
+    const { usuarioId, nome, numero, perfil, pessoa_id } = req.body;
+    const novaConversa = await criarConversaSimulador({
+      id: usuarioId,
+      nome,
+      numero,
+      perfil,
+      pessoa_id,
+    });
+    eventosPainel.emitirConversaAtualizada(novaConversa);
+    res.status(201).json(novaConversa);
+  } catch (erro) {
+    console.error('Erro ao criar conversa no simulador:', erro);
+    res.status(500).json({ erro: 'Erro ao criar conversa no simulador' });
+  }
+});
+
+// DELETE /api/conversas/:id (Exclui conversa, ex: limpeza do simulador)
+app.delete('/api/conversas/:id', async (req, res) => {
+  try {
+    const sucesso = await removerConversa(req.params.id);
+    if (!sucesso) {
+      return res.status(404).json({ erro: 'Conversa não encontrada' });
+    }
+    eventosPainel.emitirEvento({
+      tipo: 'conversa_atualizada',
+      conversaId: req.params.id,
+      dados: { acao: 'removida', id: req.params.id },
+    });
+    res.json({ sucesso: true });
+  } catch (erro) {
+    console.error('Erro ao remover conversa:', erro);
+    res.status(500).json({ erro: 'Erro ao remover conversa' });
+  }
+});
+
+// POST /api/conversas/nova-teste (Alias mantido)
 app.post('/api/conversas/nova-teste', async (req, res) => {
   try {
     const novaConversa = await criarConversaTeste();
+    eventosPainel.emitirConversaAtualizada(novaConversa);
     res.status(201).json(novaConversa);
   } catch (erro) {
     console.error('Erro ao criar conversa de teste:', erro);
@@ -1022,6 +1180,38 @@ app.get('/api/rastros/:id', async (req: express.Request, res: express.Response) 
   }
 });
 
+// ============================================================================
+// STREAMING DE ÁUDIO ORIGINAL DO WHATSAPP (STORAGE PRIVADO SUPABASE)
+// Rota estritamente protegida pela sessão do painel (authMiddleware)
+// ============================================================================
+app.get('/api/audios/*', async (req: express.Request, res: express.Response) => {
+  try {
+    const rawPath = req.params[0] || (req.url.replace(/^\/api\/audios\/?/, '').split('?')[0]);
+    if (!rawPath) {
+      return res.status(400).json({ erro: 'Caminho do arquivo de áudio não fornecido.' });
+    }
+
+    const chave = decodeURIComponent(rawPath).replace(/^\/+/, '');
+    const resultado = await obterAudioOriginalStorage(chave);
+
+    if (!resultado) {
+      return res.status(404).json({
+        erro: 'audio_expirado',
+        mensagem: 'Áudio expirado ou não encontrado. Os arquivos de áudio são mantidos por até 30 dias no servidor.',
+      });
+    }
+
+    res.setHeader('Content-Type', resultado.contentType);
+    res.setHeader('Content-Length', resultado.buffer.length);
+    res.setHeader('Content-Disposition', 'inline');
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    return res.status(200).send(resultado.buffer);
+  } catch (err: any) {
+    console.error('[API Áudios ❌] Erro ao servir arquivo de áudio:', err?.message || err);
+    return res.status(500).json({ erro: 'Erro interno ao recuperar arquivo de áudio.' });
+  }
+});
+
 // Função auxiliar para emitir chunks de texto simulando streaming SSE
 async function streamTextoChunks(res: express.Response, assistenteMsgId: string, texto: string) {
   const pedacos = texto.split(' ');
@@ -1056,14 +1246,15 @@ app.post('/api/mensagens', async (req, res) => {
   const vocativo = primeiroNome ? `, ${primeiroNome}` : '';
 
   // 1. Cria a mensagem do usuário (se não for clique direto em documento sem texto)
-  const agora = new Date();
-  const horarioAtual = agora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const horarioAtual = formatarHorarioBrasilia();
+  const timestampAtual = obterAgoraIsoUtc();
 
   const msgUsuario: Mensagem = {
     id: `msg-${Date.now()}-user`,
     remetente: 'cliente',
     nomeRemetente: conversa.contato.nome,
     horario: horarioAtual,
+    timestamp: timestampAtual,
     texto: texto || (documentoId ? 'Consultar documento selecionado' : ''),
     anexos: anexos || [],
   };
@@ -1124,7 +1315,8 @@ app.post('/api/mensagens', async (req, res) => {
       id: assistenteMsgId,
       remetente: 'assistente',
       nomeRemetente: ASSISTENTE.nomeExibicao,
-      horario: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+      horario: formatarHorarioBrasilia(),
+      timestamp: obterAgoraIsoUtc(),
       texto: textoFinal,
       anexos: anexosGerados.length > 0 ? anexosGerados : undefined,
       origem,
@@ -1220,9 +1412,12 @@ app.listen(PORT, '0.0.0.0', () => {
     console.error('[Startup ❌] Erro ao sincronizar com Supabase:', erro);
   });
 
-  // Limpeza automática de rastros com mais de 30 dias ao iniciar o servidor
+  // Limpeza automática de rastros e áudios com mais de 30 dias ao iniciar o servidor
   limparRastrosAntigos().catch((erro) => {
     console.warn('[Startup ⚠️] Erro na limpeza de rastros antigos:', erro);
+  });
+  limparAudiosExpirados(30).catch((erro) => {
+    console.warn('[Startup ⚠️] Erro na limpeza inicial de áudios expirados:', erro);
   });
 
   // Sincronização de validades de documentos e rotina diária de alertas de vencimento ao iniciar
@@ -1232,11 +1427,14 @@ app.listen(PORT, '0.0.0.0', () => {
       console.warn('[Vencimentos ⚠️] Erro na inicialização da rotina de vencimentos:', erro);
     });
 
-  // Executa a limpeza de rastros com mais de 30 dias uma vez por dia (a cada 24 horas)
+  // Executa a limpeza de rastros e áudios com mais de 30 dias uma vez por dia (a cada 24 horas)
   const INTERVALO_DIARIO_MS = 24 * 60 * 60 * 1000;
   setInterval(() => {
     limparRastrosAntigos().catch((erro) => {
       console.warn('[RastroService ⚠️] Erro na rotina diária de limpeza de rastros antigos:', erro);
+    });
+    limparAudiosExpirados(30).catch((erro) => {
+      console.warn('[Storage Áudios ⚠️] Erro na rotina diária de limpeza de áudios expirados:', erro);
     });
   }, INTERVALO_DIARIO_MS);
 

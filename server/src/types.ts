@@ -60,6 +60,10 @@ export interface Mensagem {
   tipoMensagem?: 'texto' | 'audio';
   duracaoAudioSegundos?: number;
   audioOriginal?: boolean;
+  audioStoragePath?: string;
+  audioMimeType?: string;
+  audioExpirado?: boolean;
+  timestamp?: string;
 }
 
 export interface FichaContato {
