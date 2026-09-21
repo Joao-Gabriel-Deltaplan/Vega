@@ -116,14 +116,17 @@ export function resolverEscolhaDocumentosOferecidos(
     return [docsOferecidos[2]];
   }
 
-  // 5. Escolha pelo nome / título do documento
+  // 5. Escolha pelo nome / título / titular do documento
   const matches = docsOferecidos.filter((d) => {
     const tNorm = d.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const arqNorm = d.arquivo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const titularNorm = (d.titular || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const palavrasTitulo = tNorm.split(/\s+/).filter((w) => w.length >= 3);
+    const palavrasTitular = titularNorm.split(/\s+/).filter((w) => w.length >= 3);
     return (
       msgLimpa.includes(tNorm) ||
       palavrasTitulo.some((p) => msgLimpa.includes(p)) ||
+      (titularNorm && (msgLimpa.includes(titularNorm) || palavrasTitular.some((p) => msgLimpa.includes(p)))) ||
       (d.tipo && msgLimpa.includes(d.tipo.toLowerCase())) ||
       (d.apelidos && d.apelidos.some((ap) => msgLimpa.includes(ap.toLowerCase())))
     );
@@ -135,6 +138,69 @@ export function resolverEscolhaDocumentosOferecidos(
 
   return null;
 }
+
+/**
+ * Extrai a saudação inicial do usuário se houver ("bom dia", "boa tarde", "olá", etc.)
+ */
+export function extrairSaudacaoUsuario(msg: string): string {
+  const m = (msg || '').trim().toLowerCase();
+  if (/^bom\s*dia\b/i.test(m)) return 'Bom dia';
+  if (/^boa\s*tarde\b/i.test(m)) return 'Boa tarde';
+  if (/^boa\s*noite\b/i.test(m)) return 'Boa noite';
+  if (/^(ol[aá]|oi)\b/i.test(m)) return 'Olá';
+  return '';
+}
+
+/**
+ * Monta o prefixo de saudação para a resposta (ex.: "Bom dia, Joao! ")
+ */
+export function montarPrefixoSaudacao(msg: string, primeiroNome?: string): string {
+  const saudacao = extrairSaudacaoUsuario(msg);
+  if (!saudacao) return '';
+  if (primeiroNome && primeiroNome.trim().length > 0) {
+    return `${saudacao}, ${primeiroNome.trim()}! `;
+  }
+  return `${saudacao}! `;
+}
+
+/**
+ * Formata a pergunta de ambiguidade de titulares ("Encontrei certidões de: 1) Thomaz, 2) André. Qual delas?")
+ */
+export function formatarPerguntaAmbiguoTitular(
+  tipoPedido: string,
+  titulares: string[],
+  prefixoSaudacao: string = ''
+): string {
+  const lista = titulares.map((t, idx) => `${idx + 1}) ${t}`).join(', ');
+  const tipoNorm = (tipoPedido || 'documento').trim().toLowerCase();
+
+  let pronome = 'Qual deles?';
+  let termo = tipoNorm;
+
+  if (tipoNorm.includes('certid')) {
+    pronome = 'Qual delas?';
+    termo = tipoNorm.replace(/certid[aã]o/gi, 'certidões');
+  } else if (tipoNorm === 'cnh' || tipoNorm.includes('carteira')) {
+    pronome = 'Qual delas?';
+    termo = tipoNorm === 'cnh' ? 'CNHs' : tipoNorm.replace(/carteira/gi, 'carteiras');
+  } else if (tipoNorm.includes('procura')) {
+    pronome = 'Qual delas?';
+    termo = tipoNorm.replace(/procura[cç][aã]o/gi, 'procurações');
+  } else if (tipoNorm.includes('declara')) {
+    pronome = 'Qual delas?';
+    termo = tipoNorm.replace(/declara[cç][aã]o/gi, 'declarações');
+  } else {
+    pronome = 'Qual deles?';
+  }
+
+  // Capitaliza a primeira letra do termo se não tiver prefixo
+  if (!prefixoSaudacao) {
+    termo = termo.charAt(0).toUpperCase() + termo.slice(1);
+  }
+
+  return `${prefixoSaudacao}Encontrei ${termo} de: ${lista}. ${pronome}`;
+}
+
 
 
 export interface TrechoEncontrado {
@@ -481,7 +547,9 @@ Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
 
 REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
 1. "saudacao_ou_vago": Apenas saudações puras ("oi", "olá", "bom dia") ou pedidos vagos ("me ajuda"). NUNCA use para perguntas com assunto ou listas.
-2. "pedir_arquivo": Pedido de envio de arquivo físico/PDF ("me manda a CNH", "envia o PDF do CREA", "baixa o arquivo", "qual é a CNH do Thomaz", "esses 2 documentos, preciso do anexo dos 2", "pode mandar", "os dois").
+2. "pedir_arquivo": Pedido de envio de arquivo físico/documento ("me manda a CNH", "envia o PDF do CREA", "baixa o arquivo", "qual é a CNH do Thomaz", "esses 2 documentos, preciso do anexo dos 2", "pode mandar", "os dois", "me manda o passaporte", "bom dia, me envia a certidão").
+   - Mensagens com saudação + pedido ("bom dia, me envia X", "oi, preciso do CREA", "boa tarde, me manda a CNH") DEVEM SER SEMPRE classificadas como "pedir_arquivo"!
+   - Todo pedido de envio de documento, certidão ou comprovante ("me manda X", "preciso do Y") É SEMPRE "pedir_arquivo", para que o Cofre verifique sua existência ou informe que não foi localizado.
    - SE O USUÁRIO CITAR MAIS DE UM DOCUMENTO ("o CREA e a certidão", "manda o CREA e a CNH"), a intenção É SEMPRE "pedir_arquivo", e preencha "documentos_citados" com todos os documentos pedidos: ["CREA", "Certidão de Casamento"]!
 3. "dado_pessoal": Perguntas sobre dados cadastrais de titulares (RG, CPF, endereço, estado civil, profissão, mãe, pai, filiação, data de nascimento, validade da CNH etc.).
    - Se a mensagem citar campos cadastrais de uma pessoa física titular, a intenção É SEMPRE "dado_pessoal". Preencha a lista "campos" com todos os campos pedidos!
@@ -492,7 +560,7 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
    - Extraia o "valor_novo" caso o usuário tenha informado o valor correto. Se ele apenas disse que está errado sem informar o valor, deixe "valor_novo": "".
 6. "consultar_vencimentos": Perguntas sobre prazos de validade ou vencimento de documentos do cofre ("tem algum documento vencendo?", "o que vence este mês?", "quais documentos estão vencidos?", "documentos a vencer", "validade dos documentos").
 7. "silenciar_alerta": Quando o usuário solicitar para parar de alertar sobre o vencimento de um documento (ex: "pare de alertar o CRT do Thomaz", "não alerte mais o CRT", "desative os alertas do CRT", "parar de alertar documento X"). Preencha "documento_citado" (ex: "CRT") e "pessoa" se citada.
-8. "fora_de_escopo": Assuntos alheios à construtora Delta Plan.
+8. "fora_de_escopo": Assuntos completamente alheios ao trabalho e documentos corporativos (ex: receitas de bolo, previsão do tempo, esportes, futebol, piadas). NUNCA use "fora_de_escopo" para pedidos de busca ou envio de documentos ou certidões.
 
 REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - SE A MENSAGEM ATUAL CITA UM SUJEITO (pessoa ou empresa), ele SEMPRE SUBSTITUI o sujeito das mensagens anteriores! O contexto anterior DEVE SER IGNORADO nesse caso!
@@ -1425,7 +1493,7 @@ export async function processarMensagemChat(dados: {
       const docsPorCitacao: DocumentoRegistro[] = [];
       for (const termoCitado of classificacao.documentos_citados) {
         const termoCompleto = pessoa ? `${termoCitado} ${pessoa}` : termoCitado;
-        const resBusca = await buscarDocumentos(termoCompleto, contato);
+        const resBusca = await buscarDocumentos(termoCompleto, contato, todosDocs);
         if (resBusca.status === 'unico' && resBusca.resultados[0]) {
           const docAchado = resBusca.resultados[0];
           if (!docsPorCitacao.some((d) => d.id === docAchado.id)) {
@@ -1447,7 +1515,8 @@ export async function processarMensagemChat(dados: {
       }
 
       const titulos = docsMultiplos.map((d) => d.titulo).join(' e ');
-      const textoResposta = `Aqui estão os documentos solicitados: ${titulos}.`;
+      const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+      const textoResposta = `${prefixoSaudacao}Aqui estão os documentos solicitados: ${titulos}.`;
 
       const docsRastro: DocumentoRastro[] = docsMultiplos.map((d) => ({
         id: d.id,
@@ -1492,7 +1561,7 @@ export async function processarMensagemChat(dados: {
     const inicioBuscaDoc = Date.now();
     const termoBuscaArquivo = classificacao.termo_busca || classificacao.documento_citado || pergunta_reescrita || mensagemUsuario;
     // 1. Busca por nome no Cofre (documentos físicos / PDFs)
-    const buscaDoc = await buscarDocumentos(termoBuscaArquivo, contato);
+    const buscaDoc = await buscarDocumentos(termoBuscaArquivo, contato, todosDocs);
     const tempoBuscaDoc = Date.now() - inicioBuscaDoc;
 
     if (buscaDoc.status === 'unico') {
@@ -1531,7 +1600,8 @@ export async function processarMensagemChat(dados: {
         },
       ];
 
-      const textoResposta = `Aqui está o documento solicitado: ${doc.titulo}.`;
+      const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+      const textoResposta = `${prefixoSaudacao}Aqui está o documento solicitado: ${doc.titulo}.`;
 
       const rastro = criarRastroFinal({
         tipoBusca: 'nome_cofre',
@@ -1633,7 +1703,8 @@ export async function processarMensagemChat(dados: {
         ? 'Quer os dois ou algum específico?'
         : 'Quer todos ou algum específico?';
 
-      const textoResposta = `Encontrei estes documentos${vocativo}: ${listaDocsFormatada}. ${perguntaFinal}`;
+      const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+      const textoResposta = `${prefixoSaudacao}Encontrei estes documentos: ${listaDocsFormatada}. ${perguntaFinal}`;
 
       const rastro = criarRastroFinal({
         tipoBusca: 'nome_cofre',
@@ -1652,6 +1723,52 @@ export async function processarMensagemChat(dados: {
         perguntaReescrita: pergunta_reescrita,
         buscaUsada: 'Busca por nome no Cofre (Ambiguidade)',
         similaridade: 'Múltiplos resultados',
+        rastro,
+      };
+    }
+
+    if (buscaDoc.status === 'ambiguo_titular') {
+      modeloUsado = 'Motor Interno';
+      const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+      const titulares = (buscaDoc.titularesPossiveis && buscaDoc.titularesPossiveis.length > 0)
+        ? buscaDoc.titularesPossiveis
+        : (Array.from(new Set(buscaDoc.resultados.map((d) => d.titular).filter(Boolean))) as string[]);
+
+      const textoResposta = formatarPerguntaAmbiguoTitular(buscaDoc.tipoPedido || 'documento', titulares, prefixoSaudacao);
+
+      const docsRastro: DocumentoRastro[] = buscaDoc.resultados.map((d) => ({
+        id: d.id,
+        titulo: d.titulo,
+        tipo: d.tipo,
+        similaridade: 95,
+        usadoNaResposta: false,
+      }));
+
+      etapas.push({
+        ordem: 2,
+        nome: 'Resolução de Ambiguidade de Titular',
+        descricao: `Encontrados ${buscaDoc.resultados.length} documentos de titulares diferentes (${titulares.join(', ')}). Solicitada a desambiguação ao usuário.`,
+        tempoMs: tempoBuscaDoc,
+        detalhes: { resultados: buscaDoc.resultados.map((d) => d.titulo), titulares },
+      });
+
+      const rastro = criarRastroFinal({
+        tipoBusca: 'nome_cofre',
+        docsEncontrados: docsRastro,
+        enviouAnexo: false,
+        respostaFinal: textoResposta,
+        modelo: modeloUsado,
+      });
+
+      return {
+        textoResposta,
+        documentoOferecidoId: buscaDoc.resultados.map((d: DocumentoRegistro) => d.id).join(','),
+        opcoes: buscaDoc.resultados.map((d: DocumentoRegistro) => ({ id: d.id, titulo: d.titulo })),
+        origem: 'motor',
+        intencaoDetectada: intencao,
+        perguntaReescrita: pergunta_reescrita,
+        buscaUsada: 'Busca por tipo no Cofre (Ambiguidade de Titular)',
+        similaridade: 'Múltiplos titulares encontrados',
         rastro,
       };
     }
@@ -1788,7 +1905,9 @@ export async function processarMensagemChat(dados: {
       tempoMs: tempoBuscaDoc + tempoBuscaK + tempoVetorial,
     });
 
-    const textoResposta = `Não consegui identificar esse documento nem informações sobre ele no cofre${vocativo}.`;
+    const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+    const sufixoVocativo = prefixoSaudacao ? '' : vocativo;
+    const textoResposta = `${prefixoSaudacao}Não consegui identificar esse documento nem informações sobre ele no cofre${sufixoVocativo}.`;
 
     const rastro = criarRastroFinal({
       tipoBusca: 'nome_cofre',

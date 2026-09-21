@@ -228,15 +228,26 @@ export function identificarMultiplosDocumentosNoTexto(
     }
   }
 
-  // Se encontrou mais de um documento e o texto possui conectivo ou pontuação indicando múltiplos pedidos
+  // Se encontrou mais de um documento:
   if (docsEncontrados.length > 1) {
-    const temConectivoMultiplo = /\b(e|com|mais|tambem|al[eé]m disso|os dois|ambos|junto|preciso dos)\b/i.test(texto) || texto.includes(',');
+    const tiposDistintos = new Set(docsEncontrados.map((d) => (d.tipo || d.titulo).toLowerCase()));
+    const temConectivoMultiplo =
+      /\b(e|com|mais|tambem|al[eé]m disso|os dois|ambos|junto|preciso dos)\b/i.test(texto) ||
+      texto.includes(',');
+
+    // Se o usuário pediu com conectivo OU são documentos de categorias nitidamente distintas com múltiplos explícitos
     if (temConectivoMultiplo) {
       return docsEncontrados;
     }
+
+    // Se não há conectivo e os documentos são do mesmo tipo/categoria (ex: duas certidões de casamento de titulares diferentes),
+    // NUNCA deve retornar ambos automaticamente; deixa o fluxo de busca tratar a ambiguidade de titular.
+    if (tiposDistintos.size === 1) {
+      return [];
+    }
   }
 
-  return docsEncontrados.length > 1 ? docsEncontrados : [];
+  return [];
 }
 
 /**
@@ -245,9 +256,20 @@ export function identificarMultiplosDocumentosNoTexto(
 export function identificarTipoPedido(textoOriginal: string): string | null {
   const norm = normalizarTexto(textoOriginal);
 
-  if (/\bcpf\b/i.test(norm)) return 'CPF';
+  if (/\b(casamento|certid[aã]o de casamento)\b/i.test(norm)) return 'Certidão de Casamento';
+  if (/\b(nascimento|certid[aã]o de nascimento)\b/i.test(norm)) return 'Certidão de Nascimento';
+  if (/\b(obito|[oó]bito|certid[aã]o de [oó]bito)\b/i.test(norm)) return 'Certidão de Óbito';
+  if (/\b(certid[aã]o|certid[oõ]es)\b/i.test(norm)) return 'Certidão';
+  if (/\b(crea)\b/i.test(norm)) return 'CREA';
+  if (/\b(crt)\b/i.test(norm)) return 'CRT';
   if (/\b(cnh|habilitacao)\b/i.test(norm)) return 'CNH';
+  if (/\b(cpf)\b/i.test(norm)) return 'CPF';
   if (/\b(rg|identidade)\b/i.test(norm)) return 'RG';
+  if (/\b(vacina|vacinas|vacinacao|cartao de vacina[s]?)\b/i.test(norm)) return 'Cartão de Vacinas';
+  if (/\b(diploma)\b/i.test(norm)) return 'Diploma';
+  if (/\b(ctps|carteira de trabalho|trabalho)\b/i.test(norm)) return 'Carteira de Trabalho';
+  if (/\b(imposto de renda|irpf|dirpf)\b/i.test(norm)) return 'Imposto de Renda';
+  if (/\b(comprovante de residencia|residencia)\b/i.test(norm)) return 'Comprovante de Residência';
   if (/\b(cnpj|cartao cnpj)\b/i.test(norm)) return 'CARTAO_CNPJ';
   if (/\b(contrato social|societario|estatuto social)\b/i.test(norm)) return 'CONTRATO_SOCIAL';
   if (/\b(dre|demonstracao do resultado|balanco)\b/i.test(norm)) return 'DRE';
@@ -264,24 +286,34 @@ export function temMarcadorPessoal(texto: string): boolean {
   return /\b(meu|minha|meus|minhas|pra mim|para mim)\b/i.test(texto);
 }
 
+const TERMOS_NAO_TITULARES = new Set([
+  'documento', 'arquivo', 'empresa', 'sistema', 'cofre',
+  'casamento', 'nascimento', 'obito', 'trabalho', 'vacina', 'vacinacao',
+  'renda', 'ensino', 'medio', 'conduta', 'resultado', 'registro',
+  'residencia', 'identidade', 'imposto', 'proposta', 'minuta', 'contrato',
+  'estatuto', 'conselho', 'habilitacao', 'saude', 'delta', 'deltaplan', 'plan',
+  'rg', 'cpf', 'cnh', 'crea', 'crt', 'ctps', 'cnpj', 'dre', 'certidao', 'certidoes'
+]);
+
 /**
  * Extrai titular explícito do pedido ("do Thomaz", "da Delta", etc.)
  */
 export function extrairTitularExplicito(texto: string): string | null {
-  const match = texto.match(/\b(?:do|da|de)\s+([a-zA-ZÀ-ÿ]+)/i);
-  if (match) {
-    const titular = match[1].trim();
-    const ignorar = ['documento', 'arquivo', 'empresa', 'sistema', 'cofre'];
-    if (!ignorar.includes(titular.toLowerCase())) {
-      return titular.charAt(0).toUpperCase() + titular.slice(1);
-    }
-  }
-
+  // 1. Prioriza nomes próprios de titulares conhecidos
   const nomesConhecidos = ['Thomaz', 'André', 'Andre', 'Ricardo', 'Delta Plan', 'Delta'];
   for (const nome of nomesConhecidos) {
     const regex = new RegExp(`\\b${nome}\\b`, 'i');
     if (regex.test(texto)) {
-      return nome === 'Delta' ? 'Delta Plan' : nome;
+      return nome.toLowerCase().startsWith('delta') ? 'Delta Plan' : nome;
+    }
+  }
+
+  // 2. Extrai preposição ("do Thomaz", "da Maria"), garantindo que não seja termo de documento
+  const match = texto.match(/\b(?:do|da|de)\s+([a-zA-ZÀ-ÿ]+)/i);
+  if (match) {
+    const palavra = match[1].trim().toLowerCase();
+    if (!TERMOS_NAO_TITULARES.has(palavra)) {
+      return match[1].trim().charAt(0).toUpperCase() + match[1].trim().slice(1).toLowerCase();
     }
   }
 
@@ -385,12 +417,16 @@ function verificarSimilaridadeFlexivel(textoBusca: string, alvo: string): number
  */
 export async function buscarDocumentos(
   texto: string,
-  contato?: Contato
+  contato?: Contato,
+  documentosBase?: DocumentoRegistro[]
 ): Promise<RespostaMotorBusca> {
   const nivelAcesso: NivelAcesso = contato?.nivelAcesso || contato?.ficha?.nivelAcesso || 'geral';
 
   // 1. Filtrar o catálogo pelo nivelAcesso do contato ANTES de qualquer comparação
-  const catalogo = await obterDocumentosPorNivelAcesso(nivelAcesso);
+  const catalogo =
+    documentosBase && documentosBase.length > 0
+      ? documentosBase.filter((d) => nivelAcesso === 'diretoria' || d.visibilidade !== 'diretoria')
+      : await obterDocumentosPorNivelAcesso(nivelAcesso);
   if (!catalogo || catalogo.length === 0) {
     return { status: 'nenhum', resultados: [], score: 0 };
   }
@@ -555,11 +591,22 @@ export async function buscarDocumentos(
   // CENÁRIO C: Pedido por TIPO sem titular ("me manda o CPF", "o contrato social")
   // =========================================================================
   if (tipoPedido && !titularExplicito) {
-    const docsDoTipo = catalogo.filter(
-      (d) =>
-        d.tipo?.toUpperCase() === tipoPedido.toUpperCase() ||
-        d.titulo.toUpperCase().includes(tipoPedido.toUpperCase())
-    );
+    const normPed = normalizarTexto(tipoPedido);
+    const docsDoTipo = catalogo.filter((d) => {
+      const normTit = normalizarTexto(d.titulo);
+      const normTipo = normalizarTexto(d.tipo || '');
+      const normArq = normalizarTexto(d.arquivo);
+      const apelidosNorm = (d.apelidos || []).map((a) => normalizarTexto(a));
+
+      return (
+        normTipo === normPed ||
+        normTit === normPed ||
+        normTit.includes(normPed) ||
+        normPed.includes(normTit) ||
+        normArq.includes(normPed) ||
+        apelidosNorm.some((ap) => ap === normPed || ap.includes(normPed) || normPed.includes(ap))
+      );
+    });
 
     // Se houver mais de um titular desse documento: pergunta de quem (ambíguo de titular)
     if (docsDoTipo.length > 1) {
@@ -568,19 +615,21 @@ export async function buscarDocumentos(
         return {
           status: 'ambiguo_titular',
           resultados: docsDoTipo,
-          score: 90,
+          score: 95,
           tipoPedido,
           titularesPossiveis: titularesDistintos as string[],
         };
       }
+      // Se todos os documentos desse tipo forem do mesmo titular:
       return {
-        status: 'ambiguo',
-        resultados: docsDoTipo,
-        score: 90,
+        status: 'unico',
+        resultados: [docsDoTipo[0]],
+        score: 100,
         tipoPedido,
       };
     }
 
+    // Se houver exatamente UM documento daquele tipo no Cofre: enviar direto!
     if (docsDoTipo.length === 1) {
       return {
         status: 'unico',
