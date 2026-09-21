@@ -53,6 +53,8 @@ Nenhum outro modelo ou alias obsoleto (ex: gpt-4o, gpt-3.5-turbo, whisper-1) dev
   NUNCA imprimir, registrar ou expor valores reais de variáveis de ambiente (`.env`), chaves de API (`OPENAI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `EVOLUTION_API_KEY`), tokens de autenticação ou senhas em respostas, commits, arquivos de log ou relatórios de walkthrough.
 - **Preservação de Dados da Ficha do Titular:**
   Campos da ficha de titular que já foram conferidos pelo usuário (`conferido: true`) ou que foram expressamente informados/corrigidos através do chat **jamais** podem ser sobrescritos por rotinas de extração automática de documentos.
+- **Reconhecimento Estrito de Titulares:**
+  Titular só é reconhecido se existir no cadastro de titulares; nunca extrair nome de pessoa por posição na frase (ex.: após "do/da/de"). Qualquer palavra não cadastrada como titular deve ser ignorada.
 
 ---
 

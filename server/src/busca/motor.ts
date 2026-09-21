@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { Contato, DocumentoRegistro, NivelAcesso } from '../types.js';
-import { obterDocumentosPorNivelAcesso } from '../storage.js';
+import { obterDocumentosPorNivelAcesso, obterNomesTitularesCadastrados } from '../storage.js';
 import { extrairPrimeiroNome } from '../utils/nomeUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -296,27 +296,53 @@ const TERMOS_NAO_TITULARES = new Set([
 ]);
 
 /**
- * Extrai titular explícito do pedido ("do Thomaz", "da Delta", etc.)
+ * Extrai titular explícito do pedido ("do Thomaz", "da Delta", etc.).
+ * REGRA RIGOROSA: Uma palavra só é considerada titular se casar com um titular cadastrado
+ * no Supabase (nome completo, primeiro nome ou apelido). NUNCA extrair palavras por posição na frase.
  */
-export function extrairTitularExplicito(texto: string): string | null {
-  // 1. Prioriza nomes próprios de titulares conhecidos
-  const nomesConhecidos = ['Thomaz', 'André', 'Andre', 'Ricardo', 'Delta Plan', 'Delta'];
-  for (const nome of nomesConhecidos) {
-    const regex = new RegExp(`\\b${nome}\\b`, 'i');
-    if (regex.test(texto)) {
-      return nome.toLowerCase().startsWith('delta') ? 'Delta Plan' : nome;
+export function extrairTitularExplicito(texto: string, titularesDisponiveis?: string[]): string | null {
+  if (!texto) return null;
+
+  // 1. Obtém lista consolidada de titulares cadastrados no Supabase/cache
+  const cadastrados = titularesDisponiveis && titularesDisponiveis.length > 0
+    ? titularesDisponiveis
+    : obterNomesTitularesCadastrados();
+
+  const titulares = Array.from(
+    new Set([
+      ...cadastrados,
+      'Thomaz Lustri Fabre',
+      'Thomaz',
+      'André',
+      'Andre',
+      'Ricardo',
+      'Delta Plan',
+      'Delta',
+    ])
+  ).filter(Boolean);
+
+  const textoNorm = normalizarTexto(texto);
+
+  // Ordena por comprimento para priorizar nomes completos antes de primeiros nomes
+  const titularesOrdenados = [...titulares].sort((a, b) => b.length - a.length);
+
+  for (const titular of titularesOrdenados) {
+    const titNorm = normalizarTexto(titular);
+    if (!titNorm || titNorm.length < 2) continue;
+
+    // Proteção extra: lista de exclusão
+    if (TERMOS_NAO_TITULARES.has(titNorm)) continue;
+
+    // Casamento exato por fronteira de palavra
+    const regex = new RegExp(`\\b${titNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    if (regex.test(textoNorm)) {
+      if (titNorm.startsWith('delta')) return 'Delta Plan';
+      const primeiro = extrairPrimeiroNome(titular) || titular;
+      return primeiro.charAt(0).toUpperCase() + primeiro.slice(1);
     }
   }
 
-  // 2. Extrai preposição ("do Thomaz", "da Maria"), garantindo que não seja termo de documento
-  const match = texto.match(/\b(?:do|da|de)\s+([a-zA-ZÀ-ÿ]+)/i);
-  if (match) {
-    const palavra = match[1].trim().toLowerCase();
-    if (!TERMOS_NAO_TITULARES.has(palavra)) {
-      return match[1].trim().charAt(0).toUpperCase() + match[1].trim().slice(1).toLowerCase();
-    }
-  }
-
+  // Se nenhuma palavra casar com titular cadastrado, retorna rigorosamente null.
   return null;
 }
 
@@ -596,15 +622,29 @@ export async function buscarDocumentos(
       const normTit = normalizarTexto(d.titulo);
       const normTipo = normalizarTexto(d.tipo || '');
       const normArq = normalizarTexto(d.arquivo);
+
+      // Verificação específica para certidões
+      if (normPed === 'certidao de casamento') {
+        return normTit.includes('casamento') || normTipo.includes('casamento') || normArq.includes('casamento');
+      }
+      if (normPed === 'certidao de nascimento') {
+        return normTit.includes('nascimento') || normTipo.includes('nascimento') || normArq.includes('nascimento');
+      }
+      if (normPed === 'certidao de obito') {
+        return normTit.includes('obito') || normTipo.includes('obito') || normArq.includes('obito');
+      }
+      if (normPed === 'certidao') {
+        return normTit.includes('certidao') || normTipo.includes('certidao') || normArq.includes('certidao');
+      }
+
       const apelidosNorm = (d.apelidos || []).map((a) => normalizarTexto(a));
 
       return (
         normTipo === normPed ||
         normTit === normPed ||
         normTit.includes(normPed) ||
-        normPed.includes(normTit) ||
         normArq.includes(normPed) ||
-        apelidosNorm.some((ap) => ap === normPed || ap.includes(normPed) || normPed.includes(ap))
+        apelidosNorm.some((ap) => ap === normPed)
       );
     });
 
@@ -669,9 +709,28 @@ export async function buscarDocumentos(
   // =========================================================================
   const pontuados: ResultadoPontuado[] = [];
 
+  const temObito = /\b(obito)\b/i.test(textoNorm);
+  const temCasamento = /\b(casamento)\b/i.test(textoNorm);
+  const temNascimento = /\b(nascimento)\b/i.test(textoNorm);
+  const temLocacao = /\b(locacao|aluguel)\b/i.test(textoNorm);
+
   for (const doc of catalogo) {
     let score = 0;
     const normTitulo = normalizarTexto(doc.titulo);
+
+    // Conflitos semânticos diretos: tipos mutuamente exclusivos
+    if (temObito && (normTitulo.includes('casamento') || normTitulo.includes('nascimento'))) {
+      continue;
+    }
+    if (temCasamento && (normTitulo.includes('obito') || normTitulo.includes('nascimento'))) {
+      continue;
+    }
+    if (temNascimento && (normTitulo.includes('casamento') || normTitulo.includes('obito'))) {
+      continue;
+    }
+    if (temLocacao && !normTitulo.includes('locacao') && !normTitulo.includes('aluguel')) {
+      continue;
+    }
     const titularDocNorm = doc.titular ? normalizarTexto(doc.titular) : '';
     const apelidos = (doc.apelidos || [])
       .map((ap) => normalizarTexto(ap))

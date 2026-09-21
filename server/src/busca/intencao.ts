@@ -52,57 +52,45 @@ const PALAVRAS_IGNORADAS_TITULAR = new Set([
 ]);
 
 /**
- * Extrai nome de titular mencionado na mensagem (ex: "do Thomaz", "da Maria", etc.)
- * Evita rigorosamente capturar termos de campos como "pai", "mãe", "rg", etc.
+ * Extrai nome de titular mencionado na mensagem (ex: "do Thomaz", "da Maria", etc.).
+ * REGRA RIGOROSA: Uma palavra só é considerada titular se casar com um titular cadastrado
+ * no Supabase (nome completo, primeiro nome ou apelido). NUNCA extrair palavras por posição na frase.
  */
 export function extrairNomeTitularDaMensagem(texto: string): string | null {
   if (!texto) return null;
 
-  // 1. Procura primeiro por correspondência com titulares cadastrados no sistema (carregados dinamicamente)
+  // 1. Procura estritamente por correspondência com titulares cadastrados no sistema
   const titularesCadastrados = obterNomesTitularesCadastrados();
-  for (const titularNome of titularesCadastrados) {
-    // Testa o nome completo (ex: "Thomaz Lustri Fabre")
-    const regexCompleto = new RegExp(`\\b${titularNome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-    if (regexCompleto.test(texto)) {
+  const titulares = Array.from(
+    new Set([
+      ...titularesCadastrados,
+      'Thomaz Lustri Fabre',
+      'Thomaz',
+      'André',
+      'Andre',
+      'Ricardo',
+      'Delta Plan',
+      'Delta',
+    ])
+  ).filter(Boolean);
+
+  const textoNorm = removerAcentos(texto.toLowerCase());
+
+  // Ordena por comprimento decrescente para priorizar nomes completos antes de primeiros nomes
+  const ordenados = [...titulares].sort((a, b) => b.length - a.length);
+
+  for (const titularNome of ordenados) {
+    const nomeNorm = removerAcentos(titularNome.toLowerCase());
+    if (!nomeNorm || nomeNorm.length < 2) continue;
+    if (PALAVRAS_IGNORADAS_TITULAR.has(nomeNorm)) continue;
+
+    const regex = new RegExp(`\\b${nomeNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    if (regex.test(textoNorm)) {
       return titularNome;
     }
-
-    // Testa o primeiro nome (ex: "Thomaz" para "Thomaz Lustri Fabre")
-    const primeiroNome = extrairPrimeiroNome(titularNome);
-    if (primeiroNome && primeiroNome.length > 2 && !PALAVRAS_IGNORADAS_TITULAR.has(primeiroNome.toLowerCase())) {
-      const regexPrimeiro = new RegExp(`\\b${primeiroNome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-      if (regexPrimeiro.test(texto)) {
-        return primeiroNome;
-      }
-    }
   }
 
-  // 2. Procura por menções com preposição (ex: "do João", "da Maria Silva")
-  const regexPreposicoes = /\b(?:do|da|de|sobre o|sobre a|pro|para o|para a)\s+([A-ZÀ-Úa-zà-ú]+)/gi;
-  let match: RegExpExecArray | null;
-
-  while ((match = regexPreposicoes.exec(texto)) !== null) {
-    const palavra1 = match[1];
-    const palavra1Norm = palavra1.toLowerCase();
-
-    // Se a primeira palavra for termo de campo ou stopword (ex: "do pai", "do rg", "da certidão"), ignora
-    if (PALAVRAS_IGNORADAS_TITULAR.has(palavra1Norm)) {
-      continue;
-    }
-
-    // Verifica se a palavra seguinte no texto é um sobrenome ou segundo nome (não sendo preposição ou stopword)
-    const resto = texto.slice(match.index + match[0].length).trimStart();
-    const matchSobrenome = resto.match(/^([A-ZÀ-Úa-zà-ú]+)\b/);
-    if (matchSobrenome) {
-      const p2 = matchSobrenome[1];
-      if (!PALAVRAS_IGNORADAS_TITULAR.has(p2.toLowerCase())) {
-        return `${palavra1} ${p2}`;
-      }
-    }
-
-    return palavra1;
-  }
-
+  // NUNCA extrair qualquer palavra após preposição por posição na frase!
   return null;
 }
 

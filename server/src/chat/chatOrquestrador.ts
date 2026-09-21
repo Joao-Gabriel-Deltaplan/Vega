@@ -623,6 +623,24 @@ EXEMPLOS OBRIGATÓRIOS:
     const parsed = JSON.parse(response.choices[0]?.message?.content || '{}');
     const tempoMs = Date.now() - inicio;
 
+    // Validação estrita: titular só é reconhecido se existir no cadastro de titulares
+    if (parsed.pessoa) {
+      const pNorm = normalizarParaBusca(parsed.pessoa);
+      const titularValido = titulares.some((t) => {
+        const tNorm = normalizarParaBusca(t.nome);
+        const pPrimeiro = extrairPrimeiroNome(t.nome) || '';
+        return (
+          tNorm === pNorm ||
+          tNorm.includes(pNorm) ||
+          pNorm.includes(tNorm) ||
+          (pPrimeiro && normalizarParaBusca(pPrimeiro) === pNorm)
+        );
+      });
+      if (!titularValido) {
+        parsed.pessoa = '';
+      }
+    }
+
     const msgNorm = normalizarParaBusca(mensagemUsuario);
 
     // Mapeamento e detecção de segurança para campos cadastrais
