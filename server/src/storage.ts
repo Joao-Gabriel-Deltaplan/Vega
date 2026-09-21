@@ -41,7 +41,7 @@ function normalizarSetor(setor?: string): SetorUsuario {
 }
 
 // Cache síncrono para intenções e buscas rápidas em memória
-let cacheNomesTitulares: string[] = ['Thomaz Lustri Fabre', 'Thomaz', 'RENG ENGENHGARIA'];
+let cacheNomesTitulares: string[] = ['Thomaz Lustri Fabre', 'Thomaz', 'RENG ENGENHARIA'];
 
 function atualizarCacheNomes(nomes: string[]): void {
   if (nomes && nomes.length > 0) {

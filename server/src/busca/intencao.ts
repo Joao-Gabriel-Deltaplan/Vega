@@ -66,7 +66,7 @@ export function extrairNomeTitularDaMensagem(texto: string): string | null {
       ...titularesCadastrados,
       'Thomaz Lustri Fabre',
       'Thomaz',
-      'RENG ENGENHGARIA',
+      'RENG ENGENHARIA',
       'Delta Plan',
       'Delta',
     ])
