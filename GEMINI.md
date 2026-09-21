@@ -61,10 +61,12 @@ Nenhum outro modelo ou alias obsoleto (ex: gpt-4o, gpt-3.5-turbo, whisper-1) dev
 
 ## 6. Tratamento de Saudações e Pedidos de Documentos no Chat e WhatsApp
 
+- **Escopo Absoluto de Documentos e Mensagem Padrão:**
+  Pedidos de **qualquer tipo de documento** (contrato, alvará, certidão, nota, comprovante, procuração, termo, recibo, declaração, estatuto, etc.) são **sempre do escopo da VEGA**. Se o documento não existir no Cofre, a resposta deve ser obrigatoriamente: `"Não encontrei esse documento no Cofre."` (com a saudação incorporada no início se o usuário saudou). A classificação de **"fora de escopo"** é reservada estritamente para assuntos que não têm relação com documentos ou informações da empresa (ex.: receitas culinárias, previsão do tempo, esportes, piadas, cálculos matemáticos aleatórios).
 - **Saudação + Pedido na mesma mensagem:**
   Mensagens que combinam saudação com pedido (ex.: *"Bom dia, me envia certidão de casamento"*, *"Oi, preciso do CREA"*, *"Boa tarde, me manda a CNH"*) devem ser tratadas como o pedido do documento. A saudação do usuário deve ser incorporada exclusivamente no início da resposta (ex.: *"Bom dia, [Nome]! Aqui está o documento solicitado: ..."*).
 - **Pedido de documento sem titular especificado:**
   - Se existir **apenas UM** documento daquele tipo no Cofre: enviar diretamente com anexo, sem perguntas intermediárias.
-  - Se existirem **vários documentos daquele tipo pertencentes a titulares diferentes**: perguntar ao usuário listando as opções numeradas (ex.: *"Encontrei certidões de: 1) Thomaz, 2) André. Qual delas?"*).
-  - Se **nenhum documento** daquele tipo existir no Cofre: responder cordialmente que não encontrou o documento.
+  - Se existirem **vários documentos daquele tipo pertencentes a titulares diferentes**: perguntar ao usuário listando as opções numeradas (ex.: *"Encontrei certidões de: 1) Thomaz, 2) [Titular 2]. Qual delas?"*).
+  - Se **nenhum documento** daquele tipo existir no Cofre: responder obrigatoriamente *"Não encontrei esse documento no Cofre."*.
 

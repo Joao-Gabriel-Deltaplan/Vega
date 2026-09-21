@@ -313,9 +313,7 @@ export function extrairTitularExplicito(texto: string, titularesDisponiveis?: st
       ...cadastrados,
       'Thomaz Lustri Fabre',
       'Thomaz',
-      'André',
-      'Andre',
-      'Ricardo',
+      'RENG ENGENHGARIA',
       'Delta Plan',
       'Delta',
     ])

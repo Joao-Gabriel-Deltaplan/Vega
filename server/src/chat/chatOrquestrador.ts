@@ -201,6 +201,12 @@ export function formatarPerguntaAmbiguoTitular(
   return `${prefixoSaudacao}Encontrei ${termo} de: ${lista}. ${pronome}`;
 }
 
+/**
+ * Expressão regular que reconhece qualquer menção a tipos de documentos ou certidões corporativas/pessoais.
+ * Pedidos de documentos são SEMPRE do escopo da VEGA (nunca fora de escopo).
+ */
+export const REGEX_DOCUMENTO_QUALQUER = /\b(documentos?|arquivos?|pdfs?|contratos?|alvar[aá]s?|certid[aã]o|certid[oõ]es|notas?(\s*fiscais|\s*fiscal)?|comprovantes?|procura[cç][aã]o|procura[cç][oõ]es|termos?|recibos?|declara[cç][aã]o|declara[cç][oõ]es|estatutos?|licen[cç]as?|ap[oó]lices?|escrituras?|habite-?se|cnh|carteira(\s*de\s*motorista)?|habilita[cç][aã]o|crea|crt|cau|oab|conselho|registro\s*profissional|cart[aã]o(\s*de)?\s*vacinas?|passaportes?|atestados?|laudos?|art|rrt)\b/i;
+
 
 
 export interface TrechoEncontrado {
@@ -547,7 +553,8 @@ Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
 
 REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
 1. "saudacao_ou_vago": Apenas saudações puras ("oi", "olá", "bom dia") ou pedidos vagos ("me ajuda"). NUNCA use para perguntas com assunto ou listas.
-2. "pedir_arquivo": Pedido de envio de arquivo físico/documento ("me manda a CNH", "envia o PDF do CREA", "baixa o arquivo", "qual é a CNH do Thomaz", "esses 2 documentos, preciso do anexo dos 2", "pode mandar", "os dois", "me manda o passaporte", "bom dia, me envia a certidão").
+2. "pedir_arquivo": Pedido de envio ou busca de qualquer documento corporativo ou pessoal ("me manda a CNH", "envia o PDF do CREA", "baixa o arquivo", "qual é a CNH do Thomaz", "esses 2 documentos, preciso do anexo dos 2", "pode mandar", "os dois", "me manda o passaporte", "bom dia, me envia a certidão", "contrato de locação", "certidão de óbito", "alvará").
+   - IMPORTANTE: Pedidos de QUALQUER tipo de documento (contrato, alvará, certidão, nota fiscal, comprovante, procuração, termo, recibo, declaração, estatuto, licença, apólice, escritura, habite-se, etc.) são SEMPRE do escopo da VEGA e DEVEM SER CLASSIFICADOS como "pedir_arquivo", MESMO QUE O DOCUMENTO NÃO CONSTE NA LISTA DO COFRE!
    - Mensagens com saudação + pedido ("bom dia, me envia X", "oi, preciso do CREA", "boa tarde, me manda a CNH") DEVEM SER SEMPRE classificadas como "pedir_arquivo"!
    - Todo pedido de envio de documento, certidão ou comprovante ("me manda X", "preciso do Y") É SEMPRE "pedir_arquivo", para que o Cofre verifique sua existência ou informe que não foi localizado.
    - SE O USUÁRIO CITAR MAIS DE UM DOCUMENTO ("o CREA e a certidão", "manda o CREA e a CNH"), a intenção É SEMPRE "pedir_arquivo", e preencha "documentos_citados" com todos os documentos pedidos: ["CREA", "Certidão de Casamento"]!
@@ -560,7 +567,7 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
    - Extraia o "valor_novo" caso o usuário tenha informado o valor correto. Se ele apenas disse que está errado sem informar o valor, deixe "valor_novo": "".
 6. "consultar_vencimentos": Perguntas sobre prazos de validade ou vencimento de documentos do cofre ("tem algum documento vencendo?", "o que vence este mês?", "quais documentos estão vencidos?", "documentos a vencer", "validade dos documentos").
 7. "silenciar_alerta": Quando o usuário solicitar para parar de alertar sobre o vencimento de um documento (ex: "pare de alertar o CRT do Thomaz", "não alerte mais o CRT", "desative os alertas do CRT", "parar de alertar documento X"). Preencha "documento_citado" (ex: "CRT") e "pessoa" se citada.
-8. "fora_de_escopo": Assuntos completamente alheios ao trabalho e documentos corporativos (ex: receitas de bolo, previsão do tempo, esportes, futebol, piadas). NUNCA use "fora_de_escopo" para pedidos de busca ou envio de documentos ou certidões.
+8. "fora_de_escopo": Apenas assuntos que NÃO TÊM NENHUMA relação com documentos ou informações da empresa (ex: receitas culinárias/bolo, previsão do tempo, esportes/futebol, piadas, cálculos matemáticos aleatórios, programação de software). NUNCA use "fora_de_escopo" para pedidos de busca ou envio de documentos, contratos, certidões, termos, alvarás, notas, comprovantes ou procurações, mesmo que o documento não exista no Cofre!
 
 REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - SE A MENSAGEM ATUAL CITA UM SUJEITO (pessoa ou empresa), ele SEMPRE SUBSTITUI o sujeito das mensagens anteriores! O contexto anterior DEVE SER IGNORADO nesse caso!
@@ -568,6 +575,8 @@ REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - O CONTEXTO SÓ DEVE SER USADO quando a mensagem atual NÃO tem sujeito nenhum (ex.: perguntas com pronomes como "ele", "dele", ou elípticas como "e a validade?", "e o CPF dele?", "e o RG dele?", "e o endereço dele?"). Nesses casos, herde o titular mencionado anteriormente no histórico.
 
 EXEMPLOS OBRIGATÓRIOS:
+- "contrato de locação" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "contrato de locação", "documentos_citados": ["contrato de locação"], "pergunta_completa": "Enviar documento contrato de locação", "termo_busca": "contrato de locação"}
+- "me manda a certidão de óbito" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "certidão de óbito", "documentos_citados": ["certidão de óbito"], "pergunta_completa": "Enviar documento certidão de óbito", "termo_busca": "certidão de óbito"}
 - "me envia o crea e a certidão de casamento do thomaz por favor" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CREA, Certidão de Casamento", "documentos_citados": ["CREA", "Certidão de Casamento"], "pergunta_completa": "Enviar documentos CREA e Certidão de Casamento do Thomaz", "termo_busca": "CREA, Certidão de Casamento"}
 - "quero a certidão e o crea do thomaz" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "Certidão de Casamento, CREA", "documentos_citados": ["Certidão de Casamento", "CREA"], "pergunta_completa": "Enviar documentos Certidão de Casamento e CREA do Thomaz", "termo_busca": "Certidão de Casamento, CREA"}
 - "esses 2 documentos, preciso do anexo dos 2" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Confirmar envio dos dois documentos oferecidos", "termo_busca": ""}
@@ -778,6 +787,13 @@ EXEMPLOS OBRIGATÓRIOS:
     }
 
     // REGRA DE PROTEÇÃO 2: Pedido de arquivos físicos (múltiplos ou individual)
+    // Pedidos de qualquer documento (contrato, certidão, alvará, etc.) NUNCA são fora de escopo.
+    if (REGEX_DOCUMENTO_QUALQUER.test(msgNorm)) {
+      if (parsed.intencao === 'fora_de_escopo' || parsed.intencao === 'saudacao_ou_vago') {
+        parsed.intencao = 'pedir_arquivo';
+      }
+    }
+
     const multiplosNoTexto = identificarMultiplosDocumentosNoTexto(mensagemUsuario, docs, parsed.pessoa);
     if (multiplosNoTexto.length > 1) {
       parsed.intencao = 'pedir_arquivo';
@@ -785,23 +801,28 @@ EXEMPLOS OBRIGATÓRIOS:
       parsed.documento_citado = multiplosNoTexto.map((d) => d.titulo).join(', ');
       parsed.termo_busca = parsed.documento_citado;
     } else {
-      const regexDocSemCampo = /\b(cnh|crea|crt|certidao|cartao\s*vacinas?|conselho|registro\s*profissional)\b/i;
       const regexCampoEspecifico = /\b(numero|validade|vencimento|categoria|vence|venc|data|emissao|expedicao|orgao|endereco|estado\s*civil|rg|profissao|cpf|mae|pai|filiacao|alerta|alertar|silenciar|desativar)\b/i;
 
       if (
         !ehSilenciarAlerta &&
         !ehConsultaVencimento &&
+        !ehMensagemCorrecao &&
         parsed.intencao !== 'silenciar_alerta' &&
-        regexDocSemCampo.test(msgNorm) &&
+        REGEX_DOCUMENTO_QUALQUER.test(msgNorm) &&
         !regexCampoEspecifico.test(msgNorm) &&
         (!parsed.campos || parsed.campos.length === 0)
       ) {
         parsed.intencao = 'pedir_arquivo';
-        const docMatch = msgNorm.match(regexDocSemCampo);
-        const nomeDoc = docMatch ? docMatch[0] : 'CNH';
+        if (!parsed.documento_citado) {
+          parsed.documento_citado = mensagemUsuario.trim();
+        }
+        if (!parsed.termo_busca) {
+          parsed.termo_busca = parsed.documento_citado;
+        }
         if (msgNorm.includes('thomaz') || (parsed.pessoa && parsed.pessoa.toLowerCase().includes('thomaz'))) {
-          parsed.termo_busca = `${nomeDoc} Thomaz`.trim();
-          parsed.documento_citado = `${nomeDoc} Thomaz`;
+          if (!parsed.termo_busca.toLowerCase().includes('thomaz')) {
+            parsed.termo_busca = `${parsed.termo_busca} Thomaz`.trim();
+          }
         }
       }
     }
@@ -1860,13 +1881,23 @@ export async function processarMensagemChat(dados: {
     const trechosSeguranca = await executarBuscaVetorial(perguntaVetorial, null, 5);
     const tempoVetorial = Date.now() - inicioVetorial;
 
-    if (trechosSeguranca.length > 0) {
+    if (trechosSeguranca.length > 0 && trechosSeguranca[0].similaridade >= 0.60) {
       const topSim = trechosSeguranca[0].similaridade;
       const resTrechos = await responderComTrechos(perguntaVetorial, trechosSeguranca, openai);
       tokensPromptTotal += resTrechos.tokensPrompt;
       tokensCompletionTotal += resTrechos.tokensCompletion;
       tokensGeraisTotal += resTrechos.tokensTotal;
       modeloUsado = chatModel;
+
+      const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+      let textoFinalTrechos = resTrechos.texto;
+      if (
+        textoFinalTrechos.toLowerCase().includes('não encontrei nos documentos') ||
+        textoFinalTrechos.toLowerCase().includes('não encontrei esse documento') ||
+        textoFinalTrechos.toLowerCase().includes('não consegui identificar')
+      ) {
+        textoFinalTrechos = `${prefixoSaudacao}Não encontrei esse documento no Cofre.`;
+      }
 
       etapas.push({
         ordem: 2,
@@ -1898,12 +1929,12 @@ export async function processarMensagemChat(dados: {
         docsEncontrados: docsRastro,
         docUsado: trechosSeguranca[0]?.titulo_documento,
         enviouAnexo: false,
-        respostaFinal: resTrechos.texto,
+        respostaFinal: textoFinalTrechos,
         modelo: modeloUsado,
       });
 
       return {
-        textoResposta: resTrechos.texto,
+        textoResposta: textoFinalTrechos,
         origem: 'ia',
         intencaoDetectada: intencao,
         perguntaReescrita: pergunta_reescrita,
@@ -1924,8 +1955,7 @@ export async function processarMensagemChat(dados: {
     });
 
     const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
-    const sufixoVocativo = prefixoSaudacao ? '' : vocativo;
-    const textoResposta = `${prefixoSaudacao}Não consegui identificar esse documento nem informações sobre ele no cofre${sufixoVocativo}.`;
+    const textoResposta = `${prefixoSaudacao}Não encontrei esse documento no Cofre.`;
 
     const rastro = criarRastroFinal({
       tipoBusca: 'nome_cofre',
@@ -2850,6 +2880,28 @@ export async function processarMensagemChat(dados: {
   // ============================================================================
   // CASO 5: FORA DE ESCOPO
   // ============================================================================
+  const msgNormFinal = normalizarParaBusca(mensagemUsuario);
+  if (REGEX_DOCUMENTO_QUALQUER.test(msgNormFinal)) {
+    const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+    const textoDocNaoEncontrado = `${prefixoSaudacao}Não encontrei esse documento no Cofre.`;
+    const rastroDoc = criarRastroFinal({
+      tipoBusca: 'nome_cofre',
+      docsEncontrados: [],
+      enviouAnexo: false,
+      respostaFinal: textoDocNaoEncontrado,
+      modelo: 'Motor Interno',
+    });
+    return {
+      textoResposta: textoDocNaoEncontrado,
+      origem: 'motor',
+      intencaoDetectada: 'pedir_arquivo',
+      perguntaReescrita: pergunta_reescrita,
+      buscaUsada: 'Busca por nome no Cofre',
+      similaridade: '0%',
+      rastro: rastroDoc,
+    };
+  }
+
   modeloUsado = 'Motor Interno';
   etapas.push({
     ordem: 2,

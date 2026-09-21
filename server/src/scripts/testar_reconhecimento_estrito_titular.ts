@@ -26,7 +26,7 @@ async function rodarTestes() {
     { texto: 'certidão de casamento do thomaz', esperado: 'Thomaz' },
     { texto: 'termo de rescisão', esperado: null },
     { texto: 'comprovante de residência', esperado: null },
-    { texto: 'cnh do andré', esperado: 'André' },
+    { texto: 'cnh do thomaz', esperado: 'Thomaz' },
   ];
 
   let passouTodosUnitarios = true;
@@ -100,9 +100,8 @@ async function rodarTestes() {
   console.log('Resposta VEGA:', resE2E1.textoResposta);
   console.log('Anexos:', resE2E1.anexos?.map((a) => a.nome));
   console.log('Rastro Sujeito:', resE2E1.rastro?.pessoa || '(nenhum)');
-  const textoE2E1 = resE2E1.textoResposta.toLowerCase();
-  const naoEncontrouDoc = textoE2E1.includes('não consegui') || textoE2E1.includes('não encontrei');
-  console.log('OK?', naoEncontrouDoc && !resE2E1.rastro?.pessoa && !resE2E1.anexos ? 'SIM' : 'NÃO');
+  const e2e1Ok = resE2E1.textoResposta.includes('Não encontrei esse documento no Cofre') && !resE2E1.rastro?.pessoa && !resE2E1.anexos;
+  console.log('OK?', e2e1Ok ? 'SIM' : 'NÃO');
 
   // TESTE 2: "contrato de locação"
   console.log('\n[E2E 2] "contrato de locação"');
@@ -114,7 +113,8 @@ async function rodarTestes() {
   });
   console.log('Resposta VEGA:', resE2E2.textoResposta);
   console.log('Rastro Sujeito:', resE2E2.rastro?.pessoa || '(nenhum)');
-  console.log('OK?', !resE2E2.rastro?.pessoa ? 'SIM' : 'NÃO');
+  const e2e2Ok = resE2E2.textoResposta.includes('Não encontrei esse documento no Cofre') && !resE2E2.textoResposta.includes('fora do meu escopo');
+  console.log('OK?', e2e2Ok ? 'SIM' : 'NÃO');
 
   // TESTE 3: "certidão de casamento"
   console.log('\n[E2E 3] "certidão de casamento"');
@@ -126,7 +126,8 @@ async function rodarTestes() {
   });
   console.log('Resposta VEGA:', resE2E3.textoResposta);
   console.log('Anexos:', resE2E3.anexos?.map((a) => a.nome));
-  console.log('OK?', (resE2E3.anexos?.length || 0) === 1 && resE2E3.textoResposta.includes('Certidão de Casamento') ? 'SIM' : 'NÃO');
+  const e2e3Ok = (resE2E3.anexos?.length || 0) === 1 && resE2E3.textoResposta.includes('Certidão de Casamento');
+  console.log('OK?', e2e3Ok ? 'SIM' : 'NÃO');
 
   // TESTE 4: "certidão de casamento do thomaz"
   console.log('\n[E2E 4] "certidão de casamento do thomaz"');
@@ -138,7 +139,20 @@ async function rodarTestes() {
   });
   console.log('Resposta VEGA:', resE2E4.textoResposta);
   console.log('Anexos:', resE2E4.anexos?.map((a) => a.nome));
-  console.log('OK?', (resE2E4.anexos?.length || 0) === 1 && resE2E4.textoResposta.includes('Certidão de Casamento') ? 'SIM' : 'NÃO');
+  const e2e4Ok = (resE2E4.anexos?.length || 0) === 1 && resE2E4.textoResposta.includes('Certidão de Casamento');
+  console.log('OK?', e2e4Ok ? 'SIM' : 'NÃO');
+
+  // TESTE 5: Fora de escopo genuíno ("como fazer um bolo de cenoura?")
+  console.log('\n[E2E 5] "como fazer um bolo de cenoura?" (fora de escopo genuíno)');
+  const resE2E5 = await processarMensagemChat({
+    mensagemUsuario: 'como fazer um bolo de cenoura?',
+    historicoRecente: historicoVazio,
+    contato: contatoJoao,
+    documentosDisponiveis: docsDisponiveis,
+  });
+  console.log('Resposta VEGA:', resE2E5.textoResposta);
+  const e2e5Ok = resE2E5.textoResposta.includes('fora do meu escopo');
+  console.log('OK?', e2e5Ok ? 'SIM' : 'NÃO');
 
   console.log('\n===============================================================');
   console.log('TESTES CONCLUÍDOS COM SUCESSO');
