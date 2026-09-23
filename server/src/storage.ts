@@ -338,13 +338,63 @@ export async function marcarComoLida(conversaId: string): Promise<void> {
 // GERENCIAMENTO DE DOCUMENTOS DO COFRE
 // ==========================================
 
+/**
+ * Localiza o titular oficial cadastrado com base em um nome, ID ou apelido fornecido.
+ * Se o nome casar com um titular já cadastrado (nome completo, primeiro nome ou apelido/parte significativa),
+ * vincula ao existente em vez de criar outro.
+ */
+export function resolverTitularCadastrado(
+  nomeIdentificado: string | null | undefined,
+  titulares: FichaTitular[]
+): FichaTitular | null {
+  if (!nomeIdentificado || !nomeIdentificado.trim()) return null;
+  const norm = nomeIdentificado.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  // 1. Match exato por ID
+  const porId = titulares.find((t) => t.id.toLowerCase() === norm);
+  if (porId) return porId;
+
+  // 2. Match exato por nome cadastrado
+  const porNomeExato = titulares.find((t) => {
+    const tNomeNorm = t.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    return tNomeNorm === norm;
+  });
+  if (porNomeExato) return porNomeExato;
+
+  // 3. Match por primeiro nome de pessoa física (ex: "Thomaz" -> "Thomaz Lustri Fabre")
+  for (const t of titulares) {
+    const partes = t.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/\s+/);
+    const primeiro = partes[0];
+    if (primeiro && primeiro.length >= 3 && (norm === primeiro || norm.startsWith(primeiro + ' ') || norm.endsWith(' ' + primeiro))) {
+      return t;
+    }
+  }
+
+  // 4. Match por partes significativas de pessoas jurídicas (ex: "Menegazzo" -> "Serviços Menegazzo", "RENG" -> "RENG ENGENHARIA")
+  for (const t of titulares) {
+    const tNomeNorm = t.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (tNomeNorm.includes(norm) || norm.includes(tNomeNorm)) {
+      return t;
+    }
+    const partesPJ = tNomeNorm.split(/\s+/).filter((p) => p.length >= 4 && !['servicos', 'engenharia', 'ltda', 'brasil'].includes(p));
+    for (const p of partesPJ) {
+      if (norm.includes(p)) return t;
+    }
+  }
+
+  return null;
+}
+
 function mapearLinhaDocumento(row: any): DocumentoRegistro {
+  const pId = row.pessoa_id || undefined;
   return {
     id: row.id,
     titulo: row.titulo ? row.titulo.trim() : '',
     arquivo: row.arquivo ? row.arquivo.trim() : '',
     tipo: row.tipo ? row.tipo.trim() : undefined,
     titular: row.titular ? row.titular.trim() : undefined,
+    pessoaId: pId,
+    pessoa_id: pId,
     descricao: row.descricao ? row.descricao.trim() : undefined,
     apelidos: row.apelidos || [],
     visibilidade: (row.visibilidade as VisibilidadeDoc) || 'diretoria',
@@ -374,10 +424,31 @@ export async function obterTodosDocumentos(): Promise<DocumentoRegistro[]> {
       return [];
     }
 
+    // Busca os titulares cadastrados no Supabase para padronização rigorosa do nome exibido
+    const titularesCadastrados = await obterTodosTitulares();
+    const mapaTitulares = new Map<string, string>();
+    for (const t of titularesCadastrados) {
+      mapaTitulares.set(t.id, t.nome);
+    }
+
     const docs = (data || [])
       // Filtra registros que são apenas indexação de texto de conhecimento (ex: txt temporário de base de conhecimento)
       .filter((d: any) => !d.arquivo?.startsWith('conhecimento_') && !d.tipo?.includes('conhecimento'))
-      .map(mapearLinhaDocumento);
+      .map((d: any) => {
+        const item = mapearLinhaDocumento(d);
+        // Regra Oficial 1 e 2: Documentos se vinculam pelo ID (pessoa_id) e exibem sempre o nome oficial do cadastro
+        if (item.pessoaId && mapaTitulares.has(item.pessoaId)) {
+          item.titular = mapaTitulares.get(item.pessoaId)!;
+        } else if (item.titular) {
+          const titAchado = resolverTitularCadastrado(item.titular, titularesCadastrados);
+          if (titAchado) {
+            item.titular = titAchado.nome;
+            item.pessoaId = titAchado.id;
+            item.pessoa_id = titAchado.id;
+          }
+        }
+        return item;
+      });
 
     // Atualiza cache de nomes de titulares
     const nomes = docs.map((d) => d.titular).filter(Boolean) as string[];
@@ -421,6 +492,7 @@ export async function adicionarDocumento(documento: DocumentoRegistro): Promise<
       silenciar_alertas: Boolean(documento.silenciarAlertas),
       trecho_validade: documento.trechoValidade || null,
       storage_path: documento.storagePath ? documento.storagePath.trim() : sanitizarChaveStorage(documento.arquivo.trim()),
+      pessoa_id: documento.pessoaId || documento.pessoa_id || null,
     };
 
     // Se já tiver UUID válido, faz upsert pelo ID
@@ -475,7 +547,18 @@ export async function atualizarDocumento(
 
     if (dados.titulo !== undefined) payload.titulo = dados.titulo.trim();
     if (dados.tipo !== undefined) payload.tipo = dados.tipo.trim();
-    if (dados.titular !== undefined) payload.titular = dados.titular.trim();
+    if (dados.titular !== undefined) {
+      payload.titular = dados.titular.trim();
+      const todosTitulares = await obterTodosTitulares();
+      const titAchado = resolverTitularCadastrado(dados.titular, todosTitulares);
+      if (titAchado) {
+        payload.pessoa_id = titAchado.id;
+        payload.titular = titAchado.nome;
+      }
+    }
+    if (dados.pessoaId !== undefined || (dados as any).pessoa_id !== undefined) {
+      payload.pessoa_id = dados.pessoaId !== undefined ? dados.pessoaId : (dados as any).pessoa_id;
+    }
     if (dados.descricao !== undefined) payload.descricao = dados.descricao.trim();
     if (dados.visibilidade !== undefined) payload.visibilidade = dados.visibilidade;
     if (dados.apelidos !== undefined) payload.apelidos = dados.apelidos;

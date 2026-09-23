@@ -16,7 +16,11 @@ import {
   salvarPendenciaDocumentoWhatsApp,
   TipoPendenciaWhatsApp,
 } from './whatsapp/pendenciasWhatsAppService.js';
-import { adicionarMensagem } from './storage.js';
+import {
+  adicionarMensagem,
+  obterTodosTitulares,
+  resolverTitularCadastrado,
+} from './storage.js';
 import { eventosPainel } from './eventos/eventosService.js';
 import { formatarHorarioBrasilia, obterAgoraIsoUtc } from './utils/dataHoraUtils.js';
 import { ASSISTENTE } from './config/assistente.js';
@@ -146,13 +150,20 @@ async function processarProximoDaFila(): Promise<void> {
       ],
     };
 
+    const todosTitulares = await obterTodosTitulares();
+    const titularVinculado = resolverTitularCadastrado(titularIdentificado, todosTitulares);
+    const ehCorporativo = titularIdentificado.toLowerCase().includes('delta') || !titularIdentificado;
+    const pessoaId = titularVinculado ? titularVinculado.id : (ehCorporativo ? null : null);
+    const titularFinalGravado = titularVinculado ? titularVinculado.nome : (ehCorporativo ? 'Delta Plan' : titularIdentificado);
+
     // Atualiza metadados no Supabase
     await supabase
       .from('documentos')
       .update({
         titulo: tituloFinal,
         tipo: tipoIdentificado,
-        titular: titularIdentificado,
+        titular: titularFinalGravado,
+        pessoa_id: pessoaId,
         descricao: descricaoFinal,
         apelidos: apelidosFinais,
         data_validade: validadeFinal,
@@ -205,13 +216,6 @@ async function processarProximoDaFila(): Promise<void> {
     const textosParaEmbedding = trechos.map((t) => t.conteudo);
     const embeddings = await gerarEmbeddingsEmLote(textosParaEmbedding, openai);
 
-    const ehCorporativo = titularIdentificado.toLowerCase().includes('delta') || !titularIdentificado;
-    const pessoaId = ehCorporativo
-      ? null
-      : titularIdentificado.toLowerCase().includes('thomaz')
-      ? 'tit_thomaz'
-      : `tit_${titularIdentificado.toLowerCase().replace(/\s+/g, '_')}`;
-
     // Insere trechos com embeddings no Supabase (respeitando o schema real da tabela trechos)
     const linhasTrechos = trechos.map((tr, idx) => ({
       documento_id: docId,
@@ -244,6 +248,7 @@ async function processarProximoDaFila(): Promise<void> {
         status_indexacao: 'indexado',
         erro_indexacao: null,
         pessoa_id: pessoaId,
+        titular: titularFinalGravado,
         corporativo: ehCorporativo,
       })
       .eq('id', docId);

@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { getSupabaseClient } from '../db/supabaseClient.js';
-import { salvarOuAtualizarTitular, obterTodosTitulares } from '../storage.js';
+import { salvarOuAtualizarTitular, obterTodosTitulares, resolverTitularCadastrado } from '../storage.js';
 import { formatarHorarioBrasilia } from '../utils/dataHoraUtils.js';
 
 export type TipoPendenciaWhatsApp =
@@ -313,10 +313,9 @@ Retorne estritamente JSON: {"nomeTitular": string | null, "querCadastrarNovo": b
 
         const parsed = JSON.parse(resp.choices[0]?.message?.content || '{}');
         if (parsed.nomeTitular) {
-          const titularFinal = parsed.nomeTitular.trim();
-          const titularExistente = titulares.find(
-            (t) => t.nome.toLowerCase() === titularFinal.toLowerCase()
-          );
+          const titularInformado = parsed.nomeTitular.trim();
+          const titularExistente = resolverTitularCadastrado(titularInformado, titulares);
+          const titularFinal = titularExistente ? titularExistente.nome : titularInformado;
           const pessoaId = titularExistente
             ? titularExistente.id
             : `tit_${titularFinal.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
@@ -401,22 +400,34 @@ Retorne estritamente JSON:
     }
 
     if (titularExtraido && tipoExtraido) {
-      // Verifica se existe duplicidade com os novos dados
-      const { data: existente } = await supabase
+      const todosTitulares = await obterTodosTitulares();
+      const titRes = resolverTitularCadastrado(titularExtraido, todosTitulares);
+      const titularFinal = titRes ? titRes.nome : titularExtraido;
+      const pessoaIdFinal = titRes ? titRes.id : null;
+
+      // Verifica se existe duplicidade com os novos dados pelo ID do titular ou titular
+      let queryDuplicidade = supabase
         .from('documentos')
         .select('id, titulo, created_at')
-        .ilike('titular', titularExtraido)
         .ilike('tipo', tipoExtraido)
         .eq('status_indexacao', 'indexado')
         .neq('id', pendencia.documento_id)
-        .limit(1)
-        .maybeSingle();
+        .limit(1);
 
-      const tituloAtualizado = `${tipoExtraido} ${titularExtraido}`.trim();
+      if (pessoaIdFinal) {
+        queryDuplicidade = queryDuplicidade.eq('pessoa_id', pessoaIdFinal);
+      } else {
+        queryDuplicidade = queryDuplicidade.ilike('titular', titularFinal);
+      }
+
+      const { data: existente } = await queryDuplicidade.maybeSingle();
+
+      const tituloAtualizado = `${tipoExtraido} ${titularFinal}`.trim();
       await supabase
         .from('documentos')
         .update({
-          titular: titularExtraido,
+          titular: titularFinal,
+          pessoa_id: pessoaIdFinal,
           tipo: tipoExtraido,
           titulo: tituloAtualizado,
         })
@@ -425,7 +436,8 @@ Retorne estritamente JSON:
       await supabase
         .from('trechos')
         .update({
-          titular: titularExtraido,
+          titular: titularFinal,
+          pessoa_id: pessoaIdFinal,
           tipo_documento: tipoExtraido,
           documento_titulo: tituloAtualizado,
         })

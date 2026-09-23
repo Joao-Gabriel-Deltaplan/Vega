@@ -77,6 +77,8 @@ export interface DocumentoRegistro {
   arquivo: string;
   tipo?: string;
   titular?: string;
+  pessoaId?: string | null;
+  pessoa_id?: string | null;
   descricao?: string;
   apelidos?: string[];
   visibilidade: VisibilidadeDoc;

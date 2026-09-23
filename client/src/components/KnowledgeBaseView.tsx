@@ -601,6 +601,11 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   const isTitularAberto = (titId: string) => titularesExpandidos[titId] !== false;
 
   const docPertenceAoTitular = (doc: DocumentoRegistro, tit: FichaTitular): boolean => {
+    // 1. Vinculação prioritária e canônica pelo ID do cadastro (pessoa_id)
+    const pId = doc.pessoaId || doc.pessoa_id;
+    if (pId) {
+      return pId === tit.id;
+    }
     if (!doc.titular) return false;
     const dTit = doc.titular.toLowerCase().trim();
     const tNome = tit.nome.toLowerCase().trim();

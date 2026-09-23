@@ -16,6 +16,8 @@ import {
   salvarDocumentos,
   obterTodosConhecimentos,
   atualizarDocumento,
+  obterTodosTitulares,
+  resolverTitularCadastrado,
 } from '../storage.js';
 import { DocumentoRegistro, ItemConhecimento } from '../types.js';
 import { atualizarValidadeDocumento } from '../vencimentos/alertaVencimentoService.js';
@@ -121,11 +123,14 @@ export async function indexarDocumentoBackground(doc: DocumentoRegistro): Promis
 
       // 5. Atualiza o documento no Supabase com hash e vincula trechos ao doc.id existente
       const ehCorporativo = doc.titular?.toLowerCase().includes('delta') || !doc.titular;
-      const pessoaId = ehCorporativo
-        ? null
-        : doc.titular?.toLowerCase().includes('thomaz')
-        ? 'tit_thomaz'
-        : `tit_${doc.titular?.toLowerCase().replace(/\s+/g, '_')}`;
+      let pessoaId = (doc as any).pessoa_id || doc.pessoaId || null;
+      if (!pessoaId && !ehCorporativo && doc.titular) {
+        const todosTitulares = await obterTodosTitulares();
+        const titularResolvido = resolverTitularCadastrado(doc.titular, todosTitulares);
+        if (titularResolvido) {
+          pessoaId = titularResolvido.id;
+        }
+      }
 
       await supabase
         .from('documentos')
@@ -495,11 +500,14 @@ export async function sincronizarSupabaseNoStartup(): Promise<{
       const embeddings = await gerarEmbeddingsEmLote(textosParaEmbedding, openai);
 
       const ehCorporativo = doc.titular?.toLowerCase().includes('delta') || !doc.titular;
-      const pessoaId = ehCorporativo
-        ? null
-        : doc.titular?.toLowerCase().includes('thomaz')
-        ? 'tit_thomaz'
-        : `tit_${doc.titular?.toLowerCase().replace(/\s+/g, '_')}`;
+      let pessoaId = (doc as any).pessoa_id || doc.pessoaId || null;
+      if (!pessoaId && !ehCorporativo && doc.titular) {
+        const todosTitulares = await obterTodosTitulares();
+        const titularResolvido = resolverTitularCadastrado(doc.titular, todosTitulares);
+        if (titularResolvido) {
+          pessoaId = titularResolvido.id;
+        }
+      }
 
       const { data: novoDoc, error: errDoc } = await supabase
         .from('documentos')

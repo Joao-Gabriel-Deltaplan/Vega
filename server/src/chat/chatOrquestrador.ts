@@ -7,6 +7,7 @@ import {
   obterTodosDocumentos,
   obterTodosConhecimentos,
   salvarOuAtualizarTitular,
+  resolverTitularCadastrado,
 } from '../storage.js';
 import {
   buscarDocumentos,
@@ -1727,6 +1728,8 @@ export async function processarMensagemChat(dados: {
   if (intencao === 'listar_documentos') {
     const inicioListagem = Date.now();
     const todosDocs = documentosDisponiveis.length > 0 ? documentosDisponiveis : await obterTodosDocumentos();
+    const todosTitulares = await obterTodosTitulares();
+    const mapaTitulares = new Map(todosTitulares.map((t) => [t.id, t.nome]));
     const nivelAcesso = contato?.nivelAcesso || contato?.ficha?.nivelAcesso || 'geral';
 
     // Filtra pelo nível de acesso
@@ -1746,11 +1749,24 @@ export async function processarMensagemChat(dados: {
     let textoResposta = '';
     const docsRastro: DocumentoRastro[] = [];
 
-    if (titularFiltro) {
-      const primeiroNomeTit = extrairPrimeiroNome(titularFiltro) || titularFiltro;
-      const docsDoTitular = docsAcessiveis.filter((d) =>
-        d.titular && (d.titular.toLowerCase().includes(titularFiltro.toLowerCase()) || titularFiltro.toLowerCase().includes(d.titular.toLowerCase()))
-      );
+    // Tenta resolver o titular pelo cadastro oficial
+    const titularResolvido = titularFiltro ? resolverTitularCadastrado(titularFiltro, todosTitulares) : null;
+
+    if (titularResolvido || titularFiltro) {
+      const nomeExibicao = titularResolvido ? titularResolvido.nome : titularFiltro!;
+      const primeiroNomeTit = extrairPrimeiroNome(nomeExibicao) || nomeExibicao;
+
+      const docsDoTitular = docsAcessiveis.filter((d) => {
+        if (titularResolvido && d.pessoaId) {
+          return d.pessoaId === titularResolvido.id;
+        }
+        if (titularResolvido) {
+          const tNome = titularResolvido.nome.toLowerCase();
+          return d.titular && (d.titular.toLowerCase().includes(tNome) || tNome.includes(d.titular.toLowerCase()));
+        }
+        const f = titularFiltro!.toLowerCase();
+        return d.titular && (d.titular.toLowerCase().includes(f) || f.includes(d.titular.toLowerCase()));
+      });
 
       if (docsDoTitular.length === 0) {
         textoResposta = `Não encontrei nenhum documento cadastrado para o *${primeiroNomeTit}* no Cofre.`;
@@ -1768,10 +1784,10 @@ export async function processarMensagemChat(dados: {
         }
       }
     } else {
-      // Listagem geral agrupada por titular
+      // Listagem geral agrupada por titular usando o nome oficial do cadastro via pessoa_id
       const grupos: Record<string, DocumentoRegistro[]> = {};
       for (const d of docsAcessiveis) {
-        const tit = d.titular || 'Documentos da Empresa';
+        const tit = (d.pessoaId && mapaTitulares.get(d.pessoaId)) || d.titular || 'Documentos da Empresa';
         if (!grupos[tit]) grupos[tit] = [];
         grupos[tit].push(d);
       }
@@ -3152,10 +3168,12 @@ DIRETRIZES OBRIGATÓRIAS:
     const titularHist = extrairUltimoTitularDoHistorico(historicoRecente);
     const pessoaIdentificada =
       classificacao.pessoa || pessoa || titularHist || (contato.nome.toLowerCase().includes('thomaz') ? 'Thomaz' : null);
-    if (pessoaIdentificada && pessoaIdentificada.toLowerCase().includes('thomaz')) {
-      pessoaIdAlvo = 'tit_thomaz';
-    } else if (pessoaIdentificada && pessoaIdentificada.toLowerCase().includes('menegazzo')) {
-      pessoaIdAlvo = 'tit_menegazzo';
+    if (pessoaIdentificada) {
+      const todosTitulares = await obterTodosTitulares();
+      const titResolvido = resolverTitularCadastrado(pessoaIdentificada, todosTitulares);
+      if (titResolvido) {
+        pessoaIdAlvo = titResolvido.id;
+      }
     }
 
     // 1. Busca por nome no Conhecimento caso a mensagem seja o título direto/termo exato

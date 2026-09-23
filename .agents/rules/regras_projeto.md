@@ -85,6 +85,8 @@ Nenhum outro modelo ou alias obsoleto (ex: gpt-4o, gpt-3.5-turbo, whisper-1) dev
   O tipo de documento não deve ser restrito a listas fixas. A IA deve classificar pelo nome real do documento (Passaporte, Título de Eleitor, Contrato, Alvará, Nota Fiscal, Procuração, etc.). "Outros" só deve ser usado caso seja impossível classificar, gerando pergunta de confirmação.
 - **Titularidade de documentos de identificação:**
   Para documentos pessoais/identificação (passaporte, RG, CNH, certidões), o titular deve ser extraído do nome que consta no próprio documento. Se esse nome não corresponder a nenhum titular previamente cadastrado, o sistema deve perguntar ao usuário se deseja cadastrar um novo titular.
+- **Vinculação estrita por ID de cadastro:**
+  Documentos se vinculam ao titular pelo ID do cadastro; o nome nunca é usado como chave. O agrupamento e a exibição de documentos devem usar obrigatoriamente o nome oficial do cadastro do titular, nunca o texto salvo no documento. Ao identificar o titular de um documento novo, se o nome casar com um titular já cadastrado (nome completo, primeiro nome ou apelido), o sistema deve vinculá-lo ao titular existente em vez de criar outro.
 
 ---
 

@@ -6,7 +6,7 @@ import { extractText } from 'unpdf';
 import { AnaliseDocumentoResponse, VisibilidadeDoc } from './types.js';
 import { extrairCamposTitularDeDocumento } from './extracaoTitularService.js';
 import { extrairTextoImagemComVisao } from './indexador/indexadorService.js';
-import { obterTodosTitulares } from './storage.js';
+import { obterTodosTitulares, resolverTitularCadastrado } from './storage.js';
 
 const TEMP_DIR = path.resolve(process.cwd(), 'temp_ocr');
 
@@ -229,9 +229,17 @@ RETORNE ESTRITAMENTE UM JSON no formato:
         const parsed = JSON.parse(conteudoResposta);
 
         const tipoFinal = (parsed.tipoDocumento || '').trim();
-        const titularFinal = (parsed.titularIdentificado || '').trim();
+        let titularFinal = (parsed.titularIdentificado || '').trim();
         const nomeNoDoc = (parsed.nomeNoDocumento || '').trim() || null;
-        const novoTitularSugerido = !!parsed.novoTitularSugerido;
+        let novoTitularSugerido = !!parsed.novoTitularSugerido;
+
+        // Regra Oficial 3: Se casar com um titular já cadastrado, vincular ao existente em vez de criar outro
+        const titularesCadastrados = await obterTodosTitulares();
+        const titVinculado = resolverTitularCadastrado(titularFinal || nomeNoDoc, titularesCadastrados);
+        if (titVinculado) {
+          titularFinal = titVinculado.nome;
+          novoTitularSugerido = false;
+        }
 
         const camposSugeridosTitular = extrairCamposTitularDeDocumento({
           tipo: tipoFinal,
