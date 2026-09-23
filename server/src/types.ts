@@ -68,6 +68,19 @@ export interface OpcaoDocumento {
   titulo: string;
 }
 
+export interface DadosEstruturadosMensagem {
+  tipo: 'pix' | 'link' | 'contato' | 'regra';
+  titulo: string;
+  conteudo?: string;
+  chavePix?: string;
+  tipoChavePix?: string;
+  titularPix?: string;
+  bancoPix?: string;
+  link?: string;
+  telefone?: string;
+  setor?: string;
+}
+
 export interface Mensagem {
   id: string;
   remetente: 'cliente' | 'assistente';
@@ -81,13 +94,14 @@ export interface Mensagem {
   correcaoPendente?: CorrecaoPendenteFicha;
   rastroId?: string;
   rastro?: RastroRegistro;
-  tipoMensagem?: 'texto' | 'audio';
+  tipoMensagem?: 'texto' | 'audio' | 'documento' | 'imagem' | 'sistema';
   duracaoAudioSegundos?: number;
   audioOriginal?: boolean;
   audioStoragePath?: string;
   audioMimeType?: string;
   audioExpirado?: boolean;
   timestamp?: string;
+  dadosEstruturados?: DadosEstruturadosMensagem;
 }
 
 export interface FichaContato {

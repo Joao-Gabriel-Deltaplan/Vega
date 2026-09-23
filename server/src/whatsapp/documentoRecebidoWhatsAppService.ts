@@ -3,7 +3,7 @@ import { EvolutionConfig, obterConfigEvolution } from './evolutionSenderService.
 import { uploadArquivoStorage } from '../utils/storageUtils.js';
 import { adicionarDocumento } from '../storage.js';
 import { enfileirarProcessamentoDocumento } from '../processadorSegundoPlanoService.js';
-import { DocumentoRegistro } from '../types.js';
+import { DocumentoRegistro, Anexo } from '../types.js';
 import { UsuarioWhatsApp } from './types.js';
 import { normalizarNumeroCanonica } from './usuarioWhatsAppService.js';
 
@@ -408,6 +408,15 @@ export async function obterBufferDocumentoWhatsApp(
   return { buffer, metodo: 'api_download' };
 }
 
+export interface ResultadoProcessamentoDocumentoWhatsApp {
+  autorizado: boolean;
+  doc?: DocumentoRegistro;
+  mensagemResposta: string;
+  anexo?: Anexo;
+  legenda?: string;
+  isImagem?: boolean;
+}
+
 /**
  * Salva o documento recebido pelo WhatsApp no Cofre e enfileira para processamento em segundo plano.
  * Apenas usuários com perfil admin têm permissão para enviar documentos.
@@ -417,7 +426,7 @@ export async function processarDocumentoRecebidoWhatsApp(
   info: InfoDocumentoMensagem,
   usuario: UsuarioWhatsApp,
   config: EvolutionConfig | null
-): Promise<{ doc?: DocumentoRegistro; mensagemResposta: string; autorizado: boolean }> {
+): Promise<ResultadoProcessamentoDocumentoWhatsApp> {
   // Ponto 5: Só perfil admin pode enviar documentos
   if (usuario.perfil !== 'admin') {
     console.warn(
@@ -430,13 +439,13 @@ export async function processarDocumentoRecebidoWhatsApp(
   }
 
   const { buffer, metodo } = await obterBufferDocumentoWhatsApp(evento, info, config);
-  const nomeOriginal = info.nomeArquivo || `documento_whatsapp_${Date.now()}.pdf`;
+  const nomeOriginal = info.nomeArquivo || `documento_whatsapp_${Date.now()}.${info.isImagem ? 'jpg' : 'pdf'}`;
   const nomeSanitizado = path.basename(nomeOriginal);
   const conversaId = `wa-${normalizarNumeroCanonica(usuario.numero)}`;
   const remetenteJid = evento?.key?.remoteJid || `${usuario.numero}@s.whatsapp.net`;
 
   // 1. Upload imediato para o Supabase Storage
-  const storagePath = await uploadArquivoStorage(nomeSanitizado, buffer, info.mimetype || 'application/pdf');
+  const storagePath = await uploadArquivoStorage(nomeSanitizado, buffer, info.mimetype || (info.isImagem ? 'image/jpeg' : 'application/pdf'));
 
   // 2. Registro imediato na tabela documentos com status 'processando' e metadados de origem
   const novoDoc: DocumentoRegistro = {
@@ -471,9 +480,23 @@ export async function processarDocumentoRecebidoWhatsApp(
     `[WhatsApp Documento 📥] Documento "${novoDoc.arquivo}" recebido de ${usuario.nome} (Método: ${metodo}) e enfileirado para processamento em segundo plano.`
   );
 
+  const tipoAnexo: 'imagem' | 'pdf' = info.isImagem ? 'imagem' : 'pdf';
+  const anexo: Anexo = {
+    tipo: tipoAnexo,
+    url: `/arquivos/${encodeURIComponent(nomeSanitizado)}`,
+    nome: nomeSanitizado,
+    titulo: novoDoc.titulo,
+    tamanho: novoDoc.tamanho,
+    mimeType: info.mimetype || (tipoAnexo === 'imagem' ? 'image/jpeg' : 'application/pdf'),
+    visibilidade: 'diretoria',
+  };
+
   return {
     autorizado: true,
     doc: novoDoc,
     mensagemResposta: `Recebi seu documento *${nomeSanitizado}*! Já foi salvo no Cofre e estou analisando com IA em segundo plano. Assim que terminar, te aviso aqui.`,
+    anexo,
+    legenda: info.legenda,
+    isImagem: info.isImagem,
   };
 }

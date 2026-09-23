@@ -128,7 +128,7 @@ export function App() {
   }, [conversas]);
 
   // Busca lista de conversas reais do WhatsApp
-  const carregarConversasWhatsApp = useCallback(async () => {
+  const carregarConversasWhatsApp = useCallback(async (silencioso = false) => {
     try {
       const res = await fetch('/api/conversas?tipo=whatsapp');
       if (res.status === 401) {
@@ -137,7 +137,36 @@ export function App() {
       }
       if (res.ok) {
         const dados: Conversa[] = await res.json();
-        setConversas(dados);
+        setConversas((prev) => {
+          // Se não houver dados prévios, adota os recebidos
+          if (prev.length === 0) return dados;
+
+          // Mescla para não perder estado instantâneo de streaming ou mensagens locais
+          const dadosMap = new Map(dados.map((c) => [c.id, c]));
+          const atualizadas = prev.map((c) => {
+            const nova = dadosMap.get(c.id);
+            if (!nova) return c;
+            // Se a versão nova do servidor tiver mais mensagens ou atualização mais recente, usa a do servidor
+            if ((nova.mensagens?.length || 0) >= (c.mensagens?.length || 0)) {
+              return nova;
+            }
+            return c;
+          });
+
+          // Adiciona conversas novas que não estavam na lista
+          for (const d of dados) {
+            if (!prev.some((p) => p.id === d.id)) {
+              atualizadas.push(d);
+            }
+          }
+
+          return atualizadas.sort((a, b) => {
+            const tA = new Date(a.ultimaAtualizacao || 0).getTime();
+            const tB = new Date(b.ultimaAtualizacao || 0).getTime();
+            return tB - tA;
+          });
+        });
+
         // Se nenhuma estiver ativa, ativa a primeira da lista
         setConversaAtivaId((atual) => {
           if (!atual && dados.length > 0) return dados[0].id;
@@ -145,7 +174,7 @@ export function App() {
         });
       }
     } catch (err) {
-      console.error('Erro ao buscar conversas do WhatsApp:', err);
+      if (!silencioso) console.error('Erro ao buscar conversas do WhatsApp:', err);
     } finally {
       setCarregandoConversas(false);
     }
@@ -155,6 +184,37 @@ export function App() {
     if (autenticado) {
       carregarConversasWhatsApp();
     }
+  }, [autenticado, carregarConversasWhatsApp]);
+
+  // Sincronização inteligente: revalida ao focar na janela ou voltar para a aba
+  useEffect(() => {
+    if (!autenticado) return;
+
+    const handleFocus = () => {
+      carregarConversasWhatsApp(true);
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        carregarConversasWhatsApp(true);
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    // Polling suave de fallback a cada 8 segundos na aba de conversas
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        carregarConversasWhatsApp(true);
+      }
+    }, 8000);
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      clearInterval(interval);
+    };
   }, [autenticado, carregarConversasWhatsApp]);
 
   // Hook SSE para atualização em tempo real
@@ -173,7 +233,9 @@ export function App() {
         if (existe) {
           lista = prev.map((c) => {
             if (c.id === conversaId) {
-              const novasMsgs = [...c.mensagens, msg];
+              // Evita duplicar se a mensagem com mesmo ID já existir
+              const jaExiste = c.mensagens.some((m) => m.id === msg.id);
+              const novasMsgs = jaExiste ? c.mensagens : [...c.mensagens, msg];
               const naoLidas =
                 conversaId === conversaAtivaId
                   ? 0

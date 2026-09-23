@@ -37,7 +37,7 @@ import {
 } from '../storage.js';
 import { processarMensagemChat } from '../chat/chatOrquestrador.js';
 import { salvarRastro } from '../rastros/rastroService.js';
-import { Contato, Mensagem, RastroRegistro, NivelAcesso, SetorUsuario, Anexo } from '../types.js';
+import { Contato, Mensagem, RastroRegistro, NivelAcesso, SetorUsuario, Anexo, Conversa } from '../types.js';
 import { ASSISTENTE } from '../config/assistente.js';
 import { eventosPainel } from '../eventos/eventosService.js';
 import { salvarAudioOriginalStorage } from './audioStorageService.js';
@@ -183,6 +183,37 @@ export function extrairTextoMensagem(mensagemObj: any): string {
  * Resposta fixa para remetentes não autorizados
  */
 export const RESPOSTA_NAO_AUTORIZADO = 'Este número não tem acesso à VEGA.';
+
+/**
+ * Garante que a conversa do WhatsApp exista no Supabase
+ */
+export async function garantirConversaWhatsApp(conversaId: string, contato: Contato): Promise<Conversa> {
+  let conversa = await obterConversaPorId(conversaId);
+  if (!conversa) {
+    conversa = {
+      id: conversaId,
+      contato,
+      naoLidas: 0,
+      ultimaAtualizacao: new Date().toISOString(),
+      mensagens: [],
+    };
+    await salvarConversa(conversa);
+  } else {
+    conversa.contato = contato;
+  }
+  return conversa;
+}
+
+/**
+ * Adiciona mensagem à conversa e notifica o painel web em tempo real via SSE
+ */
+export async function registrarMensagemETransmitir(conversaId: string, msg: Mensagem): Promise<Conversa | null> {
+  const conversaAtualizada = await adicionarMensagem(conversaId, msg);
+  if (conversaAtualizada) {
+    eventosPainel.emitirNovaMensagem(conversaId, msg, conversaAtualizada);
+  }
+  return conversaAtualizada;
+}
 
 /**
  * Processa um evento individual recebido do webhook da Evolution API
@@ -344,6 +375,40 @@ export async function processarEventoEvolution(
     }
   }
 
+  // 3. IDENTIFICAÇÃO E RESOLUÇÃO DO REMETENTE E CONTATO
+  const pushNameRecebido = evento?.pushName?.trim();
+  const numeroIdentificado =
+    numeroTelefoneReal ||
+    (remetenteOrigem && !isLid ? remetenteOrigem.split('@')[0].split(':')[0].replace(/\D/g, '') : '') ||
+    lidLimpo ||
+    'desconhecido';
+  const numeroFinal = usuarioAutorizado?.numero || numeroIdentificado;
+  const numeroCanonica = normalizarNumeroCanonica(numeroFinal);
+  const conversaId = `wa-${numeroCanonica}`;
+
+  const nivelAcesso: NivelAcesso = usuarioAutorizado?.perfil === 'admin' ? 'diretoria' : 'geral';
+  const setorUsuario: SetorUsuario = usuarioAutorizado?.perfil === 'admin' ? 'Diretoria' : 'Administrativo';
+  const cargoUsuario = usuarioAutorizado?.perfil === 'admin' ? 'Administrador' : (usuarioAutorizado ? 'Colaborador' : 'Não Cadastrado');
+
+  const contato: Contato = {
+    id: usuarioAutorizado ? `ct-${usuarioAutorizado.id}` : `ct-nao-auth-${numeroCanonica}`,
+    nome: usuarioAutorizado?.nome || pushNameRecebido || `WhatsApp ${numeroCanonica}`,
+    telefone: usuarioAutorizado?.numero || numeroIdentificado,
+    avatarCor: usuarioAutorizado ? '#25D366' : '#94a3b8',
+    cargo: cargoUsuario,
+    setor: setorUsuario,
+    nivelAcesso,
+    titularVinculado: usuarioAutorizado?.pessoa_id || undefined,
+    ficha: {
+      cargo: cargoUsuario,
+      setor: setorUsuario,
+      nivelAcesso,
+      observacoes: usuarioAutorizado
+        ? `WhatsApp ${usuarioAutorizado.perfil} (ID: ${usuarioAutorizado.id})`
+        : 'Contato não autorizado que enviou mensagem pelo WhatsApp',
+    },
+  };
+
   if (!usuarioAutorizado) {
     const dataHora = new Date().toLocaleString('pt-BR');
     console.warn(
@@ -351,6 +416,35 @@ export async function processarEventoEvolution(
         isLid ? `(LID: ${lidLimpo || 'desconhecido'})` : ''
       } | Origem: ${ipOrigem}`
     );
+
+    // REGRA OFICIAL: Toda mensagem recebida ou enviada pelo WhatsApp DEVE ser gravada na conversa no Supabase!
+    try {
+      await garantirConversaWhatsApp(conversaId, contato);
+      const textoRecebido = extrairTextoMensagem(evento.message) || '[Mídia ou mensagem sem texto recebida]';
+      const msgUsuarioNaoAuth: Mensagem = {
+        id: mensagemId || `wa-msg-${Date.now()}-user-nao-auth`,
+        remetente: 'cliente',
+        nomeRemetente: contato.nome,
+        horario: formatarHorarioBrasilia(),
+        timestamp: obterAgoraIsoUtc(),
+        texto: textoRecebido,
+        tipoMensagem: 'texto',
+      };
+      await registrarMensagemETransmitir(conversaId, msgUsuarioNaoAuth);
+
+      const msgVegaRecusa: Mensagem = {
+        id: `wa-msg-${Date.now()}-vega-recusa`,
+        remetente: 'assistente',
+        nomeRemetente: ASSISTENTE.nomeExibicao,
+        horario: formatarHorarioBrasilia(),
+        timestamp: obterAgoraIsoUtc(),
+        texto: RESPOSTA_NAO_AUTORIZADO,
+        origem: 'motor',
+      };
+      await registrarMensagemETransmitir(conversaId, msgVegaRecusa);
+    } catch (errPersist) {
+      console.warn('[Webhook WhatsApp ⚠️] Falha ao registrar mensagem não autorizada na conversa:', errPersist);
+    }
 
     // Resposta curta e fixa para o mesmo identificador de onde veio a mensagem (remoteJid @lid)
     return {
@@ -389,6 +483,30 @@ export async function processarEventoEvolution(
       const validacaoPrevia = validarLimitesAudio(infoAudio.duracaoSegundos, infoAudio.tamanhoBytes || 0);
       if (!validacaoPrevia.valido) {
         console.warn(`[Webhook WhatsApp ⚠️] Áudio rejeitado por limites: ${validacaoPrevia.mensagemAviso}`);
+        try {
+          await garantirConversaWhatsApp(conversaId, contato);
+          await registrarMensagemETransmitir(conversaId, {
+            id: mensagemId || `wa-msg-${Date.now()}-user-audio`,
+            remetente: 'cliente',
+            nomeRemetente: contato.nome,
+            horario: formatarHorarioBrasilia(),
+            timestamp: obterAgoraIsoUtc(),
+            texto: `[Áudio recebido (~${infoAudio.duracaoSegundos || 0}s) - rejeitado por limite]`,
+            tipoMensagem: 'audio',
+            duracaoAudioSegundos: infoAudio.duracaoSegundos,
+          });
+          await registrarMensagemETransmitir(conversaId, {
+            id: `wa-msg-${Date.now()}-vega-audio-limite`,
+            remetente: 'assistente',
+            nomeRemetente: ASSISTENTE.nomeExibicao,
+            horario: formatarHorarioBrasilia(),
+            timestamp: obterAgoraIsoUtc(),
+            texto: validacaoPrevia.mensagemAviso || 'Áudio não atende aos limites permitidos.',
+            origem: 'motor',
+          });
+        } catch (errPersist) {
+          console.warn('[Webhook WhatsApp ⚠️] Falha ao registrar áudio rejeitado na conversa:', errPersist);
+        }
         return {
           sucesso: true,
           status: 'processado',
@@ -403,10 +521,32 @@ export async function processarEventoEvolution(
     const configEvolution = obterConfigEvolution();
     if (!configEvolution) {
       console.error('[Webhook WhatsApp ❌] Configuração da Evolution API não encontrada para baixar áudio.');
+      const msgFalhaConfig = 'Não consegui processar o áudio, pode escrever ou gravar de novo?';
+      try {
+        await garantirConversaWhatsApp(conversaId, contato);
+        await registrarMensagemETransmitir(conversaId, {
+          id: mensagemId || `wa-msg-${Date.now()}-user-audio-err`,
+          remetente: 'cliente',
+          nomeRemetente: contato.nome,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: '[Áudio recebido]',
+          tipoMensagem: 'audio',
+        });
+        await registrarMensagemETransmitir(conversaId, {
+          id: `wa-msg-${Date.now()}-vega-audio-err`,
+          remetente: 'assistente',
+          nomeRemetente: ASSISTENTE.nomeExibicao,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: msgFalhaConfig,
+          origem: 'motor',
+        });
+      } catch {}
       return {
         sucesso: true,
         status: 'processado',
-        resposta: 'Não consegui processar o áudio, pode escrever ou gravar de novo?',
+        resposta: msgFalhaConfig,
         destinatario: remoteJid,
         mensagemId,
         usuario: usuarioAutorizado,
@@ -421,10 +561,32 @@ export async function processarEventoEvolution(
       audioOriginalMimetype = downloadAudio.mimetype;
     } catch (err: any) {
       console.error('[Webhook WhatsApp ❌] Falha ao obter áudio da Evolution API:', err?.message || err);
+      const msgFalhaDl = 'Não consegui processar o áudio, pode escrever ou gravar de novo?';
+      try {
+        await garantirConversaWhatsApp(conversaId, contato);
+        await registrarMensagemETransmitir(conversaId, {
+          id: mensagemId || `wa-msg-${Date.now()}-user-audio-err`,
+          remetente: 'cliente',
+          nomeRemetente: contato.nome,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: '[Áudio recebido - falha no download]',
+          tipoMensagem: 'audio',
+        });
+        await registrarMensagemETransmitir(conversaId, {
+          id: `wa-msg-${Date.now()}-vega-audio-err`,
+          remetente: 'assistente',
+          nomeRemetente: ASSISTENTE.nomeExibicao,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: msgFalhaDl,
+          origem: 'motor',
+        });
+      } catch {}
       return {
         sucesso: true,
         status: 'processado',
-        resposta: 'Não consegui processar o áudio, pode escrever ou gravar de novo?',
+        resposta: msgFalhaDl,
         destinatario: remoteJid,
         mensagemId,
         usuario: usuarioAutorizado,
@@ -435,6 +597,28 @@ export async function processarEventoEvolution(
     const validacaoBuffer = validarLimitesAudio(downloadAudio.duracaoSegundos, downloadAudio.tamanhoBytes);
     if (!validacaoBuffer.valido) {
       console.warn(`[Webhook WhatsApp ⚠️] Áudio rejeitado por limites reais: ${validacaoBuffer.mensagemAviso}`);
+      try {
+        await garantirConversaWhatsApp(conversaId, contato);
+        await registrarMensagemETransmitir(conversaId, {
+          id: mensagemId || `wa-msg-${Date.now()}-user-audio-lim`,
+          remetente: 'cliente',
+          nomeRemetente: contato.nome,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: `[Áudio recebido (${downloadAudio.duracaoSegundos}s) - rejeitado por limite]`,
+          tipoMensagem: 'audio',
+          duracaoAudioSegundos: downloadAudio.duracaoSegundos,
+        });
+        await registrarMensagemETransmitir(conversaId, {
+          id: `wa-msg-${Date.now()}-vega-audio-lim`,
+          remetente: 'assistente',
+          nomeRemetente: ASSISTENTE.nomeExibicao,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: validacaoBuffer.mensagemAviso || 'Áudio excede os limites permitidos.',
+          origem: 'motor',
+        });
+      } catch {}
       return {
         sucesso: true,
         status: 'processado',
@@ -457,10 +641,33 @@ export async function processarEventoEvolution(
 
       if (!resultadoTranscricao.texto || resultadoTranscricao.texto.trim().length === 0) {
         console.warn('[Webhook WhatsApp ⚠️] Transcrição retornou texto vazio.');
+        const msgVazio = 'Não consegui entender o áudio, pode escrever ou gravar de novo?';
+        try {
+          await garantirConversaWhatsApp(conversaId, contato);
+          await registrarMensagemETransmitir(conversaId, {
+            id: mensagemId || `wa-msg-${Date.now()}-user-audio-vazio`,
+            remetente: 'cliente',
+            nomeRemetente: contato.nome,
+            horario: formatarHorarioBrasilia(),
+            timestamp: obterAgoraIsoUtc(),
+            texto: '[Áudio inaudível ou vazio]',
+            tipoMensagem: 'audio',
+            duracaoAudioSegundos: downloadAudio.duracaoSegundos,
+          });
+          await registrarMensagemETransmitir(conversaId, {
+            id: `wa-msg-${Date.now()}-vega-audio-vazio`,
+            remetente: 'assistente',
+            nomeRemetente: ASSISTENTE.nomeExibicao,
+            horario: formatarHorarioBrasilia(),
+            timestamp: obterAgoraIsoUtc(),
+            texto: msgVazio,
+            origem: 'motor',
+          });
+        } catch {}
         return {
           sucesso: true,
           status: 'processado',
-          resposta: 'Não consegui entender o áudio, pode escrever ou gravar de novo?',
+          resposta: msgVazio,
           destinatario: remoteJid,
           mensagemId,
           usuario: usuarioAutorizado,
@@ -483,10 +690,32 @@ export async function processarEventoEvolution(
       console.error(
         `[Webhook WhatsApp ❌] A OpenAI recusou o modelo ou falhou ao transcrever áudio (motivo exato): ${motivoExato}`
       );
+      const msgErroTr = 'Não consegui processar o áudio, pode escrever ou gravar de novo?';
+      try {
+        await garantirConversaWhatsApp(conversaId, contato);
+        await registrarMensagemETransmitir(conversaId, {
+          id: mensagemId || `wa-msg-${Date.now()}-user-audio-err`,
+          remetente: 'cliente',
+          nomeRemetente: contato.nome,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: '[Áudio recebido - falha na transcrição]',
+          tipoMensagem: 'audio',
+        });
+        await registrarMensagemETransmitir(conversaId, {
+          id: `wa-msg-${Date.now()}-vega-audio-err`,
+          remetente: 'assistente',
+          nomeRemetente: ASSISTENTE.nomeExibicao,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: msgErroTr,
+          origem: 'motor',
+        });
+      } catch {}
       return {
         sucesso: true,
         status: 'processado',
-        resposta: 'Não consegui processar o áudio, pode escrever ou gravar de novo?',
+        resposta: msgErroTr,
         destinatario: remoteJid,
         mensagemId,
         usuario: usuarioAutorizado,
@@ -502,6 +731,8 @@ export async function processarEventoEvolution(
     }
 
     if (infoDoc.isDocumento || infoDoc.isImagem) {
+      await garantirConversaWhatsApp(conversaId, contato);
+
       // Ponto 5: Só perfil admin pode enviar documentos; para os demais, responder que não tem permissão
       if (usuarioAutorizado.perfil !== 'admin') {
         const msgSemPermissao =
@@ -513,6 +744,29 @@ export async function processarEventoEvolution(
           false,
           'Recusado: perfil comum não tem permissão para enviar ao Cofre.'
         );
+
+        const msgCliente: Mensagem = {
+          id: mensagemId || `wa-msg-${Date.now()}-user-sem-perm`,
+          remetente: 'cliente',
+          nomeRemetente: contato.nome,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: infoDoc.legenda || (infoDoc.isImagem ? '[Foto enviada pelo WhatsApp]' : `[Documento: ${infoDoc.nomeArquivo || 'arquivo'}]`),
+          tipoMensagem: infoDoc.isImagem ? 'imagem' : 'documento',
+        };
+        await registrarMensagemETransmitir(conversaId, msgCliente);
+
+        const msgAssistente: Mensagem = {
+          id: `wa-msg-${Date.now()}-vega-sem-perm`,
+          remetente: 'assistente',
+          nomeRemetente: ASSISTENTE.nomeExibicao,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: msgSemPermissao,
+          origem: 'motor',
+        };
+        await registrarMensagemETransmitir(conversaId, msgAssistente);
+
         return {
           sucesso: true,
           status: 'processado',
@@ -536,6 +790,29 @@ export async function processarEventoEvolution(
           false,
           'Falha: EVOLUTION_API_URL / INSTANCE não configuradas e base64 ausente no payload.'
         );
+
+        const msgCliente: Mensagem = {
+          id: mensagemId || `wa-msg-${Date.now()}-user-sem-config`,
+          remetente: 'cliente',
+          nomeRemetente: contato.nome,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: infoDoc.legenda || (infoDoc.isImagem ? '[Foto enviada]' : `[Documento: ${infoDoc.nomeArquivo || 'arquivo'}]`),
+          tipoMensagem: infoDoc.isImagem ? 'imagem' : 'documento',
+        };
+        await registrarMensagemETransmitir(conversaId, msgCliente);
+
+        const msgAssistente: Mensagem = {
+          id: `wa-msg-${Date.now()}-vega-sem-config`,
+          remetente: 'assistente',
+          nomeRemetente: ASSISTENTE.nomeExibicao,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: msgSemConfig,
+          origem: 'motor',
+        };
+        await registrarMensagemETransmitir(conversaId, msgAssistente);
+
         return {
           sucesso: true,
           status: 'processado',
@@ -562,6 +839,31 @@ export async function processarEventoEvolution(
           `Enfileirado com sucesso (${infoDoc.nomeArquivo || 'documento'}).`
         );
 
+        // REGISTRA A MENSAGEM DO CLIENTE COM O ARQUIVO/IMAGEM ANEXADO
+        const msgCliente: Mensagem = {
+          id: mensagemId || `wa-msg-${Date.now()}-user-doc`,
+          remetente: 'cliente',
+          nomeRemetente: contato.nome,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: resultadoDoc.legenda || (resultadoDoc.isImagem ? `Foto: ${resultadoDoc.anexo?.nome || 'imagem'}` : `Documento: ${resultadoDoc.anexo?.nome || 'arquivo'}`),
+          tipoMensagem: resultadoDoc.isImagem ? 'imagem' : 'documento',
+          anexos: resultadoDoc.anexo ? [resultadoDoc.anexo] : undefined,
+        };
+        await registrarMensagemETransmitir(conversaId, msgCliente);
+
+        // REGISTRA A RESPOSTA IMEDIATA DA VEGA
+        const msgAssistente: Mensagem = {
+          id: `wa-msg-${Date.now()}-vega-doc-ok`,
+          remetente: 'assistente',
+          nomeRemetente: ASSISTENTE.nomeExibicao,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: resultadoDoc.mensagemResposta,
+          origem: 'motor',
+        };
+        await registrarMensagemETransmitir(conversaId, msgAssistente);
+
         return {
           sucesso: true,
           status: 'processado',
@@ -580,11 +882,36 @@ export async function processarEventoEvolution(
           false,
           `Erro no salvamento: ${msgErro}`
         );
+
+        const msgErroResposta =
+          'Recebi seu documento, mas ocorreu uma falha temporária ao salvá-lo no Cofre. Por favor, tente enviar novamente.';
+
+        const msgCliente: Mensagem = {
+          id: mensagemId || `wa-msg-${Date.now()}-user-doc-err`,
+          remetente: 'cliente',
+          nomeRemetente: contato.nome,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: infoDoc.legenda || `[Arquivo: ${infoDoc.nomeArquivo || 'documento'}]`,
+          tipoMensagem: infoDoc.isImagem ? 'imagem' : 'documento',
+        };
+        await registrarMensagemETransmitir(conversaId, msgCliente);
+
+        const msgAssistente: Mensagem = {
+          id: `wa-msg-${Date.now()}-vega-doc-err`,
+          remetente: 'assistente',
+          nomeRemetente: ASSISTENTE.nomeExibicao,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: msgErroResposta,
+          origem: 'motor',
+        };
+        await registrarMensagemETransmitir(conversaId, msgAssistente);
+
         return {
           sucesso: true,
           status: 'processado',
-          resposta:
-            'Recebi seu documento, mas ocorreu uma falha temporária ao salvá-lo no Cofre. Por favor, tente enviar novamente.',
+          resposta: msgErroResposta,
           destinatario: remoteJid,
           mensagemId,
           usuario: usuarioAutorizado,
@@ -601,6 +928,28 @@ export async function processarEventoEvolution(
         false,
         `Formato não suportado (${infoDoc.tipoDetectado}). Notificado remetente no WhatsApp.`
       );
+
+      try {
+        await garantirConversaWhatsApp(conversaId, contato);
+        await registrarMensagemETransmitir(conversaId, {
+          id: mensagemId || `wa-msg-${Date.now()}-user-nao-sup`,
+          remetente: 'cliente',
+          nomeRemetente: contato.nome,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: `[Arquivo com formato não suportado: ${infoDoc.tipoDetectado}]`,
+          tipoMensagem: 'documento',
+        });
+        await registrarMensagemETransmitir(conversaId, {
+          id: `wa-msg-${Date.now()}-vega-nao-sup`,
+          remetente: 'assistente',
+          nomeRemetente: ASSISTENTE.nomeExibicao,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: msgNaoSuportado,
+          origem: 'motor',
+        });
+      } catch {}
 
       return {
         sucesso: true,
@@ -632,6 +981,29 @@ export async function processarEventoEvolution(
       );
 
       const msgAjuda = `Olá, ${usuarioAutorizado.nome}! Não consegui compreender este formato de mensagem. Você pode me enviar mensagens de texto, áudio, documentos em PDF ou fotos (JPG, PNG e WEBP).`;
+
+      try {
+        await garantirConversaWhatsApp(conversaId, contato);
+        await registrarMensagemETransmitir(conversaId, {
+          id: mensagemId || `wa-msg-${Date.now()}-user-desc`,
+          remetente: 'cliente',
+          nomeRemetente: contato.nome,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: `[Mensagem recebida em formato não identificado: ${msgType}]`,
+          tipoMensagem: 'texto',
+        });
+        await registrarMensagemETransmitir(conversaId, {
+          id: `wa-msg-${Date.now()}-vega-ajuda`,
+          remetente: 'assistente',
+          nomeRemetente: ASSISTENTE.nomeExibicao,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: msgAjuda,
+          origem: 'motor',
+        });
+      } catch {}
+
       return {
         sucesso: true,
         status: 'processado',
@@ -667,7 +1039,6 @@ export async function processarEventoEvolution(
 
   // 5. REMETENTE AUTORIZADO: PROCESSAMENTO COM A VEGA (IA E COFRE)
   // Atualiza automaticamente pushName (se o nome for provisório) e LID (se ainda não salvo)
-  const pushNameRecebido = evento?.pushName?.trim();
   const nomeGenerico =
     !usuarioAutorizado.nome ||
     usuarioAutorizado.nome.startsWith('Contato ') ||
@@ -701,44 +1072,8 @@ export async function processarEventoEvolution(
     `[Webhook WhatsApp 💬] Mensagem autorizada de "${usuarioAutorizado.nome}" (${usuarioAutorizado.numero}) | Perfil: ${usuarioAutorizado.perfil} | Mensagem: "${textoMensagem}"`
   );
 
-  const numeroCanonica = normalizarNumeroCanonica(usuarioAutorizado.numero);
-  const conversaId = `wa-${numeroCanonica}`;
-
-  const nivelAcesso: NivelAcesso = usuarioAutorizado.perfil === 'admin' ? 'diretoria' : 'geral';
-  const setorUsuario: SetorUsuario = usuarioAutorizado.perfil === 'admin' ? 'Diretoria' : 'Administrativo';
-  const cargoUsuario = usuarioAutorizado.perfil === 'admin' ? 'Administrador' : 'Colaborador';
-
-  const contato: Contato = {
-    id: `ct-${usuarioAutorizado.id}`,
-    nome: usuarioAutorizado.nome || pushNameRecebido || 'Usuário WhatsApp',
-    telefone: usuarioAutorizado.numero,
-    avatarCor: '#25D366',
-    cargo: cargoUsuario,
-    setor: setorUsuario,
-    nivelAcesso,
-    titularVinculado: usuarioAutorizado.pessoa_id || undefined,
-    ficha: {
-      cargo: cargoUsuario,
-      setor: setorUsuario,
-      nivelAcesso,
-      observacoes: `WhatsApp ${usuarioAutorizado.perfil} (ID: ${usuarioAutorizado.id})`,
-    },
-  };
-
   // Carrega ou inicializa a conversa do WhatsApp
-  let conversa = await obterConversaPorId(conversaId);
-  if (!conversa) {
-    conversa = {
-      id: conversaId,
-      contato,
-      naoLidas: 0,
-      ultimaAtualizacao: new Date().toISOString(),
-      mensagens: [],
-    };
-    await salvarConversa(conversa);
-  } else {
-    conversa.contato = contato;
-  }
+  let conversa = await garantirConversaWhatsApp(conversaId, contato);
 
   // Registra mensagem do usuário no histórico com fuso de Brasília e timestamp ISO UTC
   const msgUsuario: Mensagem = {
@@ -877,6 +1212,7 @@ export async function processarEventoEvolution(
     rastro: resultadoChat.rastro,
     documentoOferecidoId: resultadoChat.documentoOferecidoId,
     anexos: resultadoChat.anexos,
+    dadosEstruturados: resultadoChat.dadosEstruturados,
   };
   const conversaAtualizadaAssistente = await adicionarMensagem(conversaId, msgAssistente);
   if (conversaAtualizadaAssistente) {

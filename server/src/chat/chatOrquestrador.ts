@@ -37,6 +37,7 @@ import {
   DocumentoRastro,
   AnexoRastro,
   CorrecaoPendenteFicha,
+  DadosEstruturadosMensagem,
 } from '../types.js';
 import { extrairPrimeiroNome } from '../utils/nomeUtils.js';
 import { criarAnexoParaDocumento } from '../pdfService.js';
@@ -253,6 +254,30 @@ export interface ResultadoChatOrquestrador {
   documentoOferecidoId?: string;
   correcaoPendente?: CorrecaoPendenteFicha;
   rastro?: RastroRegistro;
+  dadosEstruturados?: DadosEstruturadosMensagem;
+}
+
+export function extrairDadosEstruturadosDeItemConhecimento(item: ItemConhecimento): DadosEstruturadosMensagem | undefined {
+  if (!item) return undefined;
+  const tipo = item.tipo || 'regra';
+  const dados: DadosEstruturadosMensagem = {
+    tipo,
+    titulo: item.titulo,
+    conteudo: item.conteudo,
+  };
+
+  if (tipo === 'link') {
+    const match = item.conteudo?.match(/https?:\/\/[^\s]+/i);
+    if (match) dados.link = match[0].replace(/[.,;)]+$/, '');
+  } else if (tipo === 'pix') {
+    const matchChave = item.conteudo?.match(/(?:chave|pix|cpf|cnpj|email|telefone|chave aleat[oó]ria)?[:\s]+([a-zA-Z0-9.\-_@+]+)/i);
+    if (matchChave) dados.chavePix = matchChave[1];
+  } else if (tipo === 'contato') {
+    const matchTel = item.conteudo?.match(/(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)?\d{4,5}[-\s]?\d{4}/);
+    if (matchTel) dados.telefone = matchTel[0];
+  }
+
+  return dados;
 }
 
 /**
@@ -1270,6 +1295,7 @@ export async function processarMensagemChat(dados: {
         intencaoDetectada: 'pergunta_conteudo',
         perguntaReescrita: itemK?.titulo || documentoIdDireto,
         rastro,
+        dadosEstruturados: itemK ? extrairDadosEstruturadosDeItemConhecimento(itemK) : undefined,
       };
     } else {
       const doc = documentosDisponiveis.find((d) => d.id === documentoIdDireto);
@@ -2271,6 +2297,7 @@ export async function processarMensagemChat(dados: {
         buscaUsada: 'Busca por nome na Aba Conhecimento',
         similaridade: `${score}% (Correspondência no título "${item.titulo}")`,
         rastro,
+        dadosEstruturados: extrairDadosEstruturadosDeItemConhecimento(item),
       };
     }
 
@@ -3373,6 +3400,7 @@ DIRETRIZES OBRIGATÓRIAS:
         buscaUsada: 'Busca por nome na Aba Conhecimento',
         similaridade: `100% (Título: "${matchExatoTitulo.titulo}")`,
         rastro,
+        dadosEstruturados: extrairDadosEstruturadosDeItemConhecimento(matchExatoTitulo),
       };
     }
 
@@ -3500,6 +3528,7 @@ DIRETRIZES OBRIGATÓRIAS:
         buscaUsada: 'Busca por nome na Aba Conhecimento (Fallback)',
         similaridade: `${score}%`,
         rastro,
+        dadosEstruturados: extrairDadosEstruturadosDeItemConhecimento(item),
       };
     }
 

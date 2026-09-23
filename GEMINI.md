@@ -121,6 +121,18 @@ Nenhum outro modelo ou alias obsoleto (ex: gpt-4o, gpt-3.5-turbo, whisper-1) dev
 - **Baixa Automática:**
   Quando um documento for adicionado ao Cofre (via painel, segundo plano ou WhatsApp), todos os itens pendentes correspondentes na tabela `documentos_faltantes` devem ser marcados como providenciados automaticamente.
 
+---
 
+## 11. Integridade de Conversas do WhatsApp e Exibição no Painel
 
-
+- **Gravação Obrigatória e Irrestrita:**
+  Toda mensagem enviada ou recebida pelo WhatsApp deve ser gravada na conversa e ser exibível no painel. Nenhum fluxo ou caminho (texto, áudio, documentos/fotos recebidos, conhecimento estruturado como PIX/link/contato, listagem de documentos, documentos faltantes, pendências de upload, mensagens informativas ou correções de ficha) pode responder ou interagir no WhatsApp sem registrar o par de mensagens (remetente e VEGA) no histórico da conversa no Supabase.
+- **Exibição Rica e Sem Ocultação:**
+  O painel web deve renderizar com fidelidade cada formato:
+  - Links navegáveis e interativos clicáveis (`target="_blank"`).
+  - Áudios recebidos (player com reprodução e transcrição).
+  - Documentos enviados pela VEGA (card com nome do arquivo, abrir e baixar).
+  - Documentos e imagens recebidos do usuário (miniatura para imagens, card para PDF, com abrir e baixar).
+  - Itens estruturados (PIX com botão copiar chave, link de sistema com botão acessar/copiar, contatos).
+- **Proibição de Bolha Invisível ou Vazia:**
+  Nada pode ficar invisível. Caso seja recebido um tipo desconhecido ou mensagem vazia de texto, a interface deve exibir um card/aviso discreto e legível com o horário, jamais uma bolha vazia ou nada.
