@@ -18,13 +18,44 @@ function normalizar(texto?: string | null): string {
 }
 
 /**
+ * Valida se uma string representa um tipo documental legítimo e reconhecível
+ * (ex: Certidão de Nascimento, Alvará, Contrato, CNH, RG, Apólice de Seguro).
+ * Rejeita categoricamente frases soltas, comandos de envio e termos genéricos vazios.
+ */
+export function validarTipoDocumentoReconhecivel(tipo?: string | null): boolean {
+  if (!tipo || typeof tipo !== 'string') return false;
+  const limpo = normalizar(tipo);
+  if (!limpo || limpo.length < 2) return false;
+
+  // 1. Rejeita se tiver mais de 5 palavras (frases ou orações)
+  const palavras = limpo.split(/\s+/).filter(Boolean);
+  if (palavras.length > 5) return false;
+
+  // 2. Rejeita comandos de conversa, cortesias e verbos de envio
+  const REGEX_COMANDOS_OU_FRASES =
+    /\b(perfeito|perfeita|otimo|otima|obrigado|obrigada|valeu|por favor|por gentileza|agora|entao|envie|envia|manda|mandar|enviar|quero|preciso|gostaria|pode|favor|passa|encaminha|baixa|baixar|qual|como|onde|quando|porque|por que|anotei|tem|existe|salvo|cofre)\b/i;
+  if (REGEX_COMANDOS_OU_FRASES.test(limpo)) return false;
+
+  // 3. Rejeita termos genéricos vazios que não são tipos
+  const REGEX_GENERICOS =
+    /^(pdf|o pdf|um pdf|arquivo|o arquivo|documento|o documento|anexo|o anexo|outros|desconhecido|indefinido|nenhum|texto)$/i;
+  if (REGEX_GENERICOS.test(limpo)) return false;
+
+  // 4. Exige que contenha uma raiz ou sigla de tipo documental reconhecível
+  const REGEX_TIPO_VALIDO =
+    /\b(certidao|contrato|alvara|cnh|carteira|habilitacao|rg|identidade|cpf|passaporte|crea|crt|cau|oab|ctps|art|rrt|diploma|certificado|historico|comprovante|procuracao|termo|recibo|declaracao|estatuto|licenca|apolice|seguro|escritura|habite|vacina|vacinacao|atestado|laudo|exame|nota\s*fiscal|nf|dre|balanco|proposta|orcamento|holerite|contracheque|requerimento)\b/i;
+
+  return REGEX_TIPO_VALIDO.test(limpo);
+}
+
+/**
  * Formata o tipo de documento de forma legível e elegante (Title Case)
  */
 export function formatarTipoDocumentoLegivel(tipo: string): string {
   if (!tipo) return 'Documento';
   const t = tipo.trim();
   // Siglas conhecidas mantidas em maiúsculas
-  const siglas = ['cnh', 'rg', 'cpf', 'crea', 'crt', 'art', 'rrt', 'ctps', 'cnpj', 'dre'];
+  const siglas = ['cnh', 'rg', 'cpf', 'crea', 'crt', 'art', 'rrt', 'ctps', 'cnpj', 'dre', 'nf'];
   if (siglas.includes(t.toLowerCase())) {
     return t.toUpperCase();
   }
@@ -41,6 +72,7 @@ export function formatarTipoDocumentoLegivel(tipo: string): string {
 /**
  * Registra uma solicitação de documento não encontrado no Cofre.
  * Se o pedido já existir para o mesmo titular e tipo, soma a contagem sem duplicar.
+ * Só registra se o tipo de documento for reconhecível e válido.
  */
 export async function registrarOuIncrementarDocumentoFaltante(params: {
   tipoDocumento: string;
@@ -49,7 +81,14 @@ export async function registrarOuIncrementarDocumentoFaltante(params: {
   solicitanteContato?: string | null;
   dadosEquivalentesOferecidos?: string | null;
   textoDoPedido?: string;
-}): Promise<DocumentoFaltanteRegistro> {
+}): Promise<DocumentoFaltanteRegistro | null> {
+  // Validação estrita: só registra se for um tipo documental reconhecido
+  if (!validarTipoDocumentoReconhecivel(params.tipoDocumento)) {
+    console.warn(
+      `[Documentos Faltantes ⚠️] Termo "${params.tipoDocumento}" ignorado por não ser um tipo documental reconhecível.`
+    );
+    return null;
+  }
   const supabase = getSupabaseClient();
   const todosTitulares = await obterTodosTitulares();
 

@@ -18,6 +18,7 @@ import {
 import {
   registrarOuIncrementarDocumentoFaltante,
   formatarTipoDocumentoLegivel,
+  validarTipoDocumentoReconhecivel,
 } from '../documentosFaltantesService.js';
 import {
   verificarDadoDisponivelEmOutroDocumento,
@@ -219,6 +220,143 @@ export function formatarPerguntaAmbiguoTitular(
  * Pedidos de documentos são SEMPRE do escopo da VEGA (nunca fora de escopo).
  */
 export const REGEX_DOCUMENTO_QUALQUER = /\b(documentos?|arquivos?|pdfs?|contratos?|alvar[aá]s?|certid[aã]o|certid[oõ]es|notas?(\s*fiscais|\s*fiscal)?|comprovantes?|procura[cç][aã]o|procura[cç][oõ]es|termos?|recibos?|declara[cç][aã]o|declara[cç][oõ]es|estatutos?|licen[cç]as?|ap[oó]lices?|escrituras?|habite-?se|cnh|carteira(\s*de\s*motorista)?|habilita[cç][aã]o|crea|crt|cau|oab|conselho|registro\s*profissional|cart[aã]o(\s*de)?\s*vacinas?|passaportes?|atestados?|laudos?|art|rrt)\b/i;
+
+/**
+ * Sanitiza pedidos de arquivo removendo cortesias, saudações, comandos de envio e termos genéricos de arquivo.
+ * Retorna o termo limpo restante e se a mensagem era apenas um comando de envio genérico (sem nome de documento).
+ */
+export function sanitizarPedidoArquivo(mensagem: string): {
+  termoLimpo: string;
+  apenasComandoEnvio: boolean;
+} {
+  if (!mensagem || !mensagem.trim()) {
+    return { termoLimpo: '', apenasComandoEnvio: true };
+  }
+
+  // Normaliza para minúsculas e remove acentos para compatibilidade perfeita de fronteira de palavras (\b)
+  let limpo = mensagem
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+  // 1. Remover pontuações superficiais e quebras de linha
+  limpo = limpo.replace(/[,;:.!?"'()]/g, ' ');
+
+  // 2. Remover saudações e cortesias
+  limpo = limpo.replace(
+    /\b(perfeito|perfeita|otimo|otima|beleza|legal|maravilha|show|maravilhoso|ok|obrigado|obrigada|valeu|muito obrigado|muito obrigada|por favor|por gentileza|agora|entao|bom dia|boa tarde|boa noite|ola|oi|e ai)\b/gi,
+    ' '
+  );
+
+  // 3. Remover comandos e expressões de envio / solicitação
+  limpo = limpo.replace(
+    /\b(me envie|me envia|me manda|manda|envia|enviar|mandar|quero|preciso|gostaria|favor enviar|favor mandar|pode mandar|pode enviar|passa|me passa|encaminha|me encaminha|solta|solte|baixa|baixar|faz o download|fazer o download|download)\b/gi,
+    ' '
+  );
+
+  // 4. Remover termos genéricos que apenas indicam formato de arquivo e não o nome do documento
+  limpo = limpo.replace(
+    /\b(o pdf|um pdf|pdf|os pdfs|pdfs|o arquivo|um arquivo|arquivo|os arquivos|arquivos|o documento|um documento|documento|os documentos|documentos|esse documento|este documento|aquele documento|o anexo|um anexo|anexo|os anexos|anexos|em anexo|em pdf|esse|este|isso|aquilo|dele|dela|ele|ela|pra mim|para mim|ai)\b/gi,
+    ' '
+  );
+
+  // 5. Remover artigos, conjunções e preposições que sobraram soltas nas pontas
+  limpo = limpo.replace(/\b(o|a|os|as|de|do|da|dos|das|em|no|na|nos|nas|por|para|pra|pro|com|e|ou|um|uma|uns|umas)\b/gi, ' ');
+
+  // 6. Limpar espaços duplos
+  limpo = limpo.replace(/\s+/g, ' ').trim();
+
+  // Se nada sobrou (ou sobrou menos que 2 letras), é puramente um comando de envio sem nome de documento
+  const apenasComandoEnvio = limpo.length < 2;
+
+  return {
+    termoLimpo: limpo,
+    apenasComandoEnvio,
+  };
+}
+
+/**
+ * Recupera o documento mais recente que esteve em discussão no histórico recente da conversa.
+ * Inspeciona rastro.documentoUsado, documentoOferecidoId, anexos e citações textuais no histórico.
+ */
+export function extrairDocumentoRecenteDoHistorico(
+  historicoRecente: Mensagem[],
+  todosDocs: DocumentoRegistro[]
+): DocumentoRegistro | null {
+  if (!historicoRecente || historicoRecente.length === 0 || !todosDocs || todosDocs.length === 0) {
+    return null;
+  }
+
+  // Percorre as mensagens das mais recentes para as mais antigas (até as últimas 10 mensagens)
+  const msgsReversas = [...historicoRecente].reverse().slice(0, 10);
+
+  for (const msg of msgsReversas) {
+    // 1. Checa se a mensagem ofereceu um documento específico por ID
+    if (msg.documentoOferecidoId) {
+      const doc = todosDocs.find((d) => d.id === msg.documentoOferecidoId);
+      if (doc) return doc;
+    }
+
+    // 2. Checa o rastro da mensagem
+    if (msg.rastro) {
+      // 2a. Se registrou documentoUsado no rastro
+      if (msg.rastro.documentoUsado) {
+        const docUsadoStr = msg.rastro.documentoUsado.trim().toLowerCase();
+        const docMatch = todosDocs.find(
+          (d) =>
+            d.titulo.toLowerCase() === docUsadoStr ||
+            d.arquivo.toLowerCase() === docUsadoStr ||
+            docUsadoStr.includes(d.titulo.toLowerCase()) ||
+            d.titulo.toLowerCase().includes(docUsadoStr)
+        );
+        if (docMatch) return docMatch;
+      }
+
+      // 2b. Se nos trechos/documentos encontrados houve um usado
+      if (msg.rastro.documentosEncontrados && msg.rastro.documentosEncontrados.length > 0) {
+        const docEncontradoUsado = msg.rastro.documentosEncontrados.find((d) => d.usadoNaResposta);
+        if (docEncontradoUsado) {
+          const docMatch = todosDocs.find(
+            (d) =>
+              (docEncontradoUsado.id && d.id === docEncontradoUsado.id) ||
+              d.titulo.toLowerCase() === (docEncontradoUsado.titulo || '').toLowerCase()
+          );
+          if (docMatch) return docMatch;
+        }
+      }
+    }
+
+    // 3. Checa se a mensagem teve anexos
+    if (msg.anexos && msg.anexos.length > 0) {
+      for (const anexo of msg.anexos) {
+        const docMatch = todosDocs.find(
+          (d) =>
+            d.arquivo === anexo.nome ||
+            (anexo.titulo && d.titulo.toLowerCase() === anexo.titulo.toLowerCase())
+        );
+        if (docMatch) return docMatch;
+      }
+    }
+
+    // 4. Checa no texto da mensagem do assistente se cita expressamente algum documento do cofre
+    // (ex: "De acordo com a *Apólice de seguro automotivo do carro Nivus Tokyo*...")
+    if (msg.remetente === 'assistente' && msg.texto) {
+      const textoL = msg.texto.toLowerCase();
+      // Ordena por tamanho decrescente do título para priorizar nomes mais específicos
+      const docsOrdenados = [...todosDocs].sort((a, b) => b.titulo.length - a.titulo.length);
+      for (const d of docsOrdenados) {
+        if (d.titulo && d.titulo.length >= 4) {
+          const titL = d.titulo.toLowerCase();
+          if (textoL.includes(titL) || textoL.includes(`*${titL}*`)) {
+            return d;
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
 
 
 
@@ -758,8 +896,12 @@ Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
 
 REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
 1. "saudacao_ou_vago": Apenas saudações puras ("oi", "olá", "bom dia") ou pedidos vagos ("me ajuda"). NUNCA use para perguntas com assunto ou listas.
-2. "pedir_arquivo": Pedido EXPRESSO de envio ou entrega de qualquer documento físico ("me manda a CNH", "envia o PDF do CREA", "baixa o arquivo", "preciso do documento X", "me envia a certidão").
-   - ATENÇÃO CRÍTICA: Só é "pedir_arquivo" quando a pessoa pede o DOCUMENTO EM SI para envio ("me manda", "me envia", "preciso do arquivo", "quero o PDF").
+2. "pedir_arquivo": Pedido EXPRESSO de envio ou entrega de qualquer documento físico ("me manda a CNH", "envia o PDF do CREA", "baixa o arquivo", "preciso do documento X", "me envia a certidão", "perfeito, agora me envie o pdf", "show, agora solta esse arquivo aí", "manda o arquivo").
+   - REGRA DE OURO PARA DOCUMENTO CITADO:
+     * Preencha "documento_citado" e "termo_busca" SOMENTE se a mensagem citar expressamente um documento real e identificável (ex: "CNH", "Certidão de Casamento", "CREA", "Alvará", "Contrato", "Apólice de Seguro", "Passaporte").
+     * Se a mensagem for apenas um comando de envio, gíria ou pedido genérico do arquivo em discussão (ex: "perfeito, agora me envie o pdf", "show, agora solta esse arquivo aí", "me envia o pdf", "manda o arquivo", "solta esse documento", "manda ele", "pode mandar", "solta aí"), devolva OBRIGATORIAMENTE "documento_citado": "" e "termo_busca": "" (vazios!). O sistema usará o contexto da conversa para enviar o documento correto.
+     * NUNCA coloque frases de comando, cortesias ou gírias em "documento_citado" ou "termo_busca"!
+   - ATENÇÃO CRÍTICA: Só é "pedir_arquivo" quando a pessoa pede o DOCUMENTO EM SI para envio ("me manda", "me envia", "preciso do arquivo", "quero o PDF", "solta esse arquivo").
    - Pedidos de RESUMO, EXPLICAÇÃO, INTERPRETAÇÃO ou PERGUNTAS sobre o que está escrito ("resuma esse documento", "o que esse documento fala sobre X?", "explique o documento", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?") são SEMPRE "pergunta_conteudo", NUNCA "pedir_arquivo"!
 3. "listar_documentos": Quando o usuário solicitar listar, ver ou consultar quais documentos existem no Cofre ou de uma pessoa ("quais documentos você tem?", "o que tem no cofre?", "quais documentos do Thomaz você tem?", "o que você tem do Thomaz?", "preciso de mais alguns documentos do Thomaz", "me mostra os documentos"). Preencha "pessoa" se citada.
 4. "dado_pessoal": Perguntas sobre dados cadastrais básicos de titulares (RG, CPF, filiação/mãe/pai, profissão, estado civil, validade da CNH etc.).
@@ -776,6 +918,11 @@ REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - O CONTEXTO SÓ DEVE SER USADO quando a mensagem atual NÃO tem sujeito nenhum (ex.: perguntas com pronomes como "ele", "dele", ou elípticas como "e a validade?", "e o CPF dele?", "e o RG dele?", "e o endereço dele?"). Nesses casos, herde o titular mencionado anteriormente no histórico.
 
 EXEMPLOS OBRIGATÓRIOS:
+- "perfeito, agora me envie o pdf" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
+- "show, agora solta esse arquivo aí" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
+- "me envia o pdf" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
+- "manda o arquivo" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
+- "solta esse documento" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
 - "contrato de locação" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "contrato de locação", "documentos_citados": ["contrato de locação"], "pergunta_completa": "Enviar documento contrato de locação", "termo_busca": "contrato de locação"}
 - "me manda a certidão de óbito" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "certidão de óbito", "documentos_citados": ["certidão de óbito"], "pergunta_completa": "Enviar documento certidão de óbito", "termo_busca": "certidão de óbito"}
 - "me envia o crea e a certidão de casamento do thomaz por favor" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CREA, Certidão de Casamento", "documentos_citados": ["CREA", "Certidão de Casamento"], "pergunta_completa": "Enviar documentos CREA e Certidão de Casamento do Thomaz", "termo_busca": "CREA, Certidão de Casamento"}
@@ -1023,10 +1170,14 @@ EXEMPLOS OBRIGATÓRIOS:
       if (ehPedidoCertidao || parsed.intencao === 'fora_de_escopo' || parsed.intencao === 'saudacao_ou_vago' || parsed.intencao === 'dado_pessoal') {
         parsed.intencao = 'pedir_arquivo';
         if (!parsed.documento_citado) {
-          parsed.documento_citado = mensagemUsuario.trim();
-        }
-        if (!parsed.termo_busca) {
-          parsed.termo_busca = parsed.documento_citado;
+          const tipoIdentificado = identificarTipoPedido(mensagemUsuario);
+          if (tipoIdentificado && validarTipoDocumentoReconhecivel(tipoIdentificado)) {
+            parsed.documento_citado = tipoIdentificado;
+            parsed.termo_busca = tipoIdentificado;
+          } else {
+            parsed.documento_citado = '';
+            parsed.termo_busca = '';
+          }
         }
       }
     }
@@ -1053,16 +1204,29 @@ EXEMPLOS OBRIGATÓRIOS:
       ) {
         parsed.intencao = 'pedir_arquivo';
         if (!parsed.documento_citado) {
-          parsed.documento_citado = mensagemUsuario.trim();
-        }
-        if (!parsed.termo_busca) {
-          parsed.termo_busca = parsed.documento_citado;
+          const tipoIdentificado = identificarTipoPedido(mensagemUsuario);
+          if (tipoIdentificado && validarTipoDocumentoReconhecivel(tipoIdentificado)) {
+            parsed.documento_citado = tipoIdentificado;
+            parsed.termo_busca = tipoIdentificado;
+          } else {
+            parsed.documento_citado = '';
+            parsed.termo_busca = '';
+          }
         }
         if (msgNorm.includes('thomaz') || (parsed.pessoa && parsed.pessoa.toLowerCase().includes('thomaz'))) {
-          if (!parsed.termo_busca.toLowerCase().includes('thomaz')) {
+          if (parsed.termo_busca && !parsed.termo_busca.toLowerCase().includes('thomaz')) {
             parsed.termo_busca = `${parsed.termo_busca} Thomaz`.trim();
           }
         }
+      }
+    }
+
+    // Se documento_citado for apenas comando de envio genérico (ex: "pdf", "arquivo", cortesia residual), limpa para usar contexto
+    if (parsed.documento_citado) {
+      const sanitizadoCitado = sanitizarPedidoArquivo(parsed.documento_citado);
+      if (sanitizadoCitado.apenasComandoEnvio) {
+        parsed.documento_citado = '';
+        parsed.termo_busca = '';
       }
     }
 
@@ -2022,8 +2186,110 @@ export async function processarMensagemChat(dados: {
       };
     }
 
+    // 2. PEDIDO GENÉRICO DE ENVIO / RECUPERAÇÃO DO DOCUMENTO DO CONTEXTO DA CONVERSA
+    // A IA é o mecanismo principal (retorna documento_citado vazio para comandos genéricos).
+    // A sanitização por lista funciona como camada de proteção extra.
+    const docCitadoIa = (classificacao.documento_citado || '').trim();
+    const termoBuscaIa = (classificacao.termo_busca || '').trim();
+    const sanitizadoMsg = sanitizarPedidoArquivo(mensagemUsuario);
+
+    const ehComandoGenerico =
+      (!docCitadoIa && !termoBuscaIa) ||
+      sanitizadoMsg.apenasComandoEnvio ||
+      (docCitadoIa ? sanitizarPedidoArquivo(docCitadoIa).apenasComandoEnvio : false);
+
+    if (ehComandoGenerico) {
+      const docContexto = extrairDocumentoRecenteDoHistorico(historicoRecente, todosDocs);
+
+      if (docContexto) {
+        // Documento identificado a partir do contexto recente da conversa
+        modeloUsado = 'Motor Interno';
+        const anexo = await criarAnexoParaDocumento(docContexto);
+        const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+        const textoResposta = `${prefixoSaudacao}Aqui está o documento solicitado: ${docContexto.titulo}.`;
+
+        const docsRastro: DocumentoRastro[] = [
+          {
+            id: docContexto.id,
+            titulo: docContexto.titulo,
+            tipo: docContexto.tipo,
+            similaridade: 100,
+            usadoNaResposta: true,
+          },
+        ];
+
+        etapas.push({
+          ordem: 2,
+          nome: 'Recuperação de Documento do Contexto da Conversa',
+          descricao: `Documento "${docContexto.titulo}" (${docContexto.arquivo}) identificado a partir das mensagens anteriores e anexado para envio direto.`,
+          tempoMs: 2,
+          detalhes: {
+            documentoId: docContexto.id,
+            titulo: docContexto.titulo,
+            arquivo: docContexto.arquivo,
+          },
+        });
+
+        const rastro = criarRastroFinal({
+          tipoBusca: 'nome_cofre',
+          docsEncontrados: docsRastro,
+          docUsado: docContexto.titulo,
+          enviouAnexo: true,
+          anexos: [anexo],
+          respostaFinal: textoResposta,
+          modelo: modeloUsado,
+        });
+
+        return {
+          textoResposta,
+          anexos: [anexo],
+          origem: 'motor',
+          intencaoDetectada: intencao,
+          perguntaReescrita: pergunta_reescrita,
+          buscaUsada: 'Contexto da conversa (Documento recente em discussão)',
+          similaridade: '100% (Recuperado do histórico)',
+          rastro,
+        };
+      } else {
+        // Pedido genérico de envio sem documento citado e sem documento no contexto
+        // NUNCA inventar nome de documento nem registrar na lista de pendentes!
+        modeloUsado = 'Motor Interno';
+        const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+        const textoResposta = `${prefixoSaudacao}Qual documento você gostaria que eu envie? Por favor, informe o nome ou tipo do documento.`;
+
+        etapas.push({
+          ordem: 2,
+          nome: 'Solicitação de Esclarecimento de Documento',
+          descricao: 'Pedido de envio recebido sem documento citado e sem histórico prévio de documento em discussão.',
+          tempoMs: 1,
+        });
+
+        const rastro = criarRastroFinal({
+          tipoBusca: 'nenhuma',
+          docsEncontrados: [],
+          enviouAnexo: false,
+          respostaFinal: textoResposta,
+          modelo: modeloUsado,
+        });
+
+        return {
+          textoResposta,
+          origem: 'motor',
+          intencaoDetectada: intencao,
+          perguntaReescrita: pergunta_reescrita,
+          buscaUsada: 'Comando genérico sem documento citado nem no contexto',
+          similaridade: '0%',
+          rastro,
+        };
+      }
+    }
+
     const inicioBuscaDoc = Date.now();
-    const termoBuscaArquivo = classificacao.termo_busca || classificacao.documento_citado || pergunta_reescrita || mensagemUsuario;
+    let termoBuscaArquivo = docCitadoIa || termoBuscaIa || sanitizadoMsg.termoLimpo || mensagemUsuario;
+    const titularBusca = pessoa || classificacao.pessoa;
+    if (titularBusca && !termoBuscaArquivo.toLowerCase().includes(titularBusca.toLowerCase())) {
+      termoBuscaArquivo = `${termoBuscaArquivo} ${titularBusca}`.trim();
+    }
     // 1. Busca por nome no Cofre (documentos físicos / PDFs)
     const buscaDoc = await buscarDocumentos(termoBuscaArquivo, contato, todosDocs);
     const tempoBuscaDoc = Date.now() - inicioBuscaDoc;
@@ -2451,6 +2717,29 @@ export async function processarMensagemChat(dados: {
     const primeiroNomeTit = titularResolvido ? (extrairPrimeiroNome(titularResolvido.nome) || titularResolvido.nome) : (titularRef ? (extrairPrimeiroNome(titularRef) || titularRef) : '');
 
     const termoIdentificado = classificacao.documento_citado || termoBuscaArquivo || 'documento';
+    const ehTipoValido = validarTipoDocumentoReconhecivel(termoIdentificado);
+
+    if (!ehTipoValido) {
+      const textoSemDocGenerico = `${prefixoSaudacao}Não encontrei esse documento no Cofre.`;
+      const rastro = criarRastroFinal({
+        tipoBusca: 'nome_cofre',
+        docsEncontrados: [],
+        enviouAnexo: false,
+        respostaFinal: textoSemDocGenerico,
+        modelo: modeloUsado,
+      });
+
+      return {
+        textoResposta: textoSemDocGenerico,
+        origem: 'motor',
+        intencaoDetectada: intencao,
+        perguntaReescrita: pergunta_reescrita,
+        buscaUsada: 'Documento não localizado no Cofre',
+        similaridade: '0%',
+        rastro,
+      };
+    }
+
     const tipoFormatado = formatarTipoDocumentoLegivel(termoIdentificado);
     const artigo = obterArtigoDefinido(tipoFormatado);
     const prep = primeiroNomeTit ? obterPreposicaoTitular(primeiroNomeTit) : '';

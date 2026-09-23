@@ -21,6 +21,7 @@ import {
   obterTodosTitulares,
   resolverTitularCadastrado,
 } from './storage.js';
+import { Mensagem } from './types.js';
 import { marcarDocumentoFaltanteComoProvidenciado } from './documentosFaltantesService.js';
 import { eventosPainel } from './eventos/eventosService.js';
 import { formatarHorarioBrasilia, obterAgoraIsoUtc } from './utils/dataHoraUtils.js';
@@ -358,7 +359,7 @@ async function processarProximoDaFila(): Promise<void> {
         .maybeSingle();
 
       if (docErr?.metadata?.origem === 'whatsapp' && docErr.metadata.remetenteJid) {
-        let msgFalha = msgOficialSenha;
+        let msgFalha = MENSAGEM_PDF_PROTEGIDO_SENHA;
         if (!isSenha) {
           const motivoAmigavel = traduzirMotivoErroParaUsuario(msgErro);
           msgFalha = `Não consegui processar automaticamente o documento *${docErr.arquivo}* (${motivoAmigavel}). Mas fique tranquilo: o arquivo continua salvo com segurança no Cofre da VEGA com o selo de pendente para que possamos conferir quando quiser.`;

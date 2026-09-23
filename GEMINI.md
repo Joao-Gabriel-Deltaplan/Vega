@@ -147,3 +147,17 @@ Nenhum outro modelo ou alias obsoleto (ex: gpt-4o, gpt-3.5-turbo, whisper-1) dev
   `"Esse PDF está protegido por senha, então não consegui ler o conteúdo. O arquivo continua salvo no Cofre e pode ser aberto e enviado normalmente, mas não vou conseguir responder perguntas sobre o que está escrito nele."`
 - **Destravamento com senha e não retenção absoluta:**
   O sistema deve permitir que o usuário informe a senha do arquivo no painel para destravar a leitura. Ao receber a senha, deve abrir o PDF, extrair o texto vetorial e indexar normalmente. **A senha deve ser utilizada exclusivamente em memória e JAMAIS guardada em nenhum lugar** (nem no banco de dados, nem em arquivos locais, metadados ou logs).
+
+---
+
+## 13. Preservação de Contexto em Pedidos de Envio de Documento e Sanitização de Termos
+
+- **Recuperação de documento do contexto da conversa:**
+  Quando o usuário emitir um comando ou pedido de envio de documento sem citar explicitamente o nome (ex.: *"perfeito, agora me envie o pdf"*, *"show, agora solta esse arquivo aí"*, *"me manda o arquivo"*, *"solta esse documento aí"*, *"pode enviar ele"*), a VEGA deve identificar o documento que estava sendo discutido nas mensagens anteriores do histórico (via rastro `documentoUsado`, `documentoOferecidoId`, anexos anteriores ou menção no texto) e enviá-lo diretamente com o anexo.
+- **Classificação por IA como mecanismo primário:**
+  A classificação por IA (`gpt-5.4-mini`) deve devolver `documento_citado` e `termo_busca` preenchidos SOMENTE quando a mensagem contiver o nome/tipo de um documento real (ex.: CNH, Apólice, Certidão, Alvará, etc.). Para comandos genéricos, gírias ou ordens de envio, a IA deve devolver `documento_citado: ""` e `termo_busca: ""` (vazios), permitindo que o sistema utilize o documento do histórico.
+- **Proibição absoluta de mensagens inteiras virarem documento citado:**
+  A mensagem do usuário jamais pode virar nome de documento citado ou termo de busca. A sanitização por lista atua como camada de proteção extra para remover cortesias, gírias e ordens. Se não houver documento citado e o histórico não tiver documento prévio em discussão, o sistema deve perguntar educadamente qual documento o usuário deseja (`"Qual documento você gostaria que eu envie? Por favor, informe o nome ou tipo do documento."`), JAMAIS inventando nome de arquivo nem registrando a frase na lista de pendentes.
+- **Validação estrita antes de registrar em Documentos Faltantes:**
+  A tabela `documentos_faltantes` só aceita tipos documentais reais e reconhecíveis (Certidão, Contrato, Alvará, CNH, RG, Apólice, etc.). Nenhuma frase solta, saudação, cortesia ou gíria pode ser registrada na lista de faltantes.
+
