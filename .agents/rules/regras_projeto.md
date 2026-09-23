@@ -1,169 +1,103 @@
----
-trigger: always_on
-description: Regras obrigatórias do projeto Assistente Delta (VEGA)
----
-
 # Regras Oficiais do Projeto Assistente Delta (VEGA)
 
-As regras abaixo são obrigatórias, permanentes e devem ser rigorosamente seguidas pelo Antigravity em qualquer modificação, depuração, teste ou geração de código neste projeto.
+Diretrizes obrigatórias e permanentes para desenvolvimento, depuração e manutenção da VEGA.
 
 ---
 
-## 1. Integridade do Cofre de Documentos (Base da VEGA)
-
-- **Nunca apagar registros da tabela `documentos` durante a indexação:**
-  O indexador (`indexadorAutomatico.ts`) jamais deve executar comandos de exclusão (`DELETE`) na tabela `documentos`. Em caso de reindexação ou atualização de um documento existente, deve apenas limpar e recriar os registros correspondentes na tabela `trechos` (`eq('documento_id', doc.id)`), atualizando os metadados do documento *in-place*.
-- **Nunca sumir em silêncio:**
-  Nenhum arquivo enviado pode desaparecer sem aviso.
-  - Se o upload ou análise falhar no frontend/backend, o erro deve ser exibido imediatamente na tela do usuário via alerta vermelho com o motivo da falha.
-  - Se a indexação falhar por qualquer motivo (extração, chunking, embeddings), o documento **continua na tabela `documentos` e na lista do Cofre**, com `status_indexacao = 'erro'` e o selo vermelho **"NÃO INDEXADO"** visível junto à mensagem descritiva do erro.
-- **Formatos de arquivo aceitos no Cofre:**
-  O Cofre suporta nativamente **PDF, JPG, JPEG, PNG e WEBP**. Nunca filtrar códigos, uploads ou visualizadores exclusivamente por `.pdf`. Para imagens, utilizar visão computacional (`gpt-5.4-mini`) para extração OCR de texto.
+## 1. Integridade do Cofre de Documentos
+- **Sem exclusão na indexação:** Nunca executar `DELETE` na tabela `documentos` durante indexação/reindexação. Apenas limpar e recriar registros em `trechos` e atualizar metadados *in-place*.
+- **Sem falha silenciosa:** Erros de upload/análise devem exibir alerta visual imediato. Falhas de indexação mantêm o arquivo no Cofre com `status_indexacao = 'erro'` e selo "NÃO INDEXADO".
+- **Formatos suportados:** PDF, JPG, JPEG, PNG e WEBP. OCR via `gpt-5.4-mini` para imagens. Nunca filtrar código exclusivamente por `.pdf`.
 
 ---
 
-## 2. Modelos de Inteligência Artificial Permitidos
-
-Apenas os seguintes modelos da OpenAI são homologados e autorizados no projeto:
-- **`gpt-5.4-mini`**: para inteligência, orquestração de chat, visão OCR em imagens/PDFs e extração de dados cadastrais.
-- **`text-embedding-3-small`**: para geração de embeddings vetoriais e busca semântica de trechos.
-- **`gpt-transcribe`**: para transcrição de áudios recebidos pelo WhatsApp.
-
-Nenhum outro modelo ou alias obsoleto (ex: gpt-4o, gpt-3.5-turbo, whisper-1) deve ser introduzido no código.
+## 2. Modelos de IA Permitidos
+Uso restrito e exclusivo dos seguintes modelos OpenAI homologados:
+- **`gpt-5.4-mini`**: Chat, raciocínio, visão OCR e extração cadastral.
+- **`text-embedding-3-small`**: Embeddings vetoriais e busca semântica.
+- **`gpt-transcribe`**: Transcrição de áudios do WhatsApp.
+Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
 
 ---
 
-## 3. Armazenamento e Infraestrutura em Nuvem (Supabase & Railway)
-
-- **Persistência total no Supabase:**
-  Todos os dados (conversas, mensagens, documentos, fichas, alertas, rastros e usuários) residem no Supabase (PostgreSQL e Supabase Storage).
-  O servidor roda em container efêmero no Railway. **Nada pode depender de persistência em disco local** (`arquivos/`, `data/`, etc.). Qualquer arquivo salvo localmente deve ser tratado apenas como cache temporário, mantendo o arquivo mestre no Storage privado (`documentos` ou `audios`).
-- **Fusos Horários e Datas:**
-  - Todas as datas e timestamps gravados no banco devem estar em **UTC (formato ISO 8601)**.
-  - Toda exibição para o usuário (no painel web, em mensagens enviadas pela VEGA no WhatsApp, alertas de vencimento e relatórios) deve ser obrigatoriamente convertida para o fuso **`America/Sao_Paulo`** (horário de Brasília).
-  - Rotinas diárias e verificações ("hoje", "vencendo hoje", "este mês") devem basear-se na data corrente de Brasília, nunca na data UTC bruta.
+## 3. Armazenamento e Fuso Horário (Supabase & Railway)
+- **Persistência total no Supabase:** Dados no PostgreSQL e arquivos no Supabase Storage. O Railway é efêmero: nada pode depender de disco local (`arquivos/`, `data/`); arquivos locais são apenas cache temporário.
+- **Datas e Horários:** Gravação no banco sempre em UTC (ISO 8601). Exibição ao usuário (painel, WhatsApp, alertas, relatórios) e rotinas diárias ("hoje", "este mês") convertidas obrigatoriamente para `America/Sao_Paulo` (Brasília).
 
 ---
 
-## 4. Proteção de Dados, Fichas e Segurança
-
-- **Nomes Proibidos:**
-  NUNCA usar nomes inventados de pessoas (ex.: nomes fictícios com sobrenome Brandini) em código-fonte, testes automatizados, scripts, exemplos ou logs. Usar sempre os titulares reais ou dados genéricos ("Titular Teste").
-- **Proteção de Segredos e Variáveis de Ambiente:**
-  NUNCA imprimir, registrar ou expor valores reais de variáveis de ambiente (`.env`), chaves de API (`OPENAI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `EVOLUTION_API_KEY`), tokens de autenticação ou senhas em respostas, commits, arquivos de log ou relatórios de walkthrough.
-- **Preservação de Dados da Ficha do Titular:**
-  Campos da ficha de titular que já foram conferidos pelo usuário (`conferido: true`) ou que foram expressamente informados/corrigidos através do chat **jamais** podem ser sobrescritos por rotinas de extração automática de documentos.
-- **Reconhecimento Estrito de Titulares:**
-  Titular só é reconhecido se existir no cadastro de titulares; nunca extrair nome de pessoa por posição na frase (ex.: após "do/da/de"). Qualquer palavra não cadastrada como titular deve ser ignorada.
+## 4. Proteção de Dados e Segurança
+- **Nomes proibidos:** NUNCA usar nomes fictícios de pessoas (especialmente sobrenome Brandini) em código, testes, scripts ou logs. Usar titulares reais ou "Titular Teste".
+- **Sigilo de credenciais:** NUNCA expor variáveis de ambiente (`.env`), chaves de API, tokens ou senhas em logs, commits ou relatórios.
+- **Preservação de fichas:** Dados cadastrais já conferidos (`conferido: true`) ou informados pelo chat nunca podem ser sobrescritos por extração automática.
+- **Reconhecimento estrito de titulares:** Titular só é reconhecido se constar no cadastro oficial; nunca extrair nomes por posição na frase.
 
 ---
 
 ## 5. Idioma e Comunicação
-
-- Todas as respostas, explicações, relatórios e mensagens de interface devem ser sempre entregues em **Português do Brasil**.
-
----
-
-## 6. Tratamento de Saudações e Pedidos de Documentos no Chat e WhatsApp
-
-- **Escopo Absoluto de Documentos e Mensagem Padrão:**
-  Pedidos de **qualquer tipo de documento** (contrato, alvará, certidão, nota, comprovante, procuração, termo, recibo, declaração, estatuto, etc.) são **sempre do escopo da VEGA**. Se o documento não existir no Cofre, a resposta deve ser obrigatoriamente: `"Não encontrei esse documento no Cofre."` (com a saudação incorporada no início se o usuário saudou). A classificação de **"fora de escopo"** é reservada estritamente para assuntos que não têm relação com documentos ou informações da empresa (ex.: receitas culinárias, previsão do tempo, esportes, piadas, cálculos matemáticos aleatórios).
-- **Saudação + Pedido na mesma mensagem:**
-  Mensagens que combinam saudação com pedido (ex.: *"Bom dia, me envia certidão de casamento"*, *"Oi, preciso do CREA"*, *"Boa tarde, me manda a CNH"*) devem ser tratadas como o pedido do documento. A saudação do usuário deve ser incorporada exclusivamente no início da resposta (ex.: *"Bom dia, [Nome]! Aqui está o documento solicitado: ..."*).
-- **Pedido de documento sem titular especificado:**
-  - Se existir **apenas UM** documento daquele tipo no Cofre: enviar diretamente com anexo, sem perguntas intermediárias.
-  - Se existirem **vários documentos daquele tipo pertencentes a titulares diferentes**: perguntar ao usuário listando as opções numeradas (ex.: *"Encontrei certidões de: 1) Thomaz, 2) [Titular 2]. Qual delas?"*).
-  - Se **nenhum documento** daquele tipo existir no Cofre: responder obrigatoriamente *"Não encontrei esse documento no Cofre."*.
+- Todas as respostas, interfaces, mensagens, relatórios e explicações devem ser sempre em Português do Brasil.
 
 ---
 
-## 7. Classificação e Titularidade de Documentos no Cofre
-
-- **Nunca preencher titular ou tipo com valor padrão quando a IA não identificar; perguntar ao usuário:**
-  Ao processar uploads de documentos no Cofre, a IA jamais deve atribuir valores padrão (como "Delta Plan" ou "Outros") caso não haja identificação inequívoca no documento. Campos não identificados devem permanecer vazios e o sistema deve obrigatoriamente solicitar o preenchimento ao usuário.
-- **Tipos de documento dinâmicos:**
-  O tipo de documento não deve ser restrito a listas fixas. A IA deve classificar pelo nome real do documento (Passaporte, Título de Eleitor, Contrato, Alvará, Nota Fiscal, Procuração, etc.). "Outros" só deve ser usado caso seja impossível classificar, gerando pergunta de confirmação.
-- **Titularidade de documentos de identificação:**
-  Para documentos pessoais/identificação (passaporte, RG, CNH, certidões), o titular deve ser extraído do nome que consta no próprio documento. Se esse nome não corresponder a nenhum titular previamente cadastrado, o sistema deve perguntar ao usuário se deseja cadastrar um novo titular.
-- **Vinculação estrita por ID de cadastro:**
-  Documentos se vinculam ao titular pelo ID do cadastro; o nome nunca é usado como chave. O agrupamento e a exibição de documentos devem usar obrigatoriamente o nome oficial do cadastro do titular, nunca o texto salvo no documento. Ao identificar o titular de um documento novo, se o nome casar com um titular já cadastrado (nome completo, primeiro nome ou apelido), o sistema deve vinculá-lo ao titular existente em vez de criar outro.
+## 6. Saudações e Pedidos de Documentos
+- **Escopo absoluto de documentos:** Pedidos de qualquer documento (contrato, certidão, alvará, nota, etc.) são sempre do escopo. Se não existir no Cofre, responder: `"Não encontrei esse documento no Cofre."` (incorporando saudação inicial, se houver). Classificação "fora de escopo" é restrita a assuntos alheios à empresa.
+- **Saudação + Pedido:** Tratar como pedido de documento, incorporando a saudação exclusivamente no início da resposta.
+- **Pedido sem titular especificado:**
+  - 1 documento do tipo no Cofre: envia direto com anexo.
+  - Vários documentos de titulares diferentes: pergunta listando opções numeradas.
+  - Nenhum documento: responde `"Não encontrei esse documento no Cofre."`.
 
 ---
 
-## 8. Bloqueio Rígido por Tipo Documental e Proibição de Entrega Divergente
-
-- **Nunca entregar tipo divergente:**
-  Se o tipo documental solicitado pelo usuário não existir no Cofre (ex.: certidão de nascimento quando só há certidão de casamento), o sistema jamais deve entregar documento de outro tipo. A resposta deve ser obrigatoriamente: `"Não encontrei esse documento no Cofre."`, listando opcionalmente os documentos que realmente existem daquele titular, sem nenhum anexo.
-- **Tipos técnicos e titulares PJ:**
-  O sistema deve reconhecer siglas e tipos técnicos oficiais (como ART e RRT) e partes significativas de pessoas jurídicas cadastradas (ex.: "Menegazzo" para "Serviços Menegazzo").
-
----
-
-## 9. Tratamento de Resumos, Perguntas de Conteúdo e Listagem de Documentos
-
-- **Resumos e perguntas sobre documento recém-entregue:**
-  Mensagens como *"resuma esse documento em 10 linhas"*, *"o que esse documento fala sobre águas fluviais?"* ou *"explique esse documento"* logo após a VEGA entregar um anexo são **estritamente `pergunta_conteudo`**, nunca `pedir_arquivo`. A VEGA deve responder em texto sintetizando com base exclusiva no documento citado, **sem reenviar o anexo**.
-- **Fatos documentais vs. Data de nascimento:**
-  Perguntas sobre fatos históricos e jurídicos registrados em documentos (como data de dispensa do serviço militar ou data de registro de casamento) devem ser respondidas com o dado exato do fato (ex.: 23/08/2005 para dispensa militar; 12/04/2010 para registro de casamento), **nunca** substituindo pela data de nascimento.
-- **Fallback vetorial para dados pessoais:**
-  Se um dado do titular (ex.: endereço) não estiver estruturado na ficha cadastral, o motor deve consultar os trechos dos documentos do titular no Cofre (ex.: `Dados Thomaz`), responder com base no trecho oficial e oferecer o documento de onde extraiu.
-- **Listagem de acervo ("o que tem no cofre?"):**
-  Perguntas genéricas de catálogo devem classificar como `listar_documentos` e apresentar a lista organizada dos documentos disponíveis por titular, perguntando qual o usuário gostaria de consultar ou receber, sem disparar anexos soltos.
+## 7. Classificação e Titularidade no Cofre
+- **Sem preenchimento padrão:** A IA jamais deve atribuir "Delta Plan" ou "Outros" se não houver identificação inequívoca no documento. Deixar campos vazios e solicitar preenchimento ao usuário.
+- **Tipos dinâmicos:** Classificar pelo nome real do documento (Passaporte, Contrato, etc.). "Outros" só em último caso com confirmação.
+- **Identificação pessoal:** Titular deve ser extraído do documento; se não cadastrado, perguntar se deseja cadastrar.
+- **Vínculo por ID:** Vinculação estrita por ID de cadastro. Exibição e agrupamento sempre pelo nome oficial cadastrado (reconhecendo nome completo, primeiro nome ou apelido existente).
 
 ---
 
-## 10. Tratamento de Documentos Faltantes e Inexistentes no Cofre
+## 8. Bloqueio Rígido por Tipo Documental
+- **Sem entrega divergente:** Se o tipo solicitado não existir no Cofre (ex.: certidão de nascimento quando só há certidão de casamento), nunca entregar outro tipo. Responder: `"Não encontrei esse documento no Cofre."` (opcionalmente listando os documentos existentes do titular, sem anexos).
+- **Siglas e PJ:** Reconhecer siglas técnicas oficiais (ART, RRT) e termos significativos de PJs cadastradas (ex.: "Menegazzo" para "Serviços Menegazzo").
 
-- **Registro Obrigatório e Acúmulo de Contagem:**
-  Sempre que um documento solicitado não existir no Cofre, a VEGA deve registrar imediatamente o pedido na tabela `documentos_faltantes` do Supabase. Se o mesmo pedido já existir para aquele titular e tipo, o sistema deve somar na contagem (`quantidade_pedidos`) e atualizar a data do último pedido, sem duplicar o registro.
-- **Estrutura Obrigatória da Resposta ao Usuário:**
-  Quando o documento não existir, a resposta da VEGA deve seguir estritamente esta ordem:
-  1. `"Não encontrei [artigo] *[Tipo do Documento]* d[prep] *[Titular]* no Cofre."` (com a saudação incorporada no início se o usuário saudou).
+---
+
+## 9. Resumos, Conteúdo e Catálogo
+- **Resumos:** Pedidos de resumo/explicação logo após entrega de anexo são estritamente `pergunta_conteudo`, nunca `pedir_arquivo`. Responder em texto sintético sem reenviar anexo.
+- **Fatos documentais vs Nascimento:** Responder com a data exata do fato jurídico registrado (ex.: dispensa militar, registro de casamento), nunca com data de nascimento.
+- **Fallback vetorial:** Dados cadastrais não estruturados na ficha devem ser consultados nos trechos dos documentos do titular, oferecendo o documento fonte.
+- **Listagem de catálogo:** Perguntas amplas ("o que tem no cofre?") classificam como `listar_documentos` e exibem lista organizada por titular, sem anexos.
+
+---
+
+## 10. Documentos Faltantes e Inexistentes
+- **Registro cumulativo:** Documento não encontrado deve ser registrado em `documentos_faltantes`. Se já existir para o mesmo titular/tipo, somar contagem (`quantidade_pedidos`) e atualizar data, sem duplicar.
+- **Estrutura da resposta:**
+  1. `"Não encontrei [artigo] *[Tipo]* d[prep] *[Titular]* no Cofre."` (com saudação se houver).
   2. `"Anotei na lista de documentos pendentes."`
-  3. Se o dado que a pessoa provavelmente quer estiver comprovadamente em outro documento daquele titular no Cofre, oferecer: `"Se precisar só d[a/o] [dado], [ela/ele] consta n[a/o] [Documento]. Quer que eu informe?"`.
-  4. **Proibição de promessas falsas:** Só oferecer o dado se ele realmente existir nos documentos do titular; nunca prometer ou inventar o que não tem.
-  5. **Proibição de despejo de lista:** Nunca despejar a lista completa de documentos disponíveis do titular na resposta de um pedido pontual de documento inexistente. A lista só é apresentada se o usuário pedir expressamente ou em intenções de listagem de catálogo.
-- **Baixa Automática:**
-  Quando um documento for adicionado ao Cofre (via painel, segundo plano ou WhatsApp), todos os itens pendentes correspondentes na tabela `documentos_faltantes` devem ser marcados como providenciados automaticamente.
+  3. Se o dado constar em outro documento do titular no Cofre, oferecer a informação.
+  4. Proibido prometer dados inexistentes ou despejar lista completa de documentos disponíveis.
+- **Baixa automática:** Adição de documento ao Cofre marca pendências correspondentes como providenciadas automaticamente.
 
 ---
 
-## 11. Integridade de Conversas do WhatsApp e Exibição no Painel
-
-- **Gravação Obrigatória e Irrestrita:**
-  Toda mensagem enviada ou recebida pelo WhatsApp deve ser gravada na conversa e ser exibível no painel. Nenhum fluxo ou caminho (texto, áudio, documentos/fotos recebidos, conhecimento estruturado como PIX/link/contato, listagem de documentos, documentos faltantes, pendências de upload, mensagens informativas ou correções de ficha) pode responder ou interagir no WhatsApp sem registrar o par de mensagens (remetente e VEGA) no histórico da conversa no Supabase.
-- **Exibição Rica e Sem Ocultação:**
-  O painel web deve renderizar com fidelidade cada formato:
-  - Links navegáveis e interativos clicáveis (`target="_blank"`).
-  - Áudios recebidos (player com reprodução e transcrição).
-  - Documentos enviados pela VEGA (card com nome do arquivo, abrir e baixar).
-  - Documentos e imagens recebidos do usuário (miniatura para imagens, card para PDF, com abrir e baixar).
-  - Itens estruturados (PIX com botão copiar chave, link de sistema com botão acessar/copiar, contatos).
-- **Proibição de Bolha Invisível ou Vazia:**
-  Nada pode ficar invisível. Caso seja recebido um tipo desconhecido ou mensagem vazia de texto, a interface deve exibir um card/aviso discreto e legível com o horário, jamais uma bolha vazia ou nada.
+## 11. Integridade de Conversas do WhatsApp e Painel
+- **Gravação obrigatória:** Toda mensagem enviada ou recebida no WhatsApp (texto, áudio, documentos, fotos, PIX, links, contatos, informativos, correções) deve ser gravada no Supabase e exibível no painel.
+- **Exibição rica:** Painel deve renderizar links clicáveis, áudios com player/transcrição, cards de anexos para abrir/baixar, itens estruturados e miniaturas.
+- **Sem bolha vazia:** Proibido mensagens invisíveis ou vazias; exibir card informativo legível com horário para eventos sem texto.
 
 ---
 
-## 12. Tratamento de Documentos PDF Protegidos por Senha
-
-- **Detecção preventiva e status próprio:**
-  PDFs protegidos por senha devem ser detectados preventivamente antes de qualquer tentativa de extração de texto ou OCR. Devem receber o status `status_indexacao = 'protegido_senha'` e o selo próprio **"Protegido por senha"** (ícone de cadeado âmbar/dourado), nunca sendo tratados como erro genérico ("NÃO INDEXADO").
-- **Mensagem oficial obrigatória no Painel e WhatsApp:**
-  `"Esse PDF está protegido por senha, então não consegui ler o conteúdo. O arquivo continua salvo no Cofre e pode ser aberto e enviado normalmente, mas não vou conseguir responder perguntas sobre o que está escrito nele."`
-- **Destravamento com senha e não retenção absoluta:**
-  O sistema deve permitir que o usuário informe a senha do arquivo no painel para destravar a leitura. Ao receber a senha, deve abrir o PDF, extrair o texto vetorial e indexar normalmente. **A senha deve ser utilizada exclusivamente em memória e JAMAIS guardada em nenhum lugar** (nem no banco de dados, nem em arquivos locais, metadados ou logs).
+## 12. PDFs Protegidos por Senha
+- **Detecção preventiva:** Detectar proteção antes de tentar extração/OCR. Definir `status_indexacao = 'protegido_senha'` e selo "Protegido por senha" (cadeado âmbar), nunca erro genérico.
+- **Mensagem oficial:** `"Esse PDF está protegido por senha, então não consegui ler o conteúdo. O arquivo continua salvo no Cofre e pode ser aberto e enviado normalmente, mas não vou conseguir responder perguntas sobre o que está escrito nele."`
+- **Destravamento:** Permitir inserção da senha no painel para reindexação em memória. JAMAIS persistir ou registrar a senha em banco, arquivos, metadados ou logs.
 
 ---
 
-## 13. Preservação de Contexto em Pedidos de Envio de Documento e Sanitização de Termos
-
-- **Recuperação de documento do contexto da conversa:**
-  Quando o usuário emitir um comando ou pedido de envio de documento sem citar explicitamente o nome (ex.: *"perfeito, agora me envie o pdf"*, *"show, agora solta esse arquivo aí"*, *"me manda o arquivo"*, *"solta esse documento aí"*, *"pode enviar ele"*), a VEGA deve identificar o documento que estava sendo discutido nas mensagens anteriores do histórico (via rastro `documentoUsado`, `documentoOferecidoId`, anexos anteriores ou menção no texto) e enviá-lo diretamente com o anexo.
-- **Classificação por IA como mecanismo primário:**
-  A classificação por IA (`gpt-5.4-mini`) deve devolver `documento_citado` e `termo_busca` preenchidos SOMENTE quando a mensagem contiver o nome/tipo de um documento real (ex.: CNH, Apólice, Certidão, Alvará, etc.). Para comandos genéricos, gírias ou ordens de envio, a IA deve devolver `documento_citado: ""` e `termo_busca: ""` (vazios), permitindo que o sistema utilize o documento do histórico.
-- **Proibição absoluta de mensagens inteiras virarem documento citado:**
-  A mensagem do usuário jamais pode virar nome de documento citado ou termo de busca. A sanitização por lista atua como camada de proteção extra para remover cortesias, gírias e ordens. Se não houver documento citado e o histórico não tiver documento prévio em discussão, o sistema deve perguntar educadamente qual documento o usuário deseja (`"Qual documento você gostaria que eu envie? Por favor, informe o nome ou tipo do documento."`), JAMAIS inventando nome de arquivo nem registrando a frase na lista de pendentes.
-- **Validação estrita antes de registrar em Documentos Faltantes:**
-  A tabela `documentos_faltantes` só aceita tipos documentais reais e reconhecíveis (Certidão, Contrato, Alvará, CNH, RG, Apólice, etc.). Nenhuma frase solta, saudação, cortesia ou gíria pode ser registrada na lista de faltantes.
-
-
+## 13. Preservação de Contexto e Sanitização de Termos
+- **Recuperação de contexto:** Pedidos de envio sem nome de documento ("me envie o pdf", "show, agora solta esse arquivo aí", "manda ele", "pode enviar") devem recuperar o documento discutido no histórico recente e enviá-lo com anexo.
+- **Classificação por IA como mecanismo primário:** A IA (`gpt-5.4-mini`) deve preencher `documento_citado` e `termo_busca` SOMENTE quando houver tipo/nome de documento real. Para comandos genéricos e gírias de envio, deve retornar vazios (`""`), permitindo o uso do contexto.
+- **Sanitização como proteção extra:** A mensagem inteira nunca pode virar documento citado. Sanitização por lista atua como camada de segurança secundária. Sem documento citado e sem contexto prévio, perguntar qual documento o usuário deseja; nunca inventar arquivo nem registrar frase em faltantes.
+- **Validação estrita de faltantes:** A tabela `documentos_faltantes` só aceita tipos documentais reais e reconhecíveis (Certidão, Contrato, Alvará, CNH, RG, Apólice, etc.). Proibido registrar comandos, cortesias ou frases soltas.
