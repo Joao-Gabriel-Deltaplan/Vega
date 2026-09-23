@@ -415,3 +415,64 @@ Atenciosamente,
     );
   }
 }
+
+export class PdfProtegidoPorSenhaError extends Error {
+  public readonly isPdfProtegido = true;
+  constructor(message = 'Esse PDF está protegido por senha, então não consegui ler o conteúdo. O arquivo continua salvo no Cofre e pode ser aberto e enviado normalmente, mas não vou conseguir responder perguntas sobre o que está escrito nele.') {
+    super(message);
+    this.name = 'PdfProtegidoPorSenhaError';
+  }
+}
+
+/**
+ * Verifica se um arquivo PDF está protegido por senha.
+ */
+export async function verificarSePdfProtegidoPorSenha(buffer: Buffer): Promise<{
+  protegido: boolean;
+  precisaSenha: boolean;
+}> {
+  try {
+    const { getDocumentProxy } = await import('unpdf');
+    const uint8 = new Uint8Array(buffer);
+    await getDocumentProxy(uint8);
+    return { protegido: false, precisaSenha: false };
+  } catch (err: any) {
+    const isSenha =
+      err?.name === 'PasswordException' ||
+      String(err?.message || '').toLowerCase().includes('password') ||
+      String(err?.message || '').includes('No password given');
+    if (isSenha) {
+      return { protegido: true, precisaSenha: true };
+    }
+    return { protegido: false, precisaSenha: false };
+  }
+}
+
+/**
+ * Extrai texto de um PDF, suportando opcionalmente senha.
+ * Se estiver protegido e a senha não for fornecida ou for inválida, lança exceção com detalhes.
+ */
+export async function extrairTextoPdfComSenha(
+  buffer: Buffer,
+  senha?: string
+): Promise<{ text: string | string[]; totalPages: number }> {
+  const { getDocumentProxy, extractText } = await import('unpdf');
+  const uint8 = new Uint8Array(buffer);
+  try {
+    const proxy = await getDocumentProxy(uint8, senha ? { password: senha } : undefined);
+    return await extractText(proxy, { mergePages: false });
+  } catch (err: any) {
+    if (
+      err?.name === 'PasswordException' ||
+      String(err?.message || '').toLowerCase().includes('password') ||
+      String(err?.message || '').includes('No password given')
+    ) {
+      if (!senha) {
+        throw new PdfProtegidoPorSenhaError();
+      } else {
+        throw new Error('Senha incorreta para este documento PDF.');
+      }
+    }
+    throw err;
+  }
+}

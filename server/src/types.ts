@@ -125,7 +125,7 @@ export interface DocumentoRegistro {
   visibilidade: VisibilidadeDoc;
   tamanho?: string;
   dataCadastro?: string;
-  statusIndexacao?: 'processando' | 'indexado' | 'pendente' | 'erro' | 'substituido';
+  statusIndexacao?: 'processando' | 'indexado' | 'pendente' | 'erro' | 'substituido' | 'protegido_senha';
   erroIndexacao?: string;
   dataValidade?: string | null;
   origemValidade?: 'extraído automaticamente' | 'corrigido pelo chat' | 'manual';
@@ -215,6 +215,7 @@ export interface AnaliseDocumentoResponse {
   descricaoSugerida: string;
   camposSugeridosTitular?: Partial<Record<CampoTitularId, string>>;
   dataValidadeSugerida?: string | null;
+  protegidoPorSenha?: boolean;
 }
 
 export interface BuscaSemResultadoRegistro {

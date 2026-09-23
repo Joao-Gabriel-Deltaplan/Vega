@@ -31,6 +31,12 @@ import {
   Phone,
   Mail,
   FileQuestion,
+  Lock,
+  Unlock,
+  KeyRound,
+  Eye,
+  EyeOff,
+  ShieldCheck,
 } from 'lucide-react';
 import { ASSISTENTE } from '../config/assistente.js';
 import {
@@ -170,6 +176,75 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   // Titulares cadastrados no cofre
   const [titulares, setTitulares] = useState<FichaTitular[]>([]);
   const [titularesExpandidos, setTitularesExpandidos] = useState<Record<string, boolean>>({});
+
+  // Destravamento de PDF protegido por senha
+  const [docParaDestravar, setDocParaDestravar] = useState<DocumentoRegistro | null>(null);
+  const [senhaDestravar, setSenhaDestravar] = useState('');
+  const [mostrarSenhaDestravar, setMostrarSenhaDestravar] = useState(false);
+  const [destravandoDoc, setDestravandoDoc] = useState(false);
+  const [erroDestravar, setErroDestravar] = useState('');
+  const [sucessoDestravar, setSucessoDestravar] = useState('');
+
+  const abrirModalDestravar = (doc: DocumentoRegistro) => {
+    setDocParaDestravar(doc);
+    setSenhaDestravar('');
+    setMostrarSenhaDestravar(false);
+    setErroDestravar('');
+    setSucessoDestravar('');
+  };
+
+  const fecharModalDestravar = () => {
+    if (destravandoDoc) return;
+    setDocParaDestravar(null);
+    setSenhaDestravar('');
+    setErroDestravar('');
+    setSucessoDestravar('');
+  };
+
+  const handleExecutarDestravar = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!docParaDestravar) return;
+    if (!senhaDestravar.trim()) {
+      setErroDestravar('Por favor, informe a senha do documento.');
+      return;
+    }
+
+    setDestravandoDoc(true);
+    setErroDestravar('');
+    setSucessoDestravar('');
+
+    try {
+      const res = await fetch(`/api/documentos/${docParaDestravar.id}/destravar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ senha: senhaDestravar.trim() }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.erro || 'Falha ao destravar o documento.');
+      }
+
+      setSucessoDestravar('Documento destravado e indexado com sucesso!');
+      setDocumentos((prev) =>
+        prev.map((d) =>
+          d.id === docParaDestravar.id
+            ? { ...d, statusIndexacao: 'indexado', erroIndexacao: undefined }
+            : d
+        )
+      );
+
+      setTimeout(() => {
+        carregarDocumentos(true);
+        carregarTitulares();
+        fecharModalDestravar();
+      }, 1200);
+    } catch (err: any) {
+      setErroDestravar(err.message || 'Erro ao processar senha.');
+    } finally {
+      setDestravandoDoc(false);
+    }
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -851,9 +926,30 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
             </span>
           )}
 
+          {doc.statusIndexacao === 'protegido_senha' && (
+            <button
+              onClick={() => abrirModalDestravar(doc)}
+              className="px-2.5 py-0.5 rounded text-[10px] font-semibold tracking-wider uppercase bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Esse PDF está protegido por senha, então não consegui ler o conteúdo. O arquivo continua salvo no Cofre e pode ser aberto e enviado normalmente, mas não vou conseguir responder perguntas sobre o que está escrito nele. Clique para informar a senha e destravar a leitura com IA."
+            >
+              <Lock className="w-3 h-3 text-amber-400" />
+              <span>Protegido por senha</span>
+            </button>
+          )}
+
           {renderSeloValidade(doc.dataValidade)}
 
           <div className="flex items-center gap-1">
+            {doc.statusIndexacao === 'protegido_senha' && (
+              <button
+                onClick={() => abrirModalDestravar(doc)}
+                className="p-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 hover:text-amber-200 border border-amber-500/30 transition-colors cursor-pointer"
+                title="Informar senha para destravar leitura com IA"
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+              </button>
+            )}
+
             <a
               href={`/arquivos/${encodeURIComponent((doc.arquivo || '').trim())}`}
               target="_blank"
@@ -2419,6 +2515,127 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* MODAL: DESTRAVAR PDF COM SENHA */}
+      {docParaDestravar && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-[#121820] border border-[#202937] rounded-2xl max-w-lg w-full flex flex-col shadow-2xl overflow-hidden">
+            {/* Cabeçalho */}
+            <div className="p-4 sm:p-5 border-b border-[#1e2633] flex items-center justify-between bg-[#18202b]">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                  <Lock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-100">
+                    Destravar Leitura com Senha
+                  </h2>
+                  <p className="text-xs text-slate-400 truncate max-w-xs sm:max-w-sm">
+                    {docParaDestravar.titulo}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={fecharModalDestravar}
+                disabled={destravandoDoc}
+                className="p-2 rounded-xl bg-[#121820] hover:bg-[#202937] text-slate-400 hover:text-slate-100 border border-[#263345] transition-colors cursor-pointer disabled:opacity-50"
+                title="Fechar"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Conteúdo */}
+            <form onSubmit={handleExecutarDestravar} className="p-5 space-y-4">
+              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-200/90 leading-relaxed">
+                Esse PDF está protegido por senha, então não consegui ler o conteúdo. O arquivo continua salvo no Cofre e pode ser aberto e enviado normalmente, mas não vou conseguir responder perguntas sobre o que está escrito nele.
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                  Senha do Documento PDF
+                </label>
+                <div className="relative">
+                  <input
+                    type={mostrarSenhaDestravar ? 'text' : 'password'}
+                    value={senhaDestravar}
+                    onChange={(e) => {
+                      setSenhaDestravar(e.target.value);
+                      if (erroDestravar) setErroDestravar('');
+                    }}
+                    placeholder="Digite a senha do arquivo..."
+                    autoFocus
+                    disabled={destravandoDoc}
+                    className="w-full px-3.5 py-2.5 pr-10 rounded-xl bg-[#0d1219] border border-[#202937] text-slate-100 text-sm focus:outline-none focus:border-amber-500/60 transition-colors disabled:opacity-50"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setMostrarSenhaDestravar(!mostrarSenhaDestravar)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+                    title={mostrarSenhaDestravar ? 'Ocultar senha' : 'Ver senha'}
+                  >
+                    {mostrarSenhaDestravar ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Aviso de Privacidade e Segurança */}
+              <div className="flex items-start gap-2.5 p-3 rounded-xl bg-[#0b0f14] border border-[#1e2633] text-[11px] text-slate-400 leading-normal">
+                <ShieldCheck className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                <span>
+                  <strong className="text-slate-300 font-medium">Segurança e Privacidade:</strong> A senha será utilizada estritamente na memória para abrir e indexar o texto com a IA. Ela <strong className="text-amber-300 font-semibold">NÃO será armazenada</strong> em lugar nenhum (nem no banco de dados, nem em arquivos ou logs).
+                </span>
+              </div>
+
+              {/* Erro */}
+              {erroDestravar && (
+                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-400" />
+                  <span>{erroDestravar}</span>
+                </div>
+              )}
+
+              {/* Sucesso */}
+              {sucessoDestravar && (
+                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-emerald-400" />
+                  <span>{sucessoDestravar}</span>
+                </div>
+              )}
+
+              {/* Ações */}
+              <div className="pt-2 flex items-center justify-end gap-2.5 border-t border-[#1e2633]">
+                <button
+                  type="button"
+                  onClick={fecharModalDestravar}
+                  disabled={destravandoDoc}
+                  className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-slate-200 bg-[#18202b] hover:bg-[#202937] border border-[#202937] transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={destravandoDoc || !senhaDestravar.trim()}
+                  className="px-4 py-2 rounded-xl text-xs font-medium text-slate-900 bg-amber-400 hover:bg-amber-300 transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed font-semibold shadow-lg shadow-amber-500/10"
+                >
+                  {destravandoDoc ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Destravando e lendo...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Unlock className="w-3.5 h-3.5" />
+                      <span>Destravar e Ler com IA</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

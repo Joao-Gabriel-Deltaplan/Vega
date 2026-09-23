@@ -142,3 +142,14 @@ Nenhum outro modelo ou alias obsoleto (ex: gpt-4o, gpt-3.5-turbo, whisper-1) dev
 - **Proibição de Bolha Invisível ou Vazia:**
   Nada pode ficar invisível. Caso seja recebido um tipo desconhecido ou mensagem vazia de texto, a interface deve exibir um card/aviso discreto e legível com o horário, jamais uma bolha vazia ou nada.
 
+---
+
+## 12. Tratamento de Documentos PDF Protegidos por Senha
+
+- **Detecção preventiva e status próprio:**
+  PDFs protegidos por senha devem ser detectados preventivamente antes de qualquer tentativa de extração de texto ou OCR. Devem receber o status `status_indexacao = 'protegido_senha'` e o selo próprio **"Protegido por senha"** (ícone de cadeado âmbar/dourado), nunca sendo tratados como erro genérico ("NÃO INDEXADO").
+- **Mensagem oficial obrigatória no Painel e WhatsApp:**
+  `"Esse PDF está protegido por senha, então não consegui ler o conteúdo. O arquivo continua salvo no Cofre e pode ser aberto e enviado normalmente, mas não vou conseguir responder perguntas sobre o que está escrito nele."`
+- **Destravamento com senha e não retenção absoluta:**
+  O sistema deve permitir que o usuário informe a senha do arquivo no painel para destravar a leitura. Ao receber a senha, deve abrir o PDF, extrair o texto vetorial e indexar normalmente. **A senha deve ser utilizada exclusivamente em memória e JAMAIS guardada em nenhum lugar** (nem no banco de dados, nem em arquivos locais, metadados ou logs).
+

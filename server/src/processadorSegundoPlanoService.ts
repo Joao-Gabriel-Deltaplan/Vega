@@ -25,7 +25,10 @@ import { marcarDocumentoFaltanteComoProvidenciado } from './documentosFaltantesS
 import { eventosPainel } from './eventos/eventosService.js';
 import { formatarHorarioBrasilia, obterAgoraIsoUtc } from './utils/dataHoraUtils.js';
 import { ASSISTENTE } from './config/assistente.js';
-import { Mensagem } from './types.js';
+import { PdfProtegidoPorSenhaError } from './pdfService.js';
+
+export const MENSAGEM_PDF_PROTEGIDO_SENHA =
+  'Esse PDF está protegido por senha, então não consegui ler o conteúdo. O arquivo continua salvo no Cofre e pode ser aberto e enviado normalmente, mas não vou conseguir responder perguntas sobre o que está escrito nele.';
 
 interface ItemFila {
   docId: string;
@@ -187,6 +190,43 @@ async function processarProximoDaFila(): Promise<void> {
       }
     }
 
+    // Se o PDF estiver protegido por senha, não tenta indexação vetorial e registra status específico
+    if (analise.protegidoPorSenha) {
+      console.log(`[Worker Segundo Plano 🔒] Documento "${doc.arquivo}" está protegido por senha. Definindo status como protegido_senha.`);
+      const msgProtegido = MENSAGEM_PDF_PROTEGIDO_SENHA;
+
+      await supabase
+        .from('documentos')
+        .update({
+          status_indexacao: 'protegido_senha',
+          erro_indexacao: msgProtegido,
+        })
+        .eq('id', docId);
+
+      const metadataDoc = doc.metadata || {};
+      if (metadataDoc.origem === 'whatsapp' && metadataDoc.remetenteJid) {
+        await enviarTextoEvolution(metadataDoc.remetenteJid, msgProtegido);
+
+        if (metadataDoc.conversaId) {
+          const msgAssistente: Mensagem = {
+            id: `wa-msg-${Date.now()}-vega-senha-doc`,
+            remetente: 'assistente',
+            nomeRemetente: ASSISTENTE.nomeExibicao,
+            horario: formatarHorarioBrasilia(),
+            timestamp: obterAgoraIsoUtc(),
+            texto: msgProtegido,
+            origem: 'motor',
+          };
+          const conversaAtualizada = await adicionarMensagem(metadataDoc.conversaId, msgAssistente);
+          if (conversaAtualizada) {
+            eventosPainel.emitirNovaMensagem(metadataDoc.conversaId, msgAssistente, conversaAtualizada);
+          }
+        }
+      }
+
+      return;
+    }
+
     // 5. ETAPA 2: INDEXAÇÃO VETORIAL (OCR COMPLETO, CHUNKING E EMBEDDINGS)
     if (!apiKey) {
       throw new Error('OPENAI_API_KEY não configurada no .env');
@@ -291,17 +331,26 @@ async function processarProximoDaFila(): Promise<void> {
     const msgErro = err?.message || String(err);
     console.error(`[Worker Segundo Plano ❌] Erro ao processar documento ${docId}:`, msgErro);
 
-    // Garante que o documento continua no banco com o status de erro e o motivo técnico exato
+    const isSenha =
+      err instanceof PdfProtegidoPorSenhaError ||
+      err?.name === 'PasswordException' ||
+      msgErro.toLowerCase().includes('password') ||
+      msgErro.includes('No password given');
+
+    const statusFinal = isSenha ? 'protegido_senha' : 'erro';
+    const erroFinal = isSenha ? MENSAGEM_PDF_PROTEGIDO_SENHA : msgErro;
+
+    // Garante que o documento continua no banco com o status correspondente
     try {
       await supabase
         .from('documentos')
         .update({
-          status_indexacao: 'erro',
-          erro_indexacao: msgErro,
+          status_indexacao: statusFinal,
+          erro_indexacao: erroFinal,
         })
         .eq('id', docId);
 
-      // Se veio do WhatsApp, notifica o usuário sobre a falha em linguagem simples
+      // Se veio do WhatsApp, notifica o usuário
       const { data: docErr } = await supabase
         .from('documentos')
         .select('arquivo, metadata')
@@ -309,8 +358,12 @@ async function processarProximoDaFila(): Promise<void> {
         .maybeSingle();
 
       if (docErr?.metadata?.origem === 'whatsapp' && docErr.metadata.remetenteJid) {
-        const motivoAmigavel = traduzirMotivoErroParaUsuario(msgErro);
-        const msgFalha = `Não consegui processar automaticamente o documento *${docErr.arquivo}* (${motivoAmigavel}). Mas fique tranquilo: o arquivo continua salvo com segurança no Cofre da VEGA com o selo de pendente para que possamos conferir quando quiser.`;
+        let msgFalha = msgOficialSenha;
+        if (!isSenha) {
+          const motivoAmigavel = traduzirMotivoErroParaUsuario(msgErro);
+          msgFalha = `Não consegui processar automaticamente o documento *${docErr.arquivo}* (${motivoAmigavel}). Mas fique tranquilo: o arquivo continua salvo com segurança no Cofre da VEGA com o selo de pendente para que possamos conferir quando quiser.`;
+        }
+
         await enviarTextoEvolution(docErr.metadata.remetenteJid, msgFalha);
 
         if (docErr.metadata.conversaId) {

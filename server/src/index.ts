@@ -60,6 +60,7 @@ import { RastroRegistro } from './types.js';
 import { mascararDadosSensiveis } from './utils/segurancaUtils.js';
 import {
   indexarDocumentoBackground,
+  destravarEIndexarDocumentoComSenha,
   removerDocumentoSupabaseBackground,
   indexarConhecimentoBackground,
   removerConhecimentoSupabaseBackground,
@@ -651,6 +652,25 @@ app.post('/api/documentos', async (req, res) => {
   } catch (erro) {
     console.error('Erro ao cadastrar documento:', erro);
     res.status(500).json({ erro: 'Erro ao cadastrar documento' });
+  }
+});
+
+// POST /api/documentos/:id/destravar (Desbloqueia leitura de PDF com senha e reindexa com IA)
+app.post('/api/documentos/:id/destravar', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { senha } = req.body;
+    if (!senha || typeof senha !== 'string' || !senha.trim()) {
+      return res.status(400).json({ erro: 'Por favor, informe a senha do documento PDF.' });
+    }
+
+    const resultado = await destravarEIndexarDocumentoComSenha(id, senha.trim());
+    res.json(resultado);
+  } catch (err: any) {
+    console.error(`[Destravar Documento ⚠️] Falha ao destravar documento ${req.params.id}:`, err?.message || err);
+    const msgErro = err?.message || 'Falha ao destravar documento com a senha fornecida.';
+    const statusHttp = msgErro.toLowerCase().includes('incorreta') ? 400 : 500;
+    res.status(statusHttp).json({ erro: msgErro });
   }
 });
 

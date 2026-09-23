@@ -22,6 +22,7 @@ import {
 import { DocumentoRegistro, ItemConhecimento } from '../types.js';
 import { atualizarValidadeDocumento } from '../vencimentos/alertaVencimentoService.js';
 import { obterBufferArquivo } from '../utils/storageUtils.js';
+import { PdfProtegidoPorSenhaError } from '../pdfService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,7 +41,7 @@ function calcularHashTexto(texto: string): string {
  */
 async function atualizarStatusIndexacaoDoc(
   docId: string,
-  status: 'indexado' | 'pendente' | 'erro',
+  status: 'indexado' | 'pendente' | 'erro' | 'protegido_senha',
   erro?: string
 ): Promise<void> {
   try {
@@ -198,7 +199,19 @@ export async function indexarDocumentoBackground(doc: DocumentoRegistro): Promis
       console.log(`[Indexador Automático ✅] "${doc.titulo}" indexado com sucesso em ${duracao}s (${trechos.length} trechos, OCR: ${usouOCR ? 'SIM' : 'NÃO'}).`);
     } catch (err: any) {
       console.error(`[Indexador Automático ❌] Falha ao indexar "${doc.titulo}":`, err?.message || err);
-      await atualizarStatusIndexacaoDoc(doc.id, 'erro', err?.message || 'Erro durante a indexação.');
+      const isSenha =
+        err instanceof PdfProtegidoPorSenhaError ||
+        err?.isPdfProtegido ||
+        err?.name === 'PasswordException' ||
+        String(err?.message || '').toLowerCase().includes('password') ||
+        String(err?.message || '').includes('No password given');
+
+      if (isSenha) {
+        const msgOficialSenha = 'Esse PDF está protegido por senha, então não consegui ler o conteúdo. O arquivo continua salvo no Cofre e pode ser aberto e enviado normalmente, mas não vou conseguir responder perguntas sobre o que está escrito nele.';
+        await atualizarStatusIndexacaoDoc(doc.id, 'protegido_senha', msgOficialSenha);
+      } else {
+        await atualizarStatusIndexacaoDoc(doc.id, 'erro', err?.message || 'Erro durante a indexação.');
+      }
     }
   });
 }
@@ -433,32 +446,14 @@ export async function sincronizarSupabaseNoStartup(): Promise<{
   }
 
   // -------------------------------------------------------------
-  // 2. SINCRONIZAÇÃO DOS DOCUMENTOS DO COFRE
+  // 2. SINCRONIZAÇÃO DOS DOCUMENTOS DO COFRE (REGRA 1: NUNCA DELETAR DA TABELA DOCUMENTOS)
   // -------------------------------------------------------------
   const docsCofre = await obterTodosDocumentos();
-  const arquivosCofreValidos = new Set(docsCofre.map((d) => d.arquivo));
 
-  const { data: docsCofreSupabase } = await supabase
-    .from('documentos')
-    .select('id, titulo, arquivo, hash_arquivo')
-    .neq('tipo', 'Conhecimento');
-
-  let removidosDoc = 0;
   let indexadosDoc = 0;
+  const removidosDoc = 0;
 
-  // Remove do Supabase qualquer documento do cofre cujo arquivo não conste na lista válida (somente se a consulta retornou itens válidos)
-  if (docsCofre.length > 0) {
-    for (const doc of docsCofreSupabase || []) {
-      if (!arquivosCofreValidos.has(doc.arquivo)) {
-        console.log(`[Startup 🗑️] Removendo documento órfão do cofre no Supabase: "${doc.titulo}" (${doc.arquivo})`);
-        await supabase.from('trechos').delete().eq('documento_id', doc.id);
-        await supabase.from('documentos').delete().eq('id', doc.id);
-        removidosDoc++;
-      }
-    }
-  }
-
-  // Reindexa os que estiverem faltando ou com hash diferente
+  // Reindexa apenas documentos existentes que precisam de atualização de hash
   for (const doc of docsCofre) {
     const caminhoArquivo = path.join(ARQUIVOS_DIR, doc.arquivo);
     if (!fs.existsSync(caminhoArquivo)) {
@@ -471,18 +466,16 @@ export async function sincronizarSupabaseNoStartup(): Promise<{
     const { data: docExistente } = await supabase
       .from('documentos')
       .select('id, hash_arquivo')
-      .eq('arquivo', doc.arquivo)
+      .eq('id', doc.id)
       .maybeSingle();
 
     if (docExistente && docExistente.hash_arquivo === hashDisco) {
       continue; // Em dia
     }
 
-    // Se existe mas hash é diferente, remove antes de recriar
+    // Regra 1 Oficial: Apenas limpa trechos anteriores, NUNCA deleta o registro em documentos!
     if (docExistente) {
       await supabase.from('trechos').delete().eq('documento_id', docExistente.id);
-      await supabase.from('documentos').delete().eq('id', docExistente.id);
-      removidosDoc++;
     }
 
     console.log(`[Startup ⚡] Reindexando documento do cofre: "${doc.titulo}" (${doc.arquivo})...`);
@@ -553,5 +546,140 @@ export async function sincronizarSupabaseNoStartup(): Promise<{
     documentos: { removidos: removidosDoc, indexados: indexadosDoc },
   };
 }
+
+/**
+ * Destrava a leitura de um documento protegido por senha, extrai seu texto e indexa vetorialmente no Supabase.
+ * REGRA CRÍTICA DE PRIVACIDADE E SEGURANÇA:
+ * A senha é utilizada exclusivamente em memória nesta operação e JAMAIS será salva em nenhum banco de dados,
+ * metadados de documento ou arquivos de log.
+ */
+export async function destravarEIndexarDocumentoComSenha(
+  docId: string,
+  senha: string
+): Promise<{ sucesso: boolean; mensagem: string }> {
+  if (!senha || typeof senha !== 'string' || !senha.trim()) {
+    throw new Error('Por favor, informe a senha do documento PDF.');
+  }
+
+  const supabase = getSupabaseClient();
+  const { data: doc, error } = await supabase
+    .from('documentos')
+    .select('*')
+    .eq('id', docId)
+    .maybeSingle();
+
+  if (error || !doc) {
+    throw new Error('Documento não encontrado no Cofre.');
+  }
+
+  if (!fs.existsSync(ARQUIVOS_DIR)) {
+    fs.mkdirSync(ARQUIVOS_DIR, { recursive: true });
+  }
+  const caminhoLocal = path.join(ARQUIVOS_DIR, doc.arquivo);
+
+  let buffer: Buffer;
+  if (fs.existsSync(caminhoLocal)) {
+    buffer = fs.readFileSync(caminhoLocal);
+  } else {
+    const arqStorage = await obterBufferArquivo(doc.arquivo, doc.storage_path);
+    if (!arqStorage) {
+      throw new Error(`Arquivo não encontrado no Storage nem em disco: ${doc.arquivo}`);
+    }
+    buffer = arqStorage.buffer;
+    try {
+      fs.writeFileSync(caminhoLocal, buffer);
+    } catch {}
+  }
+
+  // 1. Testa a senha com getDocumentProxy
+  const { getDocumentProxy } = await import('unpdf');
+  try {
+    await getDocumentProxy(new Uint8Array(buffer), { password: senha });
+    console.log(`[Destravar Documento 🔓] Senha válida para o documento "${doc.arquivo}". Iniciando extração e indexação vetorial...`);
+  } catch (errProxy: any) {
+    if (
+      errProxy?.name === 'PasswordException' ||
+      String(errProxy?.message || '').toLowerCase().includes('password') ||
+      String(errProxy?.message || '').includes('No password given')
+    ) {
+      throw new Error('Senha incorreta para este documento PDF.');
+    }
+    throw errProxy;
+  }
+
+  // 2. Extrai texto com a senha fornecida
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error('OPENAI_API_KEY não configurada no .env');
+  }
+  const openai = new OpenAI({ apiKey });
+
+  const { paginas, usouOCR } = await extrairTextoDocumento(
+    caminhoLocal,
+    openai,
+    {
+      titulo: doc.titulo,
+      descricao: doc.descricao,
+      titular: doc.titular,
+    },
+    senha
+  );
+
+  const textoCompleto = paginas.map((p) => p.texto).join('\n\n');
+  if (!textoCompleto.trim()) {
+    throw new Error('Nenhum texto pôde ser extraído do documento após o desbloqueio.');
+  }
+
+  // 3. Chunking e embeddings vetoriais
+  const trechos = dividirEmTrechos(paginas);
+  if (trechos.length === 0) {
+    trechos.push({ conteudo: textoCompleto.slice(0, 2400), pagina: 1 });
+  }
+
+  const textosParaEmbedding = trechos.map((t) => t.conteudo);
+  const embeddings = await gerarEmbeddingsEmLote(textosParaEmbedding, openai);
+
+  // 4. Limpa trechos anteriores deste documento no Supabase
+  await supabase.from('trechos').delete().eq('documento_id', doc.id);
+
+  const ehCorporativo = doc.titular?.toLowerCase().includes('delta') || !doc.titular;
+  const pessoaId = doc.pessoa_id || null;
+
+  const payloadTrechos = trechos.map((t, idx) => ({
+    documento_id: doc.id,
+    pessoa_id: pessoaId,
+    corporativo: ehCorporativo,
+    pagina: t.pagina,
+    conteudo: t.conteudo,
+    embedding: embeddings[idx],
+  }));
+
+  const { error: errTrechos } = await supabase.from('trechos').insert(payloadTrechos);
+  if (errTrechos) {
+    throw new Error(`Erro ao salvar trechos indexados: ${errTrechos?.message}`);
+  }
+
+  // 5. Atualiza o documento no Supabase para 'indexado' e limpa erro_indexacao
+  // REGRA DE SEGURANÇA: NUNCA grava a senha no banco nem em metadata!
+  const metadataAtualizado = { ...(doc.metadata || {}) };
+  delete metadataAtualizado.precisaSenha;
+
+  await supabase
+    .from('documentos')
+    .update({
+      status_indexacao: 'indexado',
+      erro_indexacao: null,
+      metadata: metadataAtualizado,
+    })
+    .eq('id', doc.id);
+
+  console.log(`[Destravar Documento ✅] Documento "${doc.arquivo}" destravado e indexado com sucesso! (${trechos.length} trechos gerados, OCR: ${usouOCR ? 'SIM' : 'NÃO'})`);
+
+  return {
+    sucesso: true,
+    mensagem: 'Documento destravado e indexado com sucesso!',
+  };
+}
+
 
 

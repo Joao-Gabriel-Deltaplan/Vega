@@ -7,6 +7,7 @@ import { AnaliseDocumentoResponse, VisibilidadeDoc } from './types.js';
 import { extrairCamposTitularDeDocumento } from './extracaoTitularService.js';
 import { extrairTextoImagemComVisao } from './indexador/indexadorService.js';
 import { obterTodosTitulares, resolverTitularCadastrado } from './storage.js';
+import { verificarSePdfProtegidoPorSenha } from './pdfService.js';
 
 const TEMP_DIR = path.resolve(process.cwd(), 'temp_ocr');
 
@@ -124,6 +125,7 @@ export async function analisarDocumentoParaCofre(dados: {
   const openai = apiKey ? new OpenAI({ apiKey }) : null;
 
   let textoExtraido = '';
+  let protegidoPorSenha = false;
   const isPdf = dados.mimeType === 'application/pdf' || nomeArquivo.toLowerCase().endsWith('.pdf');
   const isImagem = dados.mimeType?.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(nomeArquivo);
 
@@ -131,19 +133,32 @@ export async function analisarDocumentoParaCofre(dados: {
     try {
       const base64Limpo = base64.replace(/^data:.*?;base64,/, '');
       const buffer = Buffer.from(base64Limpo, 'base64');
-      const { text } = await extractText(new Uint8Array(buffer), { mergePages: true });
-      const textoLimpo = (text || '').trim();
+      const checagemSenha = await verificarSePdfProtegidoPorSenha(buffer);
+      if (checagemSenha.protegido) {
+        protegidoPorSenha = true;
+        console.log(`[analiseDocumentoService 🔒] PDF "${nomeArquivo}" está protegido por senha. Análise baseada exclusivamente no nome.`);
+      } else {
+        const { text } = await extractText(new Uint8Array(buffer), { mergePages: true });
+        const textoLimpo = (text || '').trim();
 
-      // Se o PDF tiver texto vetorial legível (> 60 caracteres úteis), usa o texto
-      const charsUteis = textoLimpo.replace(/[^a-zA-Z0-9]/g, '').length;
-      if (charsUteis >= 60) {
-        textoExtraido = textoLimpo;
-      } else if (openai) {
-        // PDF escaneado / foto salva como PDF: executa OCR com visão na página 1
-        console.log(`[analiseDocumentoService 📄] PDF "${nomeArquivo}" possui pouco texto vetorial (${charsUteis} chars). Aplicando visão OCR com gpt-5.4-mini...`);
-        textoExtraido = await extrairTextoPdfEscaneadoComVisao(buffer, openai);
+        // Se o PDF tiver texto vetorial legível (> 60 caracteres úteis), usa o texto
+        const charsUteis = textoLimpo.replace(/[^a-zA-Z0-9]/g, '').length;
+        if (charsUteis >= 60) {
+          textoExtraido = textoLimpo;
+        } else if (openai) {
+          // PDF escaneado / foto salva como PDF: executa OCR com visão na página 1
+          console.log(`[analiseDocumentoService 📄] PDF "${nomeArquivo}" possui pouco texto vetorial (${charsUteis} chars). Aplicando visão OCR com gpt-5.4-mini...`);
+          textoExtraido = await extrairTextoPdfEscaneadoComVisao(buffer, openai);
+        }
       }
-    } catch (err) {
+    } catch (err: any) {
+      const isSenha =
+        err?.name === 'PasswordException' ||
+        String(err?.message || '').toLowerCase().includes('password') ||
+        String(err?.message || '').includes('No password given');
+      if (isSenha) {
+        protegidoPorSenha = true;
+      }
       console.error('[analiseDocumentoService] Erro ao extrair texto do PDF:', err);
     }
   } else if (base64 && isImagem && openai) {
@@ -264,6 +279,7 @@ RETORNE ESTRITAMENTE UM JSON no formato:
           descricaoSugerida: parsed.descricao || `Documento ${nomeLimpo} armazenado no cofre corporativo.`,
           camposSugeridosTitular,
           dataValidadeSugerida: parsed.dataValidade || null,
+          protegidoPorSenha,
         };
       }
     } catch (errIa) {
@@ -283,5 +299,6 @@ RETORNE ESTRITAMENTE UM JSON no formato:
     descricaoSugerida: `Documento ${nomeLimpo} armazenado no cofre corporativo.`,
     camposSugeridosTitular: {},
     dataValidadeSugerida: null,
+    protegidoPorSenha,
   };
 }

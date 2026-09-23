@@ -4,8 +4,8 @@ import crypto from 'crypto';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import OpenAI from 'openai';
-import { extractText } from 'unpdf';
 import { getSupabaseClient } from '../db/supabaseClient.js';
+import { extrairTextoPdfComSenha, PdfProtegidoPorSenhaError } from '../pdfService.js';
 import {
   obterTodosDocumentos,
   obterTodosConhecimentos,
@@ -222,7 +222,8 @@ export async function extrairTextoImagemComVisao(
 export async function extrairTextoDocumento(
   caminhoArquivo: string,
   openai: OpenAI,
-  docInfo?: { titulo: string; descricao?: string; titular?: string }
+  docInfo?: { titulo: string; descricao?: string; titular?: string },
+  senha?: string
 ): Promise<{ paginas: PaginaExtraida[]; usouOCR: boolean; custoOcrUSD: number }> {
   const ext = path.extname(caminhoArquivo).toLowerCase();
   const isImagem = ['.jpg', '.jpeg', '.png', '.webp'].includes(ext);
@@ -252,7 +253,7 @@ export async function extrairTextoDocumento(
 
   // SUPORTE A ARQUIVOS PDF
   const buf = fs.readFileSync(caminhoArquivo);
-  const { text: paginasTexto, totalPages: paginasDetectadas } = await extractText(new Uint8Array(buf), { mergePages: false });
+  const { text: paginasTexto } = await extrairTextoPdfComSenha(buf, senha);
   const paginasValidas = (Array.isArray(paginasTexto) ? paginasTexto : [paginasTexto]).map((b) => (b || '').trim());
 
   let totalPaginas = paginasValidas.length;
