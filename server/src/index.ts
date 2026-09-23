@@ -117,7 +117,16 @@ import {
   retomarDocumentosPendentesAoIniciar,
 } from './processadorSegundoPlanoService.js';
 import { autenticarPainel, validarTokenSessao } from './auth/authService.js';
-import { authMiddleware } from './auth/authMiddleware.js';
+import { authMiddleware, exigirAdmin } from './auth/authMiddleware.js';
+import {
+  obterConfiguracoesVega,
+  salvarConfiguracoesVega,
+  restaurarPadraoVega,
+  obterHistoricoVersoes,
+  restaurarVersaoHistorico,
+  obterModelosEmUso,
+  inicializarConfiguracoesVega,
+} from './config/configuracoesVegaService.js';
 import { eventosPainel } from './eventos/eventosService.js';
 import {
   listarUsuariosAutorizados,
@@ -1254,6 +1263,82 @@ app.post('/api/precos', async (req, res) => {
   }
 });
 
+// ================================================================
+// CONFIGURAÇÕES DA VEGA (Restritas ao Perfil Administrador)
+// ================================================================
+
+// GET /api/configuracoes-vega - Retorna a configuração ativa e modelos homologados
+app.get('/api/configuracoes-vega', exigirAdmin, async (_req, res) => {
+  try {
+    const configuracoes = await obterConfiguracoesVega();
+    const modelos = obterModelosEmUso();
+    return res.status(200).json({ sucesso: true, configuracoes, modelos });
+  } catch (erro: any) {
+    console.error('[API Config VEGA ❌] Erro ao obter configurações:', erro);
+    return res.status(500).json({ sucesso: false, erro: erro.message });
+  }
+});
+
+// POST /api/configuracoes-vega - Salva nova configuração e gera versão no histórico
+app.post('/api/configuracoes-vega', exigirAdmin, async (req, res) => {
+  try {
+    const { promptPersona, temperaturaResposta } = req.body;
+    const autorNome = req.usuario?.nome || 'Administrador';
+    const autorId = req.usuario?.userId || 'admin';
+
+    const novaConfig = await salvarConfiguracoesVega({
+      promptPersona,
+      temperaturaResposta,
+      autorNome,
+      autorId,
+    });
+    return res.status(200).json({ sucesso: true, configuracoes: novaConfig });
+  } catch (erro: any) {
+    console.error('[API Config VEGA ❌] Erro ao salvar configurações:', erro);
+    return res.status(400).json({ sucesso: false, erro: erro.message });
+  }
+});
+
+// POST /api/configuracoes-vega/restaurar-padrao - Restaura prompt oficial e temperatura 0.1
+app.post('/api/configuracoes-vega/restaurar-padrao', exigirAdmin, async (req, res) => {
+  try {
+    const autorNome = req.usuario?.nome || 'Administrador';
+    const autorId = req.usuario?.userId || 'admin';
+
+    const configRestaurada = await restaurarPadraoVega({ autorNome, autorId });
+    return res.status(200).json({ sucesso: true, configuracoes: configRestaurada });
+  } catch (erro: any) {
+    console.error('[API Config VEGA ❌] Erro ao restaurar padrão:', erro);
+    return res.status(500).json({ sucesso: false, erro: erro.message });
+  }
+});
+
+// GET /api/configuracoes-vega/historico - Retorna histórico de versões anteriores
+app.get('/api/configuracoes-vega/historico', exigirAdmin, async (_req, res) => {
+  try {
+    const historico = await obterHistoricoVersoes(30);
+    return res.status(200).json({ sucesso: true, historico });
+  } catch (erro: any) {
+    console.error('[API Config VEGA ❌] Erro ao obter histórico:', erro);
+    return res.status(500).json({ sucesso: false, erro: erro.message });
+  }
+});
+
+// POST /api/configuracoes-vega/historico/:id/restaurar - Restaura versão do histórico
+app.post('/api/configuracoes-vega/historico/:id/restaurar', exigirAdmin, async (req, res) => {
+  try {
+    const idVersao = req.params.id;
+    const autorNome = req.usuario?.nome || 'Administrador';
+    const autorId = req.usuario?.userId || 'admin';
+
+    const configRestaurada = await restaurarVersaoHistorico(idVersao, { autorNome, autorId });
+    return res.status(200).json({ sucesso: true, configuracoes: configRestaurada });
+  } catch (erro: any) {
+    console.error('[API Config VEGA ❌] Erro ao restaurar versão do histórico:', erro);
+    return res.status(400).json({ sucesso: false, erro: erro.message });
+  }
+});
+
 // GET /api/mensagens/:id/rastro - Retorna o log de raciocínio de uma resposta da VEGA
 app.get('/api/mensagens/:id/rastro', async (req: express.Request, res: express.Response) => {
   try {
@@ -1514,6 +1599,11 @@ app.listen(PORT, '0.0.0.0', () => {
   // Sincronização automática com o Supabase ao iniciar o servidor
   sincronizarSupabaseNoStartup().catch((erro) => {
     console.error('[Startup ❌] Erro ao sincronizar com Supabase:', erro);
+  });
+
+  // Inicialização e aquecimento do cache de configurações comportamentais da VEGA
+  inicializarConfiguracoesVega().catch((erro) => {
+    console.warn('[Startup ⚠️] Erro na inicialização das configurações da VEGA:', erro);
   });
 
   // Limpeza automática de rastros e áudios com mais de 30 dias ao iniciar o servidor

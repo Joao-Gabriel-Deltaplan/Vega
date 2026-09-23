@@ -55,6 +55,7 @@ import {
   obterAgoraBrasilia,
   obterAgoraIsoUtc,
 } from '../utils/dataHoraUtils.js';
+import { obterConfiguracoesVegaSync } from '../config/configuracoesVegaService.js';
 
 export type IntencaoChat =
   | 'saudacao_ou_vago'
@@ -689,7 +690,7 @@ async function formatarOuResumirConhecimento(
           content: `Título: "${titulo}"\nConteúdo:\n${conteudo}`,
         },
       ],
-      temperature: 0.1,
+      temperature: obterConfiguracoesVegaSync().temperaturaResposta,
       max_completion_tokens: 300,
     });
     const resposta = res.choices[0]?.message?.content?.trim() || `De acordo com *${titulo}*:\n${conteudo}`;
@@ -1341,8 +1342,12 @@ export async function responderComTrechos(
     )
     .join('\n\n---\n\n');
 
+  const configVega = obterConfiguracoesVegaSync();
   const agoraBrasilia = obterAgoraBrasilia();
-  const systemPrompt = `Você é a assistente corporativa VEGA da Delta Plan.
+  const systemPrompt = `${configVega.promptPersona}
+
+---
+DIRETRIZES DE RESPOSTA COM TRECHOS DO COFRE:
 Sua tarefa é responder à pergunta do usuário usando ESTRITAMENTE as informações presentes nos trechos fornecidos abaixo.
 Data e hora atual de referência: ${agoraBrasilia.dataHoraStr} (Fuso Oficial de Brasília - America/Sao_Paulo). Ao se referir a prazos ou termos como "hoje", "este mês" ou "ano atual", use sempre essa referência.
 
@@ -1351,7 +1356,7 @@ REGRAS OBRIGATÓRIAS:
 2. Nunca invente ou use conhecimento externo que não esteja nos trechos.
 3. Sempre cite o documento de origem da resposta (ex: "De acordo com a *Política de Agendamento*...", ou "...conforme *Certidão de Casamento*", ou "De acordo com o documento *testes jg*...").
 4. Considere que variações de nomes de titulares nos documentos (ex: Thomaz / Thomaz Lustri Fabre) referem-se à mesma pessoa.
-5. Respostas curtas, diretas e profissionais em português do Brasil.
+5. Respostas curtas, diretas e profissionais em português do Brasil, mantendo o tom da persona.
 6. Se o trecho contiver um termo, anotação ou frase curta da base de conhecimento (ex: regras ou limites), use essa informação para responder o que consta no documento respectivo.
 7. FORMATAÇÃO OBRIGATÓRIA (PADRÃO WHATSAPP): Use exclusivamente a formatação do WhatsApp:
    - *negrito* com apenas um asterisco (NUNCA use ** com dois asteriscos).
@@ -1375,7 +1380,7 @@ REGRAS OBRIGATÓRIAS:
           content: `Trechos recuperados dos documentos:\n${contextoTrechos}\n\nPergunta do usuário: "${pergunta}"`,
         },
       ],
-      temperature: 0.1,
+      temperature: configVega.temperaturaResposta,
       max_completion_tokens: 500,
     });
 
@@ -3572,7 +3577,7 @@ DIRETRIZES OBRIGATÓRIAS:
         const completion = await openai.chat.completions.create({
           model: 'gpt-5.4-mini',
           messages: [{ role: 'user', content: promptDoc }],
-          temperature: 0.1,
+          temperature: obterConfiguracoesVegaSync().temperaturaResposta,
         });
 
         const textoRespostaDoc =

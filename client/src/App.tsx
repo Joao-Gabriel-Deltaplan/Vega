@@ -9,6 +9,7 @@ import { ModalAlertasVencimento } from './components/ModalAlertasVencimento.js';
 import { Conversa, Anexo, Mensagem, AlertaVencimento } from './types/chat.js';
 import { LoginView } from './components/LoginView.js';
 import { LogoDeltaPlan } from './components/LogoDeltaPlan.js';
+import { ConfiguracoesVegaView } from './components/ConfiguracoesVegaView.js';
 import { useSSE } from './hooks/useSSE.js';
 
 export function App() {
@@ -78,6 +79,13 @@ export function App() {
       return () => clearInterval(timer);
     }
   }, [autenticado, carregarAlertasVencimento]);
+
+  // Protege a aba de configurações da VEGA exclusivamente para perfil admin
+  useEffect(() => {
+    if (abaAtiva === 'configuracoes_vega' && usuarioLogado && usuarioLogado.role !== 'admin') {
+      setAbaAtiva('whatsapp');
+    }
+  }, [abaAtiva, usuarioLogado]);
 
   const handleMarcarAlertaLido = async (id: string) => {
     try {
@@ -457,6 +465,7 @@ export function App() {
         onAbrirAlertas={() => setModalAlertasAberto(true)}
         onLogout={handleLogout}
         nomeUsuario={usuarioLogado?.nome}
+        roleUsuario={usuarioLogado?.role}
       />
 
       {/* Aba 1: WhatsApp Real em Tempo Real */}
@@ -519,6 +528,11 @@ export function App() {
 
       {/* Aba 5: Painel Admin */}
       {abaAtiva === 'admin' && <AdminView conversas={conversas} />}
+
+      {/* Aba 6: Configurações da VEGA (Exclusivo Administradores) */}
+      {abaAtiva === 'configuracoes_vega' && usuarioLogado?.role === 'admin' && (
+        <ConfiguracoesVegaView />
+      )}
 
       {/* Modal de Alertas de Vencimento de Documentos */}
       <ModalAlertasVencimento

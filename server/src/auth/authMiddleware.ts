@@ -77,3 +77,16 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
   req.usuario = sessao;
   return next();
 }
+
+/**
+ * Middleware para exigir perfil admin em rotas restritas
+ */
+export function exigirAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!req.usuario || req.usuario.role !== 'admin') {
+    return res.status(403).json({
+      sucesso: false,
+      erro: 'Acesso restrito a administradores.',
+    });
+  }
+  return next();
+}

@@ -7,10 +7,11 @@ import {
   Bell,
   LogOut,
   Shield,
+  Sliders,
 } from 'lucide-react';
 import { LogoDeltaPlan } from './LogoDeltaPlan.js';
 
-export type AbaNavegacao = 'whatsapp' | 'usuarios' | 'conhecimento' | 'admin';
+export type AbaNavegacao = 'whatsapp' | 'usuarios' | 'conhecimento' | 'admin' | 'configuracoes_vega';
 
 interface NavigationSidebarProps {
   abaAtiva: AbaNavegacao;
@@ -20,6 +21,7 @@ interface NavigationSidebarProps {
   onAbrirAlertas?: () => void;
   onLogout?: () => void;
   nomeUsuario?: string;
+  roleUsuario?: string;
 }
 
 export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
@@ -30,6 +32,7 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
   onAbrirAlertas,
   onLogout,
   nomeUsuario,
+  roleUsuario,
 }) => {
   return (
     <nav className="w-16 min-w-[64px] h-full bg-[#0b0f14] border-r border-[#1e2633] flex flex-col items-center justify-between py-4 z-20 select-none">
@@ -109,6 +112,24 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
               Configurações & Métricas
             </span>
           </button>
+
+          {/* Aba 5: Configurações da VEGA (Exclusivo Administradores) */}
+          {roleUsuario === 'admin' && (
+            <button
+              onClick={() => onSelecionarAba('configuracoes_vega')}
+              aria-label="Configurações da VEGA"
+              className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all relative group cursor-pointer ${
+                abaAtiva === 'configuracoes_vega'
+                  ? 'bg-[#18202b] text-emerald-400 shadow-sm border-l-2 border-emerald-400'
+                  : 'text-slate-400 hover:text-slate-100 hover:bg-[#121820]'
+              }`}
+            >
+              <Sliders className="w-5 h-5" />
+              <span className="absolute left-16 bg-[#18202b] border border-[#263345] text-slate-200 text-xs px-2.5 py-1.5 rounded-lg shadow-xl opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 font-medium">
+                Configurações da VEGA
+              </span>
+            </button>
+          )}
 
           {/* Alertas de Vencimento */}
           <button
