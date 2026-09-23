@@ -168,6 +168,43 @@ export function localizarBase64DocumentoNoEvento(evento: any): { base64: string;
 }
 
 /**
+ * Extrai o tamanho em bytes do documento com precisão:
+ * 1. Suporta número direto ou string numérica
+ * 2. Suporta objeto Long do Baileys/protobufjs: { low: number, high: number, unsigned: boolean }
+ * 3. Se base64 existir, NUNCA retorna 0; calcula o tamanho real do buffer
+ */
+export function extrairTamanhoBytes(fileLengthRaw: any, base64?: string): number {
+  if (typeof fileLengthRaw === 'number' && !isNaN(fileLengthRaw) && fileLengthRaw > 0) {
+    return fileLengthRaw;
+  }
+  if (typeof fileLengthRaw === 'string') {
+    const num = Number(fileLengthRaw);
+    if (!isNaN(num) && num > 0) return num;
+  }
+  if (fileLengthRaw && typeof fileLengthRaw === 'object') {
+    // Objeto Long { low, high, unsigned } do Baileys
+    const low = Number(fileLengthRaw.low) || 0;
+    const high = Number(fileLengthRaw.high) || 0;
+    const unsigned = Boolean(fileLengthRaw.unsigned);
+    if (high !== 0 || low !== 0) {
+      const val = unsigned
+        ? ((high >>> 0) * 0x100000000) + (low >>> 0)
+        : (high * 0x100000000) + (low >>> 0);
+      if (val > 0) return val;
+    }
+  }
+  if (base64 && typeof base64 === 'string' && base64.trim().length > 0) {
+    try {
+      const semCabecalho = base64.includes(',') ? base64.split(',')[1] : base64;
+      return Buffer.from(semCabecalho.trim(), 'base64').length;
+    } catch {
+      return Math.floor((base64.trim().length * 3) / 4);
+    }
+  }
+  return 0;
+}
+
+/**
  * Extrai informações completas e normalizadas de documentos, imagens e mídias do WhatsApp.
  * Suporta nativamente: PDF, JPG, JPEG, PNG, WEBP.
  * Detecta tipos não suportados (vídeos, stickers, planilhas/word não homologados, etc.).
@@ -190,7 +227,7 @@ export function extrairInfoDocumentoWhatsApp(evento: any): InfoDocumentoMensagem
   if (docMsg) {
     const rawNome = docMsg.fileName || docMsg.title || `documento_${Date.now()}.pdf`;
     const mimetype = (docMsg.mimetype || 'application/pdf').toLowerCase().split(';')[0].trim();
-    const tamanhoBytes = Number(docMsg.fileLength) || 0;
+    const tamanhoBytes = extrairTamanhoBytes(docMsg.fileLength, base64Localizado?.base64);
     const legenda = docMsg.caption || '';
     const ext = path.extname(rawNome).toLowerCase();
 
@@ -230,7 +267,7 @@ export function extrairInfoDocumentoWhatsApp(evento: any): InfoDocumentoMensagem
     const mimetype = (imgMsg.mimetype || 'image/jpeg').toLowerCase().split(';')[0].trim();
     const ext = mimetype.includes('png') ? '.png' : mimetype.includes('webp') ? '.webp' : '.jpeg';
     const rawNome = `foto_${Date.now()}${ext}`;
-    const tamanhoBytes = Number(imgMsg.fileLength) || 0;
+    const tamanhoBytes = extrairTamanhoBytes(imgMsg.fileLength, base64Localizado?.base64);
     const legenda = imgMsg.caption || '';
 
     return {

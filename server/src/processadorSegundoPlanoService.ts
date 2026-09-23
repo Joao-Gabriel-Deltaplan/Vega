@@ -212,18 +212,14 @@ async function processarProximoDaFila(): Promise<void> {
       ? 'tit_thomaz'
       : `tit_${titularIdentificado.toLowerCase().replace(/\s+/g, '_')}`;
 
-    // Insere trechos com embeddings no Supabase
+    // Insere trechos com embeddings no Supabase (respeitando o schema real da tabela trechos)
     const linhasTrechos = trechos.map((tr, idx) => ({
       documento_id: docId,
-      documento_titulo: tituloFinal,
-      arquivo: doc.arquivo,
+      pessoa_id: pessoaId,
+      corporativo: ehCorporativo,
+      pagina: tr.pagina,
       conteudo: tr.conteudo,
       embedding: embeddings[idx] || null,
-      pagina: tr.pagina,
-      pessoa_id: pessoaId,
-      titular: titularIdentificado,
-      tipo_documento: tipoIdentificado,
-      visibilidade: doc.visibilidade || 'diretoria',
     }));
 
     const { error: errTrechos } = await supabase.from('trechos').insert(linhasTrechos);
@@ -269,7 +265,7 @@ async function processarProximoDaFila(): Promise<void> {
     const msgErro = err?.message || String(err);
     console.error(`[Worker Segundo Plano ❌] Erro ao processar documento ${docId}:`, msgErro);
 
-    // Garante que o documento continua no banco com o status de erro e o motivo
+    // Garante que o documento continua no banco com o status de erro e o motivo técnico exato
     try {
       await supabase
         .from('documentos')
@@ -279,7 +275,7 @@ async function processarProximoDaFila(): Promise<void> {
         })
         .eq('id', docId);
 
-      // Se veio do WhatsApp, notifica o usuário sobre a falha sem excluir o documento
+      // Se veio do WhatsApp, notifica o usuário sobre a falha em linguagem simples
       const { data: docErr } = await supabase
         .from('documentos')
         .select('arquivo, metadata')
@@ -287,8 +283,25 @@ async function processarProximoDaFila(): Promise<void> {
         .maybeSingle();
 
       if (docErr?.metadata?.origem === 'whatsapp' && docErr.metadata.remetenteJid) {
-        const msgFalha = `Não consegui processar automaticamente o documento *${docErr.arquivo}* no Cofre (${msgErro}). O arquivo foi mantido no Cofre com o selo de erro para conferência manual.`;
+        const motivoAmigavel = traduzirMotivoErroParaUsuario(msgErro);
+        const msgFalha = `Não consegui processar automaticamente o documento *${docErr.arquivo}* (${motivoAmigavel}). Mas fique tranquilo: o arquivo continua salvo com segurança no Cofre da VEGA com o selo de pendente para que possamos conferir quando quiser.`;
         await enviarTextoEvolution(docErr.metadata.remetenteJid, msgFalha);
+
+        if (docErr.metadata.conversaId) {
+          const msgAssistente: Mensagem = {
+            id: `wa-msg-${Date.now()}-vega-erro-doc`,
+            remetente: 'assistente',
+            nomeRemetente: ASSISTENTE.nomeExibicao,
+            horario: formatarHorarioBrasilia(),
+            timestamp: obterAgoraIsoUtc(),
+            texto: msgFalha,
+            origem: 'motor',
+          };
+          const conversaAtualizada = await adicionarMensagem(docErr.metadata.conversaId, msgAssistente);
+          if (conversaAtualizada) {
+            eventosPainel.emitirNovaMensagem(docErr.metadata.conversaId, msgAssistente, conversaAtualizada);
+          }
+        }
       }
     } catch (errUpd) {
       console.error('[Worker Segundo Plano ❌] Falha ao gravar status de erro no Supabase:', errUpd);
@@ -299,6 +312,32 @@ async function processarProximoDaFila(): Promise<void> {
       processarProximoDaFila();
     }, 500);
   }
+}
+
+/**
+ * Traduz mensagens técnicas e de sistema em linguagem simples e amigável para o usuário do WhatsApp
+ */
+export function traduzirMotivoErroParaUsuario(erroBruto: string): string {
+  const err = (erroBruto || '').toLowerCase();
+  if (err.includes('pdftoppm') || err.includes('pdfinfo') || err.includes('not found')) {
+    return 'não foi possível converter a página escaneada para leitura visual';
+  }
+  if (err.includes('trechos') || err.includes('schema') || err.includes('column') || err.includes('supabase')) {
+    return 'ocorreu uma oscilação temporária ao salvar o texto indexado no banco';
+  }
+  if (err.includes('nenhum texto') || err.includes('vazio') || err.includes('empty')) {
+    return 'o arquivo parece não conter texto legível ou imagem reconhecível';
+  }
+  if (err.includes('timeout') || err.includes('timed out') || err.includes('econnreset')) {
+    return 'o serviço de inteligência demorou para responder';
+  }
+  if (err.includes('rate limit') || err.includes('429')) {
+    return 'o limite temporário de requisições de IA foi atingido';
+  }
+  if (erroBruto.length < 80 && !erroBruto.includes('/') && !erroBruto.includes('\\') && !erroBruto.includes('Error:')) {
+    return erroBruto.toLowerCase();
+  }
+  return 'ocorreu uma falha durante a análise de leitura do arquivo';
 }
 
 /**
