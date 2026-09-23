@@ -86,4 +86,27 @@ Nenhum outro modelo ou alias obsoleto (ex: gpt-4o, gpt-3.5-turbo, whisper-1) dev
 - **Titularidade de documentos de identificação:**
   Para documentos pessoais/identificação (passaporte, RG, CNH, certidões), o titular deve ser extraído do nome que consta no próprio documento. Se esse nome não corresponder a nenhum titular previamente cadastrado, o sistema deve perguntar ao usuário se deseja cadastrar um novo titular.
 
+---
+
+## 8. Bloqueio Rígido por Tipo Documental e Proibição de Entrega Divergente
+
+- **Nunca entregar tipo divergente:**
+  Se o tipo documental solicitado pelo usuário não existir no Cofre (ex.: certidão de nascimento quando só há certidão de casamento), o sistema jamais deve entregar documento de outro tipo. A resposta deve ser obrigatoriamente: `"Não encontrei esse documento no Cofre."`, listando opcionalmente os documentos que realmente existem daquele titular, sem nenhum anexo.
+- **Tipos técnicos e titulares PJ:**
+  O sistema deve reconhecer siglas e tipos técnicos oficiais (como ART e RRT) e partes significativas de pessoas jurídicas cadastradas (ex.: "Menegazzo" para "Serviços Menegazzo").
+
+---
+
+## 9. Tratamento de Resumos, Perguntas de Conteúdo e Listagem de Documentos
+
+- **Resumos e perguntas sobre documento recém-entregue:**
+  Mensagens como *"resuma esse documento em 10 linhas"*, *"o que esse documento fala sobre águas fluviais?"* ou *"explique esse documento"* logo após a VEGA entregar um anexo são **estritamente `pergunta_conteudo`**, nunca `pedir_arquivo`. A VEGA deve responder em texto sintetizando com base exclusiva no documento citado, **sem reenviar o anexo**.
+- **Fatos documentais vs. Data de nascimento:**
+  Perguntas sobre fatos históricos e jurídicos registrados em documentos (como data de dispensa do serviço militar ou data de registro de casamento) devem ser respondidas com o dado exato do fato (ex.: 23/08/2005 para dispensa militar; 12/04/2010 para registro de casamento), **nunca** substituindo pela data de nascimento.
+- **Fallback vetorial para dados pessoais:**
+  Se um dado do titular (ex.: endereço) não estiver estruturado na ficha cadastral, o motor deve consultar os trechos dos documentos do titular no Cofre (ex.: `Dados Thomaz`), responder com base no trecho oficial e oferecer o documento de onde extraiu.
+- **Listagem de acervo ("o que tem no cofre?"):**
+  Perguntas genéricas de catálogo devem classificar como `listar_documentos` e apresentar a lista organizada dos documentos disponíveis por titular, perguntando qual o usuário gostaria de consultar ou receber, sem disparar anexos soltos.
+
+
 

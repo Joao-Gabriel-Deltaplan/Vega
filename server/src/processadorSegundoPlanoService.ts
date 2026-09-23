@@ -227,6 +227,16 @@ async function processarProximoDaFila(): Promise<void> {
       throw new Error(`Erro ao salvar trechos vetoriais no Supabase: ${errTrechos.message}`);
     }
 
+    // Blindagem de segurança pós-indexação: nunca permitir status 'indexado' se houver 0 trechos
+    const { count: totalTrechosSalvos, error: errCount } = await supabase
+      .from('trechos')
+      .select('id', { count: 'exact', head: true })
+      .eq('documento_id', docId);
+
+    if (errCount || !totalTrechosSalvos || totalTrechosSalvos === 0) {
+      throw new Error('Nenhum trecho vetorial foi gerado para este documento.');
+    }
+
     // 6. FINALIZAÇÃO COM SUCESSO: MARCA COMO INDEXADO
     await supabase
       .from('documentos')
@@ -245,7 +255,7 @@ async function processarProximoDaFila(): Promise<void> {
     }
 
     console.log(
-      `[Worker Segundo Plano ✅] Documento "${tituloFinal}" processado e indexado com sucesso! (${trechos.length} trechos)`
+      `[Worker Segundo Plano ✅] Documento "${tituloFinal}" processado e indexado com sucesso! (${totalTrechosSalvos} trechos)`
     );
 
     // 7. Se o documento veio do WhatsApp, aciona notificação e pendência interativa

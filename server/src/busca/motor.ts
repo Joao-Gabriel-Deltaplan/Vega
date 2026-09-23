@@ -261,6 +261,8 @@ export function identificarTipoPedido(textoOriginal: string): string | null {
   if (/\b(nascimento|certid[aã]o de nascimento)\b/i.test(norm)) return 'Certidão de Nascimento';
   if (/\b(obito|[oó]bito|certid[aã]o de [oó]bito)\b/i.test(norm)) return 'Certidão de Óbito';
   if (/\b(certid[aã]o|certid[oõ]es)\b/i.test(norm)) return 'Certidão';
+  if (/\b(art|anota[cç][aã]o de responsabilidade t[eé]cnica)\b/i.test(norm)) return 'ART';
+  if (/\b(rrt|registro de responsabilidade t[eé]cnica)\b/i.test(norm)) return 'RRT';
   if (/\b(crea)\b/i.test(norm)) return 'CREA';
   if (/\b(crt)\b/i.test(norm)) return 'CRT';
   if (/\b(cnh|habilitacao)\b/i.test(norm)) return 'CNH';
@@ -293,13 +295,14 @@ const TERMOS_NAO_TITULARES = new Set([
   'renda', 'ensino', 'medio', 'conduta', 'resultado', 'registro',
   'residencia', 'identidade', 'imposto', 'proposta', 'minuta', 'contrato',
   'estatuto', 'conselho', 'habilitacao', 'saude', 'delta', 'deltaplan', 'plan',
-  'rg', 'cpf', 'cnh', 'crea', 'crt', 'ctps', 'cnpj', 'dre', 'certidao', 'certidoes'
+  'rg', 'cpf', 'cnh', 'crea', 'crt', 'ctps', 'cnpj', 'dre', 'certidao', 'certidoes',
+  'art', 'rrt'
 ]);
 
 /**
- * Extrai titular explícito do pedido ("do Thomaz", "da Delta", etc.).
+ * Extrai titular explícito do pedido ("do Thomaz", "da Delta", "do Menegazzo", etc.).
  * REGRA RIGOROSA: Uma palavra só é considerada titular se casar com um titular cadastrado
- * no Supabase (nome completo, primeiro nome ou apelido). NUNCA extrair palavras por posição na frase.
+ * no Supabase (nome completo, primeiro nome, parte relevante de PJ ou apelido). NUNCA extrair palavras por posição na frase.
  */
 export function extrairTitularExplicito(texto: string, titularesDisponiveis?: string[]): string | null {
   if (!texto) return null;
@@ -314,6 +317,8 @@ export function extrairTitularExplicito(texto: string, titularesDisponiveis?: st
       ...cadastrados,
       'Thomaz Lustri Fabre',
       'Thomaz',
+      'Serviços Menegazzo',
+      'Menegazzo',
       'RENG ENGENHARIA',
       'Delta Plan',
       'Delta',
@@ -336,8 +341,27 @@ export function extrairTitularExplicito(texto: string, titularesDisponiveis?: st
     const regex = new RegExp(`\\b${titNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
     if (regex.test(textoNorm)) {
       if (titNorm.startsWith('delta')) return 'Delta Plan';
+      if (titNorm.includes('menegazzo')) return 'Serviços Menegazzo';
       const primeiro = extrairPrimeiroNome(titular) || titular;
       return primeiro.charAt(0).toUpperCase() + primeiro.slice(1);
+    }
+  }
+
+  // Verifica palavras significativas de titulares cadastrados (ex.: Menegazzo em "Serviços Menegazzo")
+  for (const titular of titulares) {
+    const partes = titular.split(/\s+/).filter(
+      (p) =>
+        p.length >= 4 &&
+        !TERMOS_NAO_TITULARES.has(normalizarTexto(p)) &&
+        !['servicos', 'engenharia', 'empreendimentos', 'ltda', 'brasil', 'grupo'].includes(normalizarTexto(p))
+    );
+    for (const parte of partes) {
+      const parteNorm = normalizarTexto(parte);
+      const regexParte = new RegExp(`\\b${parteNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+      if (regexParte.test(textoNorm)) {
+        if (titular.toLowerCase().includes('menegazzo')) return 'Serviços Menegazzo';
+        return titular;
+      }
     }
   }
 
@@ -610,6 +634,16 @@ export async function buscarDocumentos(
         titularEncontrado: docEquiv.titular,
       };
     }
+
+    // Bloqueio Rígido por Tipo: se pediu um tipo específico desse titular e não existe,
+    // NUNCA cair na busca flexível para entregar documento de outro tipo
+    return {
+      status: 'nenhum',
+      resultados: [],
+      score: 0,
+      tipoPedido,
+      titularEncontrado: titularExplicito,
+    };
   }
 
   // =========================================================================
@@ -701,6 +735,15 @@ export async function buscarDocumentos(
         titularEncontrado: docEquiv.titular,
       };
     }
+
+    // Bloqueio Rígido por Tipo: se pediu um tipo específico e não existe no Cofre,
+    // NUNCA cair na busca flexível para entregar documento de outro tipo
+    return {
+      status: 'nenhum',
+      resultados: [],
+      score: 0,
+      tipoPedido,
+    };
   }
 
   // =========================================================================

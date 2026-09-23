@@ -152,6 +152,16 @@ export async function indexarDocumentoBackground(doc: DocumentoRegistro): Promis
         throw new Error(`Erro ao salvar trechos no Supabase: ${errTrechos?.message}`);
       }
 
+      // Blindagem de segurança pós-indexação: nunca permitir status 'indexado' se houver 0 trechos
+      const { count: totalTrechosSalvos, error: errCount } = await supabase
+        .from('trechos')
+        .select('id', { count: 'exact', head: true })
+        .eq('documento_id', doc.id);
+
+      if (errCount || !totalTrechosSalvos || totalTrechosSalvos === 0) {
+        throw new Error('Nenhum trecho vetorial foi gerado para este documento.');
+      }
+
       // 6. Ficha Sugerida (Fase 3): extrai dados cadastrais e salva como conferido=false
       if (!ehCorporativo && doc.titular) {
         try {

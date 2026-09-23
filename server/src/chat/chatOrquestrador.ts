@@ -12,6 +12,7 @@ import {
   buscarDocumentos,
   isConfirmacaoSimples,
   identificarMultiplosDocumentosNoTexto,
+  identificarTipoPedido,
 } from '../busca/motor.js';
 import { buscarConhecimento } from '../busca/motorConhecimento.js';
 import {
@@ -46,6 +47,7 @@ import {
 export type IntencaoChat =
   | 'saudacao_ou_vago'
   | 'pedir_arquivo'
+  | 'listar_documentos'
   | 'dado_pessoal'
   | 'pergunta_conteudo'
   | 'corrigir_dado'
@@ -314,6 +316,55 @@ function resolverDocumentoOrigem(
 
   return undefined;
 }
+
+/**
+ * Recupera o último documento que a VEGA entregou como anexo ou citou nas mensagens anteriores da conversa.
+ */
+function obterUltimoDocumentoEnviado(
+  historico: Mensagem[],
+  todosDocs: DocumentoRegistro[]
+): DocumentoRegistro | null {
+  if (!historico || historico.length === 0) return null;
+
+  for (let i = historico.length - 1; i >= 0; i--) {
+    const m = historico[i];
+    if (m.remetente === 'assistente') {
+      // 1. Checa por anexos da mensagem
+      if (m.anexos && m.anexos.length > 0) {
+        for (const ax of m.anexos) {
+          const doc = todosDocs.find(
+            (d) =>
+              d.id === (ax as any).id ||
+              (ax.titulo && d.titulo.toLowerCase() === ax.titulo.toLowerCase()) ||
+              d.arquivo.toLowerCase() === ax.nome.toLowerCase()
+          );
+          if (doc) return doc;
+        }
+      }
+      // 2. Checa rastro de documento usado
+      if (m.rastro?.documentoUsado) {
+        const docUsadoStr = m.rastro.documentoUsado.toLowerCase();
+        const doc = todosDocs.find(
+          (d) =>
+            d.titulo.toLowerCase() === docUsadoStr ||
+            d.arquivo.toLowerCase() === docUsadoStr
+        );
+        if (doc) return doc;
+      }
+      // 3. Checa texto: "Aqui está o documento solicitado: X"
+      if (m.texto) {
+        const match = m.texto.match(/Aqui está o documento solicitado:\s*([^.\n]+)/i);
+        if (match) {
+          const tit = match[1].trim().toLowerCase();
+          const doc = todosDocs.find((d) => d.titulo.toLowerCase() === tit || tit.includes(d.titulo.toLowerCase()));
+          if (doc) return doc;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 
 /**
  * Aplica o mascaramento único padronizado para valores de campos individuais (RG e CPF)
@@ -659,7 +710,7 @@ Documentos no cofre: ${titulosDocs || '"CNH Thomaz", "Crea", "CRT", "Certidão d
 
 Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
 {
-  "intencao": "saudacao_ou_vago" | "pedir_arquivo" | "dado_pessoal" | "pergunta_conteudo" | "corrigir_dado" | "consultar_vencimentos" | "silenciar_alerta" | "fora_de_escopo",
+  "intencao": "saudacao_ou_vago" | "pedir_arquivo" | "listar_documentos" | "dado_pessoal" | "pergunta_conteudo" | "corrigir_dado" | "consultar_vencimentos" | "silenciar_alerta" | "fora_de_escopo",
   "pessoa": "nome do titular (ex: Thomaz) ou vazio",
   "campos": ["lista de campos cadastrais solicitados ou vazio (valores padronizados: endereco, estadoCivil, rg, profissao, cpf, filiacao, dataNascimento, cnh, validadeCnh, categoriaCnh, orgaoEmissor)"],
   "campo_corrigir": "nome do campo a ser corrigido (ex: profissao, cpf, rg, etc.) ou vazio",
@@ -672,21 +723,17 @@ Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
 
 REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
 1. "saudacao_ou_vago": Apenas saudações puras ("oi", "olá", "bom dia") ou pedidos vagos ("me ajuda"). NUNCA use para perguntas com assunto ou listas.
-2. "pedir_arquivo": Pedido de envio ou busca de qualquer documento corporativo ou pessoal ("me manda a CNH", "envia o PDF do CREA", "baixa o arquivo", "qual é a CNH do Thomaz", "esses 2 documentos, preciso do anexo dos 2", "pode mandar", "os dois", "me manda o passaporte", "bom dia, me envia a certidão", "contrato de locação", "certidão de óbito", "alvará").
-   - IMPORTANTE: Pedidos de QUALQUER tipo de documento (contrato, alvará, certidão, nota fiscal, comprovante, procuração, termo, recibo, declaração, estatuto, licença, apólice, escritura, habite-se, etc.) são SEMPRE do escopo da VEGA e DEVEM SER CLASSIFICADOS como "pedir_arquivo", MESMO QUE O DOCUMENTO NÃO CONSTE NA LISTA DO COFRE!
-   - Mensagens com saudação + pedido ("bom dia, me envia X", "oi, preciso do CREA", "boa tarde, me manda a CNH") DEVEM SER SEMPRE classificadas como "pedir_arquivo"!
-   - Todo pedido de envio de documento, certidão ou comprovante ("me manda X", "preciso do Y") É SEMPRE "pedir_arquivo", para que o Cofre verifique sua existência ou informe que não foi localizado.
-   - SE O USUÁRIO CITAR MAIS DE UM DOCUMENTO ("o CREA e a certidão", "manda o CREA e a CNH"), a intenção É SEMPRE "pedir_arquivo", e preencha "documentos_citados" com todos os documentos pedidos: ["CREA", "Certidão de Casamento"]!
-3. "dado_pessoal": Perguntas sobre dados cadastrais de titulares (RG, CPF, endereço, estado civil, profissão, mãe, pai, filiação, data de nascimento, validade da CNH etc.).
-   - Se a mensagem citar campos cadastrais de uma pessoa física titular, a intenção É SEMPRE "dado_pessoal". Preencha a lista "campos" com todos os campos pedidos!
-4. "pergunta_conteudo": Perguntas sobre normas, regras, políticas corporativas ou tópicos da base de conhecimento ("o que tem em testes jg", "qual o endereço do escritório").
-5. "corrigir_dado": Quando o usuário afirmar que uma informação cadastral de titular está errada, incorreta ou precisar ser corrigida (ex.: "a profissão do Thomaz está errada, é Técnico em Eletrotécnica", "está errado, é Técnico em Eletrotécnica", "o CPF dele está errado", "a profissão não é essa").
-   - Identifique a "pessoa" (da mensagem atual ou do contexto das últimas mensagens).
-   - Identifique o "campo_corrigir" (se a mensagem não citar diretamente o nome do campo, verifique qual campo a VEGA respondeu na mensagem anterior!).
-   - Extraia o "valor_novo" caso o usuário tenha informado o valor correto. Se ele apenas disse que está errado sem informar o valor, deixe "valor_novo": "".
-6. "consultar_vencimentos": Perguntas sobre prazos de validade ou vencimento de documentos do cofre ("tem algum documento vencendo?", "o que vence este mês?", "quais documentos estão vencidos?", "documentos a vencer", "validade dos documentos").
-7. "silenciar_alerta": Quando o usuário solicitar para parar de alertar sobre o vencimento de um documento (ex: "pare de alertar o CRT do Thomaz", "não alerte mais o CRT", "desative os alertas do CRT", "parar de alertar documento X"). Preencha "documento_citado" (ex: "CRT") e "pessoa" se citada.
-8. "fora_de_escopo": Apenas assuntos que NÃO TÊM NENHUMA relação com documentos ou informações da empresa (ex: receitas culinárias/bolo, previsão do tempo, esportes/futebol, piadas, cálculos matemáticos aleatórios, programação de software). NUNCA use "fora_de_escopo" para pedidos de busca ou envio de documentos, contratos, certidões, termos, alvarás, notas, comprovantes ou procurações, mesmo que o documento não exista no Cofre!
+2. "pedir_arquivo": Pedido EXPRESSO de envio ou entrega de qualquer documento físico ("me manda a CNH", "envia o PDF do CREA", "baixa o arquivo", "preciso do documento X", "me envia a certidão").
+   - ATENÇÃO CRÍTICA: Só é "pedir_arquivo" quando a pessoa pede o DOCUMENTO EM SI para envio ("me manda", "me envia", "preciso do arquivo", "quero o PDF").
+   - Pedidos de RESUMO, EXPLICAÇÃO, INTERPRETAÇÃO ou PERGUNTAS sobre o que está escrito ("resuma esse documento", "o que esse documento fala sobre X?", "explique o documento", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?") são SEMPRE "pergunta_conteudo", NUNCA "pedir_arquivo"!
+3. "listar_documentos": Quando o usuário solicitar listar, ver ou consultar quais documentos existem no Cofre ou de uma pessoa ("quais documentos você tem?", "o que tem no cofre?", "quais documentos do Thomaz você tem?", "o que você tem do Thomaz?", "preciso de mais alguns documentos do Thomaz", "me mostra os documentos"). Preencha "pessoa" se citada.
+4. "dado_pessoal": Perguntas sobre dados cadastrais básicos de titulares (RG, CPF, filiação/mãe/pai, profissão, estado civil, validade da CNH etc.).
+5. "pergunta_conteudo": Perguntas sobre o conteúdo de documentos ("resuma esse documento em 10 linhas", "o que esse documento fala sobre águas fluviais?", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?", "qual o endereço do Thomaz?", "o que diz na página 2?").
+   - Quando o usuário disser "esse documento" ou "o documento acima" logo após a VEGA entregar um anexo, a pergunta DEVE ser respondida com base estrita no texto daquele documento!
+6. "corrigir_dado": Quando o usuário afirmar que uma informação cadastral de titular está errada, incorreta ou precisar ser corrigida (ex.: "a profissão do Thomaz está errada, é Técnico em Eletrotécnica").
+7. "consultar_vencimentos": Perguntas sobre prazos de validade ou vencimento de documentos do cofre ("tem algum documento vencendo?", "o que vence este mês?", "quais documentos estão vencidos?").
+8. "silenciar_alerta": Quando o usuário solicitar para parar de alertar sobre o vencimento de um documento (ex: "pare de alertar o CRT do Thomaz").
+9. "fora_de_escopo": Apenas assuntos que NÃO TÊM NENHUMA relação com documentos ou informações da empresa (ex: receitas culinárias, futebol, piadas).
 
 REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - SE A MENSAGEM ATUAL CITA UM SUJEITO (pessoa ou empresa), ele SEMPRE SUBSTITUI o sujeito das mensagens anteriores! O contexto anterior DEVE SER IGNORADO nesse caso!
@@ -771,6 +818,8 @@ EXEMPLOS OBRIGATÓRIOS:
 
     const msgNorm = normalizarParaBusca(mensagemUsuario);
 
+    const ehPedidoCertidao = /\bcertid[aã]o\b/i.test(msgNorm);
+
     // Mapeamento e detecção de segurança para campos cadastrais
     const padroesCampos: { campo: string; regex: RegExp }[] = [
       { campo: 'endereco', regex: /\b(endere[cç]o|mora|resid[eê]ncia)\b/i },
@@ -779,16 +828,18 @@ EXEMPLOS OBRIGATÓRIOS:
       { campo: 'profissao', regex: /\b(profiss[aã]o|cargo|ocupa[cç][aã]o)\b/i },
       { campo: 'cpf', regex: /\b(cpf)\b/i },
       { campo: 'filiacao', regex: /\b(m[aã]e|pai|pais|filia[cç][aã]o)\b/i },
-      { campo: 'dataNascimento', regex: /\b(nascimento|data\s*de\s*nascimento|idade)\b/i },
+      { campo: 'dataNascimento', regex: /\b(data\s*(de\s*)?nascimento|quando\s*nasceu|ano\s*de\s*nascimento|idade)\b/i },
       { campo: 'validadeCnh', regex: /\b(validade(\s*da\s*cnh)?|vencimento)\b/i },
       { campo: 'categoriaCnh', regex: /\b(categoria(\s*da\s*cnh)?)\b/i },
       { campo: 'cnh', regex: /\b(n[uú]mero\s*da\s*cnh|numero\s*da\s*cnh)\b/i },
     ];
 
     const camposDetectadosRegex: string[] = [];
-    for (const p of padroesCampos) {
-      if (p.regex.test(msgNorm)) {
-        camposDetectadosRegex.push(p.campo);
+    if (!ehPedidoCertidao) {
+      for (const p of padroesCampos) {
+        if (p.regex.test(msgNorm)) {
+          camposDetectadosRegex.push(p.campo);
+        }
       }
     }
 
@@ -891,8 +942,11 @@ EXEMPLOS OBRIGATÓRIOS:
       }
     }
 
+    const ehPerguntaFatoDocumento =
+      /\b(dispensad[oa]|servi[cç]o\s*militar|registro\s+(do\s+)?casamento|data\s+(do\s+)?registro)\b/i.test(msgNorm);
+
     // REGRA DE PROTEÇÃO 1: Se a mensagem citar campos cadastrais e NÃO for sobre a empresa nem correção nem vencimento geral
-    if (!citaEmpresaNaMensagem && !ehMensagemCorrecao && !ehConsultaVencimento && camposDetectadosRegex.length > 0) {
+    if (!citaEmpresaNaMensagem && !ehMensagemCorrecao && !ehConsultaVencimento && !ehPerguntaFatoDocumento && camposDetectadosRegex.length > 0) {
       parsed.intencao = 'dado_pessoal';
       const camposSet = new Set([...(parsed.campos || []), ...camposDetectadosRegex]);
       parsed.campos = Array.from(camposSet);
@@ -905,21 +959,50 @@ EXEMPLOS OBRIGATÓRIOS:
       }
     }
 
+    if (ehPerguntaFatoDocumento) {
+      parsed.intencao = 'pergunta_conteudo';
+      if (!parsed.pessoa) {
+        const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
+        parsed.pessoa = titularDoHistorico || 'Thomaz';
+        origemPessoa = 'contexto';
+      }
+    }
+
     // REGRA DE PROTEÇÃO 2: Pedido de arquivos físicos (múltiplos ou individual)
     // Pedidos de qualquer documento (contrato, certidão, alvará, etc.) NUNCA são fora de escopo.
-    if (REGEX_DOCUMENTO_QUALQUER.test(msgNorm)) {
-      if (parsed.intencao === 'fora_de_escopo' || parsed.intencao === 'saudacao_ou_vago') {
+    const ehPedidoListagem =
+      /\b(quais\s+documentos|o\s+que\s+(tem|voce\s+tem)\s+no\s+cofre|documentos\s+(que\s+)?(tem|existem)|lista(r)?\s+(os\s+)?documentos|mais\s+alguns\s+documentos)\b/i.test(
+        msgNorm
+      );
+
+    const ehPerguntaExplicacaoOuResumo =
+      /\b(resum[aeo]|resumo|expliq?u?e|fala\s+sobre|diz\s+sobre|o\s+que\s+(fala|diz|tem|consta)|conteudo|qual\s+o\s+conteudo|sobre\s+o\s+que\s+[eé]|quantas\s+linhas|em\s+\d+\s+linhas)\b/i.test(
+        msgNorm
+      );
+
+    if (ehPedidoListagem) {
+      parsed.intencao = 'listar_documentos';
+    } else if (ehPerguntaExplicacaoOuResumo) {
+      parsed.intencao = 'pergunta_conteudo';
+    } else if (ehPedidoCertidao || REGEX_DOCUMENTO_QUALQUER.test(msgNorm)) {
+      if (ehPedidoCertidao || parsed.intencao === 'fora_de_escopo' || parsed.intencao === 'saudacao_ou_vago' || parsed.intencao === 'dado_pessoal') {
         parsed.intencao = 'pedir_arquivo';
+        if (!parsed.documento_citado) {
+          parsed.documento_citado = mensagemUsuario.trim();
+        }
+        if (!parsed.termo_busca) {
+          parsed.termo_busca = parsed.documento_citado;
+        }
       }
     }
 
     const multiplosNoTexto = identificarMultiplosDocumentosNoTexto(mensagemUsuario, docs, parsed.pessoa);
-    if (multiplosNoTexto.length > 1) {
+    if (!ehPerguntaExplicacaoOuResumo && !ehPedidoListagem && multiplosNoTexto.length > 1) {
       parsed.intencao = 'pedir_arquivo';
       parsed.documentos_citados = multiplosNoTexto.map((d) => d.titulo);
       parsed.documento_citado = multiplosNoTexto.map((d) => d.titulo).join(', ');
       parsed.termo_busca = parsed.documento_citado;
-    } else {
+    } else if (!ehPerguntaExplicacaoOuResumo && !ehPedidoListagem) {
       const regexCampoEspecifico = /\b(numero|validade|vencimento|categoria|vence|venc|data|emissao|expedicao|orgao|endereco|estado\s*civil|rg|profissao|cpf|mae|pai|filiacao|alerta|alertar|silenciar|desativar)\b/i;
 
       if (
@@ -927,6 +1010,8 @@ EXEMPLOS OBRIGATÓRIOS:
         !ehConsultaVencimento &&
         !ehMensagemCorrecao &&
         parsed.intencao !== 'silenciar_alerta' &&
+        parsed.intencao !== 'listar_documentos' &&
+        parsed.intencao !== 'pergunta_conteudo' &&
         REGEX_DOCUMENTO_QUALQUER.test(msgNorm) &&
         !regexCampoEspecifico.test(msgNorm) &&
         (!parsed.campos || parsed.campos.length === 0)
@@ -1075,7 +1160,11 @@ REGRAS OBRIGATÓRIAS:
    - NUNCA use títulos markdown (#, ##, ###).
    - NUNCA use tabelas (|).
    - NUNCA use links em markdown ([texto](url)).
-   - Negrito só quando ajudar a leitura (nomes de documentos, valores, datas ou prazos-chave).`;
+   - Negrito só quando ajudar a leitura (nomes de documentos, valores, datas ou prazos-chave).
+8. ATENÇÃO MÁXIMA AO DADO EXATO PERGUNTADO:
+   - Se a pergunta for sobre data de DISPENSA DO SERVIÇO MILITAR, responda rigorosamente a data em que foi dispensado do serviço militar (ex.: 23 de agosto de 2005), e NUNCA a data de nascimento!
+   - Se a pergunta for sobre data do REGISTRO DO CASAMENTO, responda rigorosamente a data do registro do casamento (ex.: 12 de abril de 2010), e NUNCA a data de nascimento!
+   - Se o trecho contiver múltiplas datas, leia atentamente o contexto para responder EXATAMENTE a data solicitada pelo usuário.`;
 
   try {
     const response = await openai.chat.completions.create({
@@ -1633,6 +1722,108 @@ export async function processarMensagemChat(dados: {
   }
 
   // ============================================================================
+  // CASO 1.5: LISTAR DOCUMENTOS (intencao === 'listar_documentos')
+  // ============================================================================
+  if (intencao === 'listar_documentos') {
+    const inicioListagem = Date.now();
+    const todosDocs = documentosDisponiveis.length > 0 ? documentosDisponiveis : await obterTodosDocumentos();
+    const nivelAcesso = contato?.nivelAcesso || contato?.ficha?.nivelAcesso || 'geral';
+
+    // Filtra pelo nível de acesso
+    const docsAcessiveis = todosDocs.filter(
+      (d) => nivelAcesso === 'diretoria' || d.visibilidade !== 'diretoria'
+    );
+
+    let titularFiltro = classificacao.pessoa || pessoa;
+    if (!titularFiltro) {
+      const msgL = mensagemUsuario.toLowerCase();
+      if (msgL.includes('thomaz')) titularFiltro = 'Thomaz';
+      else if (msgL.includes('menegazzo')) titularFiltro = 'Serviços Menegazzo';
+      else if (msgL.includes('reng')) titularFiltro = 'RENG ENGENHARIA';
+      else if (msgL.includes('delta')) titularFiltro = 'Delta Plan';
+    }
+
+    let textoResposta = '';
+    const docsRastro: DocumentoRastro[] = [];
+
+    if (titularFiltro) {
+      const primeiroNomeTit = extrairPrimeiroNome(titularFiltro) || titularFiltro;
+      const docsDoTitular = docsAcessiveis.filter((d) =>
+        d.titular && (d.titular.toLowerCase().includes(titularFiltro.toLowerCase()) || titularFiltro.toLowerCase().includes(d.titular.toLowerCase()))
+      );
+
+      if (docsDoTitular.length === 0) {
+        textoResposta = `Não encontrei nenhum documento cadastrado para o *${primeiroNomeTit}* no Cofre.`;
+      } else {
+        const itensLista = docsDoTitular.map((d) => `• *${d.titulo}*`).join('\n');
+        textoResposta = `Estes são os documentos disponíveis do *${primeiroNomeTit}* no Cofre:\n\n${itensLista}\n\nQual deles você gostaria que eu envie?`;
+        for (const d of docsDoTitular) {
+          docsRastro.push({
+            id: d.id,
+            titulo: d.titulo,
+            tipo: d.tipo,
+            similaridade: 100,
+            usadoNaResposta: true,
+          });
+        }
+      }
+    } else {
+      // Listagem geral agrupada por titular
+      const grupos: Record<string, DocumentoRegistro[]> = {};
+      for (const d of docsAcessiveis) {
+        const tit = d.titular || 'Documentos da Empresa';
+        if (!grupos[tit]) grupos[tit] = [];
+        grupos[tit].push(d);
+      }
+
+      const blocos: string[] = ['Estes são os documentos disponíveis no Cofre da VEGA:\n'];
+      for (const [tit, lista] of Object.entries(grupos)) {
+        blocos.push(`*${tit}:*`);
+        for (const d of lista) {
+          blocos.push(`• *${d.titulo}*`);
+          docsRastro.push({
+            id: d.id,
+            titulo: d.titulo,
+            tipo: d.tipo,
+            similaridade: 100,
+            usadoNaResposta: true,
+          });
+        }
+        blocos.push('');
+      }
+      blocos.push('Qual deles você gostaria que eu consulte ou envie?');
+      textoResposta = blocos.join('\n');
+    }
+
+    const rastro = criarRastroFinal({
+      tipoBusca: 'nome_cofre',
+      docsEncontrados: docsRastro,
+      docUsado: titularFiltro ? `Documentos de ${titularFiltro}` : 'Catálogo Geral do Cofre',
+      enviouAnexo: false,
+      respostaFinal: textoResposta,
+      modelo: 'Motor Interno',
+    });
+
+    etapas.push({
+      ordem: 2,
+      nome: 'Listagem de Documentos do Cofre',
+      descricao: `${docsRastro.length} documentos listados para o usuário em ${Date.now() - inicioListagem} ms.`,
+      tempoMs: Date.now() - inicioListagem,
+      detalhes: { total: docsRastro.length, titular: titularFiltro || 'todos' },
+    });
+
+    return {
+      textoResposta,
+      origem: 'motor',
+      intencaoDetectada: 'listar_documentos',
+      perguntaReescrita: classificacao.pergunta_completa || mensagemUsuario,
+      buscaUsada: 'Listagem do Cofre de Documentos',
+      similaridade: '100% (Listagem Oficial)',
+      rastro,
+    };
+  }
+
+  // ============================================================================
   // CASO 2: PEDIR ARQUIVO (Cofre -> Aba Conhecimento -> Rede de Segurança Vetorial)
   // ============================================================================
   if (intencao === 'pedir_arquivo') {
@@ -1990,6 +2181,44 @@ export async function processarMensagemChat(dados: {
         perguntaReescrita: pergunta_reescrita,
         buscaUsada: 'Busca por nome na Aba Conhecimento',
         similaridade: `${score}% (Correspondência no título "${item.titulo}")`,
+        rastro,
+      };
+    }
+
+    // BLOQUEIO RÍGIDO POR TIPO: Se o usuário pediu um tipo de documento específico que não existe no cofre,
+    // NUNCA acionar a rede vetorial que traria documentos divergentes (ex.: certidão de casamento para nascimento)
+    const tipoPedidoDetectado = buscaDoc.tipoPedido || (termoBuscaArquivo ? identificarTipoPedido(termoBuscaArquivo) : null);
+    if (tipoPedidoDetectado && buscaDoc.status === 'nenhum') {
+      const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+      let textoSemDoc = `${prefixoSaudacao}Não encontrei esse documento no Cofre.`;
+
+      const titularRef = buscaDoc.titularEncontrado || pessoa || classificacao.pessoa;
+      if (titularRef) {
+        const primeiroNomeTit = extrairPrimeiroNome(titularRef) || titularRef;
+        const docsDoTitular = todosDocs.filter(
+          (d) => d.titular && (d.titular.toLowerCase().includes(titularRef.toLowerCase()) || titularRef.toLowerCase().includes(d.titular.toLowerCase()))
+        );
+        if (docsDoTitular.length > 0) {
+          const itens = docsDoTitular.map((d) => `• *${d.titulo}*`).join('\n');
+          textoSemDoc += `\n\nEstes são os documentos disponíveis do *${primeiroNomeTit}* no Cofre:\n${itens}\n\nQual deles você gostaria que eu envie?`;
+        }
+      }
+
+      const rastro = criarRastroFinal({
+        tipoBusca: 'nome_cofre',
+        docsEncontrados: [],
+        enviouAnexo: false,
+        respostaFinal: textoSemDoc,
+        modelo: 'Motor Interno',
+      });
+
+      return {
+        textoResposta: textoSemDoc,
+        origem: 'motor',
+        intencaoDetectada: intencao,
+        perguntaReescrita: pergunta_reescrita,
+        buscaUsada: 'Bloqueio Rígido por Tipo Documental',
+        similaridade: '0%',
         rastro,
       };
     }
@@ -2628,17 +2857,82 @@ export async function processarMensagemChat(dados: {
           encontrado: true,
         });
       } else {
-        // Não encontrou na ficha cadastral
-        camposProcessados.push({
-          campoId,
-          label,
-          valorFormatado: 'não encontrei nos documentos.',
-          valorMascaradoRastro: 'não encontrei nos documentos.',
-          origemNome: 'Não encontrado',
-          docOrigem: undefined,
-          conferido: false,
-          encontrado: false,
-        });
+        // Não encontrou na ficha cadastral -> tenta localizar nos trechos vetoriais do titular no Supabase
+        let valorAchadoVetorial: string | null = null;
+        let docOrigemVetorial: DocumentoRegistro | undefined = undefined;
+
+        const idTitularAlvo = titular?.id || (primeiroNomeTitular.toLowerCase().includes('thomaz') ? 'tit_thomaz' : null);
+        if (idTitularAlvo) {
+          const termoBuscaCampo = `${label} ${primeiroNomeTitular}`;
+          const trechosTitular = await executarBuscaVetorial(termoBuscaCampo, idTitularAlvo, 3);
+          if (trechosTitular.length > 0 && trechosTitular[0].similaridade >= 0.45) {
+            const topTrecho = trechosTitular[0];
+            const promptExtracao = `A partir do seguinte trecho de documento oficial:
+"""
+${topTrecho.conteudo}
+"""
+Extraia APENAS o valor correspondente ao campo "${label}".
+Exemplo: Se o campo for "Endereço", extraia a rua, número, bairro, cidade, estado e CEP se houver.
+Se não encontrar esse dado com clareza no trecho, responda apenas: NÃO_ENCONTRADO.
+NÃO inclua explicações nem frases antes ou depois, apenas o valor exato.`;
+
+            try {
+              const respExtracao = await openai.chat.completions.create({
+                model: 'gpt-5.4-mini',
+                messages: [{ role: 'user', content: promptExtracao }],
+                temperature: 0.0,
+              });
+              const val = respExtracao.choices[0]?.message?.content?.trim();
+              if (val && !val.includes('NÃO_ENCONTRADO') && val.length > 2) {
+                valorAchadoVetorial = val;
+                docOrigemVetorial = todosDocs.find(
+                  (d) => d.id === topTrecho.documento_id || d.titulo === topTrecho.titulo_documento
+                );
+
+                // Salva na ficha do titular para persistir
+                if (titular) {
+                  titular.campos[campoId] = {
+                    valor: val,
+                    origem: docOrigemVetorial?.titulo || topTrecho.titulo_documento || 'Documento do Cofre',
+                    origemNome: docOrigemVetorial?.titulo || topTrecho.titulo_documento || 'Documento do Cofre',
+                    origemVisibilidade: 'diretoria',
+                    conferido: false,
+                    dataConferencia: new Date().toLocaleDateString('pt-BR'),
+                    manual: false,
+                  };
+                  await salvarOuAtualizarTitular(titular);
+                }
+              }
+            } catch (err) {
+              console.error('[VEGA Chat] Erro ao extrair dado via vetor:', err);
+            }
+          }
+        }
+
+        if (valorAchadoVetorial) {
+          camposProcessados.push({
+            campoId,
+            label,
+            valorFormatado: formatarValorParaUsuario(campoId, valorAchadoVetorial),
+            valorMascaradoRastro: mascararValorCampo(campoId, valorAchadoVetorial),
+            origemNome: docOrigemVetorial?.titulo || 'Documentos do Cofre',
+            docOrigem: docOrigemVetorial,
+            conferido: false,
+            encontrado: true,
+          });
+        } else {
+          // Não encontrou nem na ficha nem nos trechos
+          camposProcessados.push({
+            campoId,
+            label,
+            valorFormatado: 'não encontrei nos documentos.',
+            valorMascaradoRastro: 'não encontrei nos documentos.',
+            origemNome: 'Não encontrado',
+            docOrigem: undefined,
+            conferido: false,
+            encontrado: false,
+          });
+        }
       }
     }
 
@@ -2769,9 +3063,99 @@ export async function processarMensagemChat(dados: {
   // CASO 4: PERGUNTA DE CONTEÚDO (Busca vetorial 5 trechos + Busca por nome se houver match em título)
   // ============================================================================
   if (intencao === 'pergunta_conteudo') {
+    const todosDocs = documentosDisponiveis.length > 0 ? documentosDisponiveis : await obterTodosDocumentos();
+
+    // 0. Detecção de pergunta ou resumo sobre documento recém-entregue no chat ("esse documento", "o documento acima", "resumo do documento")
+    const ehSobreDocRecente =
+      /\b(esse|este|deste|desse|o)\s+documento\b/i.test(mensagemUsuario) ||
+      /\b(resum[aeo]|expliq?u?e|fala\s+sobre|diz\s+sobre|conte[uú]do)\b/i.test(mensagemUsuario);
+
+    const docRecente = ehSobreDocRecente ? obterUltimoDocumentoEnviado(historicoRecente, todosDocs) : null;
+    if (docRecente) {
+      // Busca todos os trechos desse documento específico no Supabase
+      const supabase = getSupabaseClient();
+      const { data: trechosDoDoc } = await supabase
+        .from('trechos')
+        .select('*')
+        .eq('documento_id', docRecente.id)
+        .order('pagina', { ascending: true });
+
+      if (trechosDoDoc && trechosDoDoc.length > 0) {
+        const textoTrechos = trechosDoDoc
+          .map((t, idx) => `[Página ${t.pagina || 1} | Trecho ${idx + 1}]\n${t.conteudo}`)
+          .join('\n\n');
+
+        const promptDoc = `Você é a VEGA, assistente de inteligência artificial da Construtora Delta Plan.
+O usuário está fazendo uma pergunta ou solicitando um resumo sobre o documento que você acabou de entregar: "${docRecente.titulo}" (${docRecente.arquivo}).
+
+CONTEÚDO COMPLETO DO DOCUMENTO:
+"""
+${textoTrechos}
+"""
+
+PERGUNTA OU PEDIDO DO USUÁRIO: "${mensagemUsuario}"
+
+DIRETRIZES OBRIGATÓRIAS:
+1. Responda com base ESTRITA no conteúdo do documento fornecido acima.
+2. Se o usuário pediu um resumo em número determinado de linhas (ex.: "resuma esse documento em 10 linhas"), faça um resumo conciso, fiel e estruturado atendendo exatamente à restrição de linhas.
+3. Se o usuário perguntou sobre um tema específico (ex.: "o que esse documento fala sobre águas fluviais?"), explique exatamente o que consta no documento sobre redes pluviais, escoamento de águas, galerias ou termos correlatos.
+4. NUNCA invente informações não contidas no documento.
+5. NÃO forneça links e NÃO envie novamente o arquivo anexo: responda de maneira puramente textual em Português do Brasil com formatação do WhatsApp (*negrito*, _itálico_).`;
+
+        const inicioIA = Date.now();
+        const completion = await openai.chat.completions.create({
+          model: 'gpt-5.4-mini',
+          messages: [{ role: 'user', content: promptDoc }],
+          temperature: 0.1,
+        });
+
+        const textoRespostaDoc =
+          completion.choices[0]?.message?.content?.trim() || 'Não consegui analisar o conteúdo do documento.';
+
+        etapas.push({
+          ordem: 2,
+          nome: 'Análise de Conteúdo do Documento Recém-Entregue',
+          descricao: `Conteúdo de "${docRecente.titulo}" analisado pelo modelo gpt-5.4-mini em ${Date.now() - inicioIA} ms.`,
+          tempoMs: Date.now() - inicioIA,
+          detalhes: { documento: docRecente.titulo, trechos: trechosDoDoc.length },
+        });
+
+        const rastro = criarRastroFinal({
+          tipoBusca: 'vetorial',
+          docsEncontrados: trechosDoDoc.map((t, idx) => ({
+            id: t.documento_id,
+            titulo: docRecente.titulo,
+            pagina: t.pagina,
+            similaridade: 100,
+            trecho: truncarTrecho(t.conteudo, 300),
+            usadoNaResposta: true,
+          })),
+          docUsado: docRecente.titulo,
+          enviouAnexo: false,
+          respostaFinal: textoRespostaDoc,
+          modelo: 'gpt-5.4-mini',
+        });
+
+        return {
+          textoResposta: textoRespostaDoc,
+          origem: 'ia',
+          intencaoDetectada: 'pergunta_conteudo',
+          perguntaReescrita: mensagemUsuario,
+          buscaUsada: `Análise direta de conteúdo: ${docRecente.titulo}`,
+          similaridade: '100% (Documento Recém-Entregue)',
+          rastro,
+        };
+      }
+    }
+
     let pessoaIdAlvo: string | null = null;
-    if (/\bthomaz\b/i.test(pergunta_reescrita) || /\bthomaz\b/i.test(mensagemUsuario)) {
+    const titularHist = extrairUltimoTitularDoHistorico(historicoRecente);
+    const pessoaIdentificada =
+      classificacao.pessoa || pessoa || titularHist || (contato.nome.toLowerCase().includes('thomaz') ? 'Thomaz' : null);
+    if (pessoaIdentificada && pessoaIdentificada.toLowerCase().includes('thomaz')) {
       pessoaIdAlvo = 'tit_thomaz';
+    } else if (pessoaIdentificada && pessoaIdentificada.toLowerCase().includes('menegazzo')) {
+      pessoaIdAlvo = 'tit_menegazzo';
     }
 
     // 1. Busca por nome no Conhecimento caso a mensagem seja o título direto/termo exato
