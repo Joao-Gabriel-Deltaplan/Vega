@@ -214,6 +214,25 @@ export interface BuscaSemResultadoRegistro {
   equivalenteOferecido?: string;
 }
 
+export type StatusDocumentoFaltante = 'pendente' | 'providenciado' | 'dispensado';
+
+export interface DocumentoFaltanteRegistro {
+  id: string;
+  tipoDocumento: string;
+  titular: string;
+  pessoaId?: string | null;
+  solicitanteNome: string;
+  solicitanteContato?: string | null;
+  quantidadePedidos: number;
+  dataPrimeiroPedido: string;
+  dataUltimoPedido: string;
+  status: StatusDocumentoFaltante;
+  observacao?: string | null;
+  dadosEquivalentesOferecidos?: string | null;
+  criadoEm?: string;
+  atualizadoEm?: string;
+}
+
 export interface Contato {
   id: string;
   nome: string;

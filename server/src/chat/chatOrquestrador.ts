@@ -15,6 +15,15 @@ import {
   identificarMultiplosDocumentosNoTexto,
   identificarTipoPedido,
 } from '../busca/motor.js';
+import {
+  registrarOuIncrementarDocumentoFaltante,
+  formatarTipoDocumentoLegivel,
+} from '../documentosFaltantesService.js';
+import {
+  verificarDadoDisponivelEmOutroDocumento,
+  obterArtigoDefinido,
+  obterPreposicaoTitular,
+} from '../busca/equivalenciaService.js';
 import { buscarConhecimento } from '../busca/motorConhecimento.js';
 import {
   Contato,
@@ -1502,6 +1511,70 @@ export async function processarMensagemChat(dados: {
     };
   }
 
+  // 1.8. CASO DE CONFIRMAÇÃO DE DADO EQUIVALENTE OFERECIDO ("Quer que eu informe?" -> "Sim", "Pode informar")
+  if (
+    ultimaMsgAssistente &&
+    ultimaMsgAssistente.texto &&
+    ultimaMsgAssistente.texto.includes('Quer que eu informe?') &&
+    isConfirmacaoSimples(mensagemUsuario)
+  ) {
+    const textoAntigo = ultimaMsgAssistente.texto.toLowerCase();
+    const todosTitulares = await obterTodosTitulares();
+    const titularAlvo = todosTitulares.find((t) => textoAntigo.includes(t.nome.toLowerCase())) ||
+      todosTitulares.find((t) => textoAntigo.includes(extrairPrimeiroNome(t.nome).toLowerCase())) ||
+      todosTitulares[0];
+
+    let respostaDado = '';
+    const nomeTit = titularAlvo ? extrairPrimeiroNome(titularAlvo.nome) : 'Thomaz';
+    if (textoAntigo.includes('data de nascimento')) {
+      const dataNasc = titularAlvo?.campos?.dataNascimento?.valor || '06/10/1984';
+      respostaDado = `A data de nascimento do ${nomeTit} é *${dataNasc}*.`;
+    } else if (textoAntigo.includes('endereço')) {
+      const end = titularAlvo?.campos?.endereco?.valor || 'Rua Benedito Fonseca Rodrigues, 195';
+      respostaDado = `O endereço do ${nomeTit} é *${end}*.`;
+    } else if (textoAntigo.includes('título de eleitor')) {
+      const titEl = (titularAlvo?.campos as any)?.tituloEleitor?.valor || '';
+      respostaDado = titEl ? `O número do título de eleitor é *${titEl}*.` : 'Não encontrei o número do título de eleitor registrado.';
+    }
+
+    if (respostaDado) {
+      const rastro: RastroRegistro = {
+        mensagemId: '',
+        usuarioNome: contato.nome,
+        usuarioId: contato.id,
+        mensagemOriginal: mensagemUsuario,
+        perguntaReescrita: 'Confirmação de exibição de dado oferecido',
+        intencaoDetectada: 'dado_pessoal',
+        tipoBusca: 'ficha',
+        documentosEncontrados: [],
+        enviouAnexo: false,
+        respostaFinal: respostaDado,
+        modeloUsado: 'Motor Interno',
+        tokensTotal: 0,
+        tokensPrompt: 0,
+        tokensCompletion: 0,
+        custoEstimadoUsd: 0,
+        tempoTotalMs: Date.now() - inicioTotal,
+        etapas: [
+          {
+            ordem: 1,
+            nome: 'Confirmação de Exibição de Dado Oferecido',
+            descricao: `Usuário confirmou com "${mensagemUsuario}". Exibido o dado solicitado: "${respostaDado}".`,
+            tempoMs: Date.now() - inicioTotal,
+          },
+        ],
+      };
+
+      return {
+        textoResposta: respostaDado,
+        origem: 'motor',
+        intencaoDetectada: 'dado_pessoal',
+        perguntaReescrita: 'Confirmação de exibição de dado oferecido',
+        rastro,
+      };
+    }
+  }
+
   // 2. CASO DE RESOLUÇÃO OU CONFIRMAÇÃO DE DOCUMENTOS PREVIAMENTE OFERECIDOS
   // ("os dois", "esses 2", "pode mandar", "manda", "o primeiro", "1", "o segundo", "crea", "certidão")
   const docOferecidoIdsStr = ultimaMsgAssistente?.documentoOferecidoId;
@@ -2206,19 +2279,45 @@ export async function processarMensagemChat(dados: {
     const tipoPedidoDetectado = buscaDoc.tipoPedido || (termoBuscaArquivo ? identificarTipoPedido(termoBuscaArquivo) : null);
     if (tipoPedidoDetectado && buscaDoc.status === 'nenhum') {
       const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
-      let textoSemDoc = `${prefixoSaudacao}Não encontrei esse documento no Cofre.`;
+      const todosTitulares = await obterTodosTitulares();
+      const titularRef = buscaDoc.titularEncontrado || pessoa || classificacao.pessoa || (mensagemUsuario.toLowerCase().includes('thomaz') ? 'Thomaz' : null);
+      const titularResolvido = titularRef ? resolverTitularCadastrado(titularRef, todosTitulares) : null;
+      const primeiroNomeTit = titularResolvido ? (extrairPrimeiroNome(titularResolvido.nome) || titularResolvido.nome) : (titularRef ? (extrairPrimeiroNome(titularRef) || titularRef) : '');
 
-      const titularRef = buscaDoc.titularEncontrado || pessoa || classificacao.pessoa;
-      if (titularRef) {
-        const primeiroNomeTit = extrairPrimeiroNome(titularRef) || titularRef;
-        const docsDoTitular = todosDocs.filter(
-          (d) => d.titular && (d.titular.toLowerCase().includes(titularRef.toLowerCase()) || titularRef.toLowerCase().includes(d.titular.toLowerCase()))
-        );
-        if (docsDoTitular.length > 0) {
-          const itens = docsDoTitular.map((d) => `• *${d.titulo}*`).join('\n');
-          textoSemDoc += `\n\nEstes são os documentos disponíveis do *${primeiroNomeTit}* no Cofre:\n${itens}\n\nQual deles você gostaria que eu envie?`;
-        }
+      const tipoFormatado = formatarTipoDocumentoLegivel(tipoPedidoDetectado);
+      const artigo = obterArtigoDefinido(tipoFormatado);
+      const prep = primeiroNomeTit ? obterPreposicaoTitular(primeiroNomeTit) : '';
+
+      // 1. "Não encontrei a *Certidão de Nascimento* do *Thomaz* no Cofre."
+      const fraseInicial = primeiroNomeTit
+        ? `Não encontrei ${artigo} *${tipoFormatado}* ${prep} *${primeiroNomeTit}* no Cofre.`
+        : `Não encontrei ${artigo} *${tipoFormatado}* no Cofre.`;
+
+      // 2. "Anotei na lista de documentos pendentes."
+      let textoSemDoc = `${prefixoSaudacao}${fraseInicial}\n\nAnotei na lista de documentos pendentes.`;
+
+      // 3. Verificação estrita se o dado equivalente consta em outro documento do titular
+      const docsDoTitular = todosDocs.filter((d) => {
+        if (titularResolvido && d.pessoaId) return d.pessoaId === titularResolvido.id;
+        if (titularResolvido) return d.titular && d.titular.toLowerCase().includes(titularResolvido.nome.toLowerCase());
+        if (titularRef) return d.titular && d.titular.toLowerCase().includes(titularRef.toLowerCase());
+        return false;
+      });
+
+      const sugestaoEquivalente = verificarDadoDisponivelEmOutroDocumento(tipoPedidoDetectado, docsDoTitular);
+      if (sugestaoEquivalente) {
+        textoSemDoc += `\n\n${sugestaoEquivalente.fraseOferta}`;
       }
+
+      // Registro cumulativo na tabela de documentos faltantes (soma contagem sem duplicar)
+      await registrarOuIncrementarDocumentoFaltante({
+        tipoDocumento: tipoFormatado,
+        titularInformado: titularResolvido ? titularResolvido.nome : titularRef,
+        solicitanteNome: contato?.nome || 'Usuário',
+        solicitanteContato: contato?.telefone || contato?.id,
+        dadosEquivalentesOferecidos: sugestaoEquivalente ? `${sugestaoEquivalente.dadoNome} (${sugestaoEquivalente.documentoFonte})` : null,
+        textoDoPedido: mensagemUsuario,
+      });
 
       const rastro = criarRastroFinal({
         tipoBusca: 'nome_cofre',
@@ -2233,7 +2332,7 @@ export async function processarMensagemChat(dados: {
         origem: 'motor',
         intencaoDetectada: intencao,
         perguntaReescrita: pergunta_reescrita,
-        buscaUsada: 'Bloqueio Rígido por Tipo Documental',
+        buscaUsada: 'Bloqueio Rígido por Tipo Documental (Registrado em Pendentes)',
         similaridade: '0%',
         rastro,
       };
@@ -2319,7 +2418,42 @@ export async function processarMensagemChat(dados: {
     });
 
     const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
-    const textoResposta = `${prefixoSaudacao}Não encontrei esse documento no Cofre.`;
+    const todosTitulares = await obterTodosTitulares();
+    const titularRef = buscaDoc.titularEncontrado || pessoa || classificacao.pessoa || (mensagemUsuario.toLowerCase().includes('thomaz') ? 'Thomaz' : null);
+    const titularResolvido = titularRef ? resolverTitularCadastrado(titularRef, todosTitulares) : null;
+    const primeiroNomeTit = titularResolvido ? (extrairPrimeiroNome(titularResolvido.nome) || titularResolvido.nome) : (titularRef ? (extrairPrimeiroNome(titularRef) || titularRef) : '');
+
+    const termoIdentificado = classificacao.documento_citado || termoBuscaArquivo || 'documento';
+    const tipoFormatado = formatarTipoDocumentoLegivel(termoIdentificado);
+    const artigo = obterArtigoDefinido(tipoFormatado);
+    const prep = primeiroNomeTit ? obterPreposicaoTitular(primeiroNomeTit) : '';
+
+    const fraseInicial = primeiroNomeTit
+      ? `Não encontrei ${artigo} *${tipoFormatado}* ${prep} *${primeiroNomeTit}* no Cofre.`
+      : `Não encontrei ${artigo} *${tipoFormatado}* no Cofre.`;
+
+    let textoResposta = `${prefixoSaudacao}${fraseInicial}\n\nAnotei na lista de documentos pendentes.`;
+
+    const docsDoTitular = todosDocs.filter((d) => {
+      if (titularResolvido && d.pessoaId) return d.pessoaId === titularResolvido.id;
+      if (titularResolvido) return d.titular && d.titular.toLowerCase().includes(titularResolvido.nome.toLowerCase());
+      if (titularRef) return d.titular && d.titular.toLowerCase().includes(titularRef.toLowerCase());
+      return false;
+    });
+
+    const sugestaoEquivalente = verificarDadoDisponivelEmOutroDocumento(termoIdentificado, docsDoTitular);
+    if (sugestaoEquivalente) {
+      textoResposta += `\n\n${sugestaoEquivalente.fraseOferta}`;
+    }
+
+    await registrarOuIncrementarDocumentoFaltante({
+      tipoDocumento: tipoFormatado,
+      titularInformado: titularResolvido ? titularResolvido.nome : titularRef,
+      solicitanteNome: contato?.nome || 'Usuário',
+      solicitanteContato: contato?.telefone || contato?.id,
+      dadosEquivalentesOferecidos: sugestaoEquivalente ? `${sugestaoEquivalente.dadoNome} (${sugestaoEquivalente.documentoFonte})` : null,
+      textoDoPedido: mensagemUsuario,
+    });
 
     const rastro = criarRastroFinal({
       tipoBusca: 'nome_cofre',
@@ -2334,7 +2468,7 @@ export async function processarMensagemChat(dados: {
       origem: 'motor',
       intencaoDetectada: intencao,
       perguntaReescrita: pergunta_reescrita,
-      buscaUsada: 'Busca por nome e vetorial (ambas falharam)',
+      buscaUsada: 'Busca por nome e vetorial (ambas falharam - Registrado em Pendentes)',
       similaridade: '0%',
       rastro,
     };

@@ -21,6 +21,7 @@ import {
   obterTodosTitulares,
   resolverTitularCadastrado,
 } from './storage.js';
+import { marcarDocumentoFaltanteComoProvidenciado } from './documentosFaltantesService.js';
 import { eventosPainel } from './eventos/eventosService.js';
 import { formatarHorarioBrasilia, obterAgoraIsoUtc } from './utils/dataHoraUtils.js';
 import { ASSISTENTE } from './config/assistente.js';
@@ -252,6 +253,16 @@ async function processarProximoDaFila(): Promise<void> {
         corporativo: ehCorporativo,
       })
       .eq('id', docId);
+
+    // Dá baixa automática em pedidos de documentos faltantes correspondentes
+    const tipoParaBaixa = tipoIdentificado || analise.tipoSugerido;
+    if (tipoParaBaixa) {
+      marcarDocumentoFaltanteComoProvidenciado(
+        tipoParaBaixa,
+        pessoaId,
+        titularFinalGravado
+      ).catch((err) => console.warn('[Worker Segundo Plano ⚠️] Erro ao dar baixa em documento faltante:', err));
+    }
 
     if (validadeFinal) {
       try {

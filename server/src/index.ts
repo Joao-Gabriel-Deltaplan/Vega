@@ -38,6 +38,10 @@ import {
   formatarRespostaPedidoGenerico,
   formatarRespostaConsultaCampos,
 } from './busca/motorTitulares.js';
+import {
+  obterDocumentosFaltantes,
+  atualizarStatusObservacaoFaltante,
+} from './documentosFaltantesService.js';
 import { classificarIntencao } from './busca/intencao.js';
 import {
   interpretarComIA,
@@ -1040,6 +1044,33 @@ app.get('/api/buscas-sem-resultado', async (req, res) => {
   } catch (erro) {
     console.error('Erro ao buscar logs de busca sem resultado:', erro);
     res.status(500).json({ erro: 'Erro ao carregar logs.' });
+  }
+});
+
+// GET /api/documentos-faltantes (Lista de documentos faltantes ordenada por mais pedidos)
+app.get('/api/documentos-faltantes', async (req, res) => {
+  try {
+    const faltantes = await obterDocumentosFaltantes();
+    res.json(faltantes);
+  } catch (erro) {
+    console.error('Erro ao buscar documentos faltantes:', erro);
+    res.status(500).json({ erro: 'Erro ao carregar lista de documentos faltantes.' });
+  }
+});
+
+// PATCH /api/documentos-faltantes/:id (Atualiza status ou observação do documento faltante)
+app.patch('/api/documentos-faltantes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, observacao } = req.body;
+    const sucesso = await atualizarStatusObservacaoFaltante(id, { status, observacao });
+    if (!sucesso) {
+      return res.status(400).json({ erro: 'Falha ao atualizar documento faltante.' });
+    }
+    res.json({ sucesso: true, id, status, observacao });
+  } catch (erro) {
+    console.error('Erro ao atualizar documento faltante:', erro);
+    res.status(500).json({ erro: 'Erro ao atualizar documento faltante.' });
   }
 });
 

@@ -43,10 +43,10 @@ async function rodarBateria() {
 
     const texto1 = res1.textoResposta.toLowerCase();
     const enviouCasamento = res1.anexos?.some((a) => a.titulo?.toLowerCase().includes('casamento') || a.nome.toLowerCase().includes('casamento'));
-    const disseNaoEncontrou = texto1.includes('não encontrei esse documento no cofre');
-    const listouOpcoes = texto1.includes('documentos disponíveis do *thomaz*') || texto1.includes('disponíveis');
+    const disseNaoEncontrou = texto1.includes('não encontrei') && texto1.includes('no cofre');
+    const anotouPendentes = texto1.includes('anotei na lista de documentos pendentes');
 
-    const passou1 = !enviouCasamento && (!res1.anexos || res1.anexos.length === 0) && disseNaoEncontrou;
+    const passou1 = !enviouCasamento && (!res1.anexos || res1.anexos.length === 0) && disseNaoEncontrou && anotouPendentes;
 
     console.log('Resposta 1:\n', res1.textoResposta);
     console.log('Anexos 1:', res1.anexos?.map((a) => a.titulo || a.nome) || []);
@@ -54,9 +54,9 @@ async function rodarBateria() {
 
     resultados.push({
       caso: 1,
-      nome: 'Pedido de Certidão de Nascimento (tipo inexistente não deve entregar Casamento)',
+      nome: 'Pedido de Certidão de Nascimento (tipo inexistente com anotação na lista de faltantes)',
       passou: passou1,
-      detalhe: `Disse não encontrou: ${disseNaoEncontrou} | Anexos: ${res1.anexos?.length || 0}`,
+      detalhe: `Disse não encontrou: ${disseNaoEncontrou} | Anotou pendente: ${anotouPendentes} | Anexos: ${res1.anexos?.length || 0}`,
     });
   } catch (err: any) {
     console.error('Erro Caso 1:', err);

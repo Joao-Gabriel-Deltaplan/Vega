@@ -18,6 +18,7 @@ import {
   FichaTitular,
   VisibilidadeDoc,
 } from './types.js';
+import { marcarDocumentoFaltanteComoProvidenciado } from './documentosFaltantesService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -520,6 +521,14 @@ export async function adicionarDocumento(documento: DocumentoRegistro): Promise<
       atualizarCacheNomes([documento.titular]);
     }
 
+    if (documento.tipo) {
+      marcarDocumentoFaltanteComoProvidenciado(
+        documento.tipo,
+        documento.pessoaId || (documento as any).pessoa_id,
+        documento.titular
+      ).catch((e) => console.warn('[Storage ⚠️] Erro ao dar baixa em documento faltante:', e));
+    }
+
     return documento;
   } catch (err) {
     console.error('[Storage Supabase ⚠️] Erro ao persistir documento:', err);
@@ -590,19 +599,26 @@ export async function atualizarDocumento(
       return null;
     }
 
-    if (data) {
-      return mapearLinhaDocumento(data);
+    let dadoFinal = data;
+    if (!dadoFinal) {
+      const { data: dataFallback } = await supabase
+        .from('documentos')
+        .update(payload)
+        .eq('id', id)
+        .select('*')
+        .maybeSingle();
+      dadoFinal = dataFallback;
     }
 
-    // Se não encontrou por metadata, tenta por id direto
-    const { data: dataFallback } = await supabase
-      .from('documentos')
-      .update(payload)
-      .eq('id', id)
-      .select('*')
-      .maybeSingle();
-
-    return dataFallback ? mapearLinhaDocumento(dataFallback) : null;
+    const resultado = dadoFinal ? mapearLinhaDocumento(dadoFinal) : null;
+    if (resultado && resultado.tipo) {
+      marcarDocumentoFaltanteComoProvidenciado(
+        resultado.tipo,
+        resultado.pessoaId,
+        resultado.titular
+      ).catch((e) => console.warn('[Storage ⚠️] Erro ao dar baixa em documento faltante:', e));
+    }
+    return resultado;
   } catch (err) {
     console.error(`[Storage Supabase ⚠️] Erro ao atualizar documento ${id}:`, err);
     return null;

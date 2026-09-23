@@ -105,5 +105,22 @@ Nenhum outro modelo ou alias obsoleto (ex: gpt-4o, gpt-3.5-turbo, whisper-1) dev
 - **Listagem de acervo ("o que tem no cofre?"):**
   Perguntas genéricas de catálogo devem classificar como `listar_documentos` e apresentar a lista organizada dos documentos disponíveis por titular, perguntando qual o usuário gostaria de consultar ou receber, sem disparar anexos soltos.
 
+---
+
+## 10. Tratamento de Documentos Faltantes e Inexistentes no Cofre
+
+- **Registro Obrigatório e Acúmulo de Contagem:**
+  Sempre que um documento solicitado não existir no Cofre, a VEGA deve registrar imediatamente o pedido na tabela `documentos_faltantes` do Supabase. Se o mesmo pedido já existir para aquele titular e tipo, o sistema deve somar na contagem (`quantidade_pedidos`) e atualizar a data do último pedido, sem duplicar o registro.
+- **Estrutura Obrigatória da Resposta ao Usuário:**
+  Quando o documento não existir, a resposta da VEGA deve seguir estritamente esta ordem:
+  1. `"Não encontrei [artigo] *[Tipo do Documento]* d[prep] *[Titular]* no Cofre."` (com a saudação incorporada no início se o usuário saudou).
+  2. `"Anotei na lista de documentos pendentes."`
+  3. Se o dado que a pessoa provavelmente quer estiver comprovadamente em outro documento daquele titular no Cofre, oferecer: `"Se precisar só d[a/o] [dado], [ela/ele] consta n[a/o] [Documento]. Quer que eu informe?"`.
+  4. **Proibição de promessas falsas:** Só oferecer o dado se ele realmente existir nos documentos do titular; nunca prometer ou inventar o que não tem.
+  5. **Proibição de despejo de lista:** Nunca despejar a lista completa de documentos disponíveis do titular na resposta de um pedido pontual de documento inexistente. A lista só é apresentada se o usuário pedir expressamente ou em intenções de listagem de catálogo.
+- **Baixa Automática:**
+  Quando um documento for adicionado ao Cofre (via painel, segundo plano ou WhatsApp), todos os itens pendentes correspondentes na tabela `documentos_faltantes` devem ser marcados como providenciados automaticamente.
+
+
 
 

@@ -30,6 +30,7 @@ import {
   Globe,
   Phone,
   Mail,
+  FileQuestion,
 } from 'lucide-react';
 import { ASSISTENTE } from '../config/assistente.js';
 import {
@@ -41,9 +42,10 @@ import {
   DadosContato,
 } from '../types/chat.js';
 import { obterPaletaAvatar, obterIniciais } from '../utils/avatarUtils.js';
+import { DocumentosFaltantesView } from './DocumentosFaltantesView.js';
 
 interface KnowledgeBaseViewProps {
-  subAbaInicial?: 'conhecimento' | 'documentos';
+  subAbaInicial?: 'conhecimento' | 'documentos' | 'faltantes';
 }
 
 const FUSO_HORARIO_PADRAO = 'America/Sao_Paulo';
@@ -95,7 +97,19 @@ function obterSituacaoValidade(
 export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   subAbaInicial = 'documentos',
 }) => {
-  const [subAba, setSubAba] = useState<'conhecimento' | 'documentos'>(subAbaInicial);
+  const [subAba, setSubAba] = useState<'conhecimento' | 'documentos' | 'faltantes'>(subAbaInicial);
+  const [totalFaltantesPendentes, setTotalFaltantesPendentes] = useState<number>(0);
+
+  const carregarTotalFaltantes = async () => {
+    try {
+      const res = await fetch('/api/documentos-faltantes');
+      if (res.ok) {
+        const data = await res.json();
+        const pendentes = (data || []).filter((d: any) => d.status === 'pendente').length;
+        setTotalFaltantesPendentes(pendentes);
+      }
+    } catch {}
+  };
 
   // ==========================================
   // ESTADOS DA SUB-ABA CONHECIMENTO
@@ -217,6 +231,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
     carregarConhecimentos();
     carregarDocumentos();
     carregarTitulares();
+    carregarTotalFaltantes();
   }, []);
 
   // Polling automático e silencioso enquanto houver documentos com status 'processando'
@@ -929,6 +944,26 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
               <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500 rounded-full" />
             )}
           </button>
+
+          <button
+            onClick={() => setSubAba('faltantes')}
+            className={`flex items-center gap-2 pb-3 text-xs sm:text-sm font-medium transition-all relative cursor-pointer ${
+              subAba === 'faltantes'
+                ? 'text-amber-400 font-semibold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <FileQuestion className="w-4 h-4" />
+            <span>Documentos Faltantes</span>
+            {totalFaltantesPendentes > 0 && (
+              <span className="text-[11px] px-2 py-0.5 rounded-full font-bold ml-1 bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                {totalFaltantesPendentes}
+              </span>
+            )}
+            {subAba === 'faltantes' && (
+              <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-amber-500 rounded-full" />
+            )}
+          </button>
         </div>
 
         {/* ========================================================================= */}
@@ -936,6 +971,23 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
         {/* ========================================================================= */}
         {subAba === 'documentos' && (
           <div className="space-y-5 animate-fadeIn">
+            {totalFaltantesPendentes > 0 && (
+              <div className="p-3 bg-amber-500/10 border border-amber-500/30 text-amber-300 rounded-xl text-xs flex items-center justify-between gap-2 animate-fadeIn">
+                <div className="flex items-center gap-2">
+                  <FileQuestion className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                  <span>
+                    Existem <strong>{totalFaltantesPendentes} {totalFaltantesPendentes === 1 ? 'documento faltante pedido' : 'documentos faltantes pedidos'}</strong> por usuários que ainda não estão no Cofre.
+                  </span>
+                </div>
+                <button
+                  onClick={() => setSubAba('faltantes')}
+                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-xs font-semibold rounded-lg border border-amber-500/40 transition-colors cursor-pointer"
+                >
+                  Ver Lista de Faltantes →
+                </button>
+              </div>
+            )}
+
             {erroUpload && (
               <div className="p-3 bg-rose-500/15 border border-rose-500/30 text-rose-300 rounded-xl text-xs flex items-center gap-2 animate-fadeIn">
                 <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
@@ -2355,6 +2407,15 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                 })}
               </div>
             )}
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* ABA 3: DOCUMENTOS FALTANTES                                               */}
+        {/* ========================================================================= */}
+        {subAba === 'faltantes' && (
+          <div className="animate-fadeIn">
+            <DocumentosFaltantesView onIrParaCofre={() => setSubAba('documentos')} />
           </div>
         )}
       </div>
