@@ -14,6 +14,7 @@ import {
   RegistroUsoIA,
   TabelaPrecos,
   ItemConhecimento,
+  TipoConhecimento,
   FichaTitular,
   VisibilidadeDoc,
 } from './types.js';
@@ -21,7 +22,6 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PRECOS_FILE = path.resolve(__dirname, '../../config/precos.json');
-const PRECOS_FILE_FALLBACK = path.resolve(__dirname, '../../data/precos.json');
 
 const SETORES_VALIDOS: SetorUsuario[] = [
   'Diretoria',
@@ -53,12 +53,10 @@ function atualizarCacheNomes(nomes: string[]): void {
 // CONVERSAS (HISTÓRICO NO SUPABASE)
 // ==========================================
 
-export async function obterTodasConversas(
-  filtro?: 'whatsapp' | 'simulador' | 'todos'
-): Promise<Conversa[]> {
+export async function obterTodasConversas(): Promise<Conversa[]> {
   try {
     const supabase = getSupabaseClient();
-    let query = supabase
+    const query = supabase
       .from('conversas')
       .select('id, contato, nao_lidas, ultima_atualizacao, mensagens')
       .order('ultima_atualizacao', { ascending: false });
@@ -79,12 +77,10 @@ export async function obterTodasConversas(
       console.warn('[Storage Supabase ⚠️] Aviso ao carregar usuarios para enriquecimento:', e);
     }
 
-    let conversasFiltradas = data || [];
-    if (filtro === 'whatsapp') {
-      conversasFiltradas = conversasFiltradas.filter((c: any) => typeof c.id === 'string' && c.id.startsWith('wa-'));
-    } else if (filtro === 'simulador') {
-      conversasFiltradas = conversasFiltradas.filter((c: any) => typeof c.id === 'string' && !c.id.startsWith('wa-'));
-    }
+    // Retorna apenas conversas reais do WhatsApp
+    const conversasFiltradas = (data || []).filter(
+      (c: any) => typeof c.id === 'string' && c.id.startsWith('wa-')
+    );
 
     return conversasFiltradas.map((c: any) => {
       const contatoRaw = c.contato || {};
@@ -431,8 +427,9 @@ export async function adicionarDocumento(documento: DocumentoRegistro): Promise<
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(documento.id);
     if (isUuid) {
       payload.id = documento.id;
+      if (documento.metadata) payload.metadata = documento.metadata;
     } else {
-      payload.metadata = { id_legado: documento.id };
+      payload.metadata = { ...(documento.metadata || {}), id_legado: documento.id };
     }
 
     const { data, error } = await supabase
@@ -706,61 +703,6 @@ const CORES_AVATAR = [
   '#14b8a6',
 ];
 
-export async function criarConversaSimulador(usuarioSelecionado?: {
-  id?: string;
-  nome?: string;
-  numero?: string;
-  perfil?: 'admin' | 'comum';
-  pessoa_id?: string | null;
-}): Promise<Conversa> {
-  const novoId = `sim-${Date.now()}`;
-  const novoContatoId = usuarioSelecionado?.id ? `ct-${usuarioSelecionado.id}` : `cont-${Date.now()}`;
-  const nome = usuarioSelecionado?.nome || 'Usuário Simulado';
-  const numero = usuarioSelecionado?.numero || '+55 (11) 98000-0000';
-  const perfil = usuarioSelecionado?.perfil || 'admin';
-  const nivelAcesso: NivelAcesso = perfil === 'admin' ? 'diretoria' : 'geral';
-  const cargo = perfil === 'admin' ? 'Administrador' : 'Colaborador';
-  const setor: SetorUsuario = perfil === 'admin' ? 'Diretoria' : 'Administrativo';
-
-  const novaConversa: Conversa = {
-    id: novoId,
-    contato: {
-      id: novoContatoId,
-      nome,
-      telefone: numero,
-      avatarCor: '#6366f1',
-      cargo,
-      setor,
-      nivelAcesso,
-      titularVinculado: usuarioSelecionado?.pessoa_id || undefined,
-      ficha: {
-        cargo,
-        setor,
-        nivelAcesso,
-        observacoes: 'Sessão do Simulador da VEGA',
-        titularVinculado: usuarioSelecionado?.pessoa_id || undefined,
-      },
-    },
-    naoLidas: 0,
-    ultimaAtualizacao: new Date().toISOString(),
-    mensagens: [
-      {
-        id: `sim-msg-${Date.now()}-1`,
-        remetente: 'assistente',
-        nomeRemetente: 'VEGA',
-        horario: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-        texto: `Olá, ${nome}! Estou pronta para simular seu atendimento. O que você gostaria de consultar ou testar?`,
-      },
-    ],
-  };
-
-  await salvarConversa(novaConversa);
-  return novaConversa;
-}
-
-export async function criarConversaTeste(): Promise<Conversa> {
-  return criarConversaSimulador();
-}
 
 // ==========================================
 // REGISTROS DE USO IA (SUPABASE)
@@ -852,16 +794,17 @@ const TABELA_PRECOS_PADRAO: TabelaPrecos = {
   },
 };
 
+let cacheTabelaPrecos: TabelaPrecos = { ...TABELA_PRECOS_PADRAO };
+
 export async function obterTabelaPrecos(): Promise<TabelaPrecos> {
   try {
-    const arqEfetivo = fs.existsSync(PRECOS_FILE) ? PRECOS_FILE : PRECOS_FILE_FALLBACK;
-    if (fs.existsSync(arqEfetivo)) {
-      const conteudo = fs.readFileSync(arqEfetivo, 'utf-8');
+    if (fs.existsSync(PRECOS_FILE)) {
+      const conteudo = fs.readFileSync(PRECOS_FILE, 'utf-8');
       const dados = JSON.parse(conteudo);
-      return { ...TABELA_PRECOS_PADRAO, ...dados };
+      cacheTabelaPrecos = { ...TABELA_PRECOS_PADRAO, ...dados };
     }
   } catch {}
-  return TABELA_PRECOS_PADRAO;
+  return cacheTabelaPrecos;
 }
 
 /**
@@ -880,12 +823,13 @@ export async function obterPrecoMinutoAudio(modelo: string): Promise<number> {
 }
 
 export async function salvarTabelaPrecos(tabela: TabelaPrecos): Promise<void> {
+  cacheTabelaPrecos = { ...TABELA_PRECOS_PADRAO, ...tabela };
   try {
     const dir = path.dirname(PRECOS_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(PRECOS_FILE, JSON.stringify(tabela, null, 2), 'utf-8');
+    fs.writeFileSync(PRECOS_FILE, JSON.stringify(cacheTabelaPrecos, null, 2), 'utf-8');
   } catch (err) {
-    console.error('Erro ao salvar precos.json:', err);
+    console.warn('[Storage] Não foi possível persistir config/precos.json em disco local (mantido em memória):', err);
   }
 }
 
@@ -893,12 +837,49 @@ export async function salvarTabelaPrecos(tabela: TabelaPrecos): Promise<void> {
 // BASE DE CONHECIMENTO (SUPABASE)
 // ==========================================
 
+function formatarConteudoEstruturado(
+  tipo?: TipoConhecimento,
+  dadosEstruturados?: any,
+  conteudoAtual?: string
+): string {
+  if (!tipo || tipo === 'regra' || !dadosEstruturados) {
+    return (conteudoAtual || '').trim();
+  }
+
+  if (tipo === 'pix') {
+    const { titular, tipoChave, chave, banco } = dadosEstruturados;
+    const partes = [`Chave PIX: ${chave || ''} (${tipoChave || 'Chave'})`];
+    if (banco) partes.push(`Banco: ${banco}`);
+    if (titular) partes.push(`Titular: ${titular}`);
+    return partes.join(' | ');
+  }
+
+  if (tipo === 'link') {
+    const { nomeSistema, link, finalidade } = dadosEstruturados;
+    const partes = [`Sistema: ${nomeSistema || ''}`, `Link: ${link || ''}`];
+    if (finalidade) partes.push(`Finalidade: ${finalidade}`);
+    return partes.join(' | ');
+  }
+
+  if (tipo === 'contato') {
+    const { nome, funcao, telefone, email } = dadosEstruturados;
+    const partes: string[] = [];
+    if (nome) partes.push(`Nome: ${nome}`);
+    if (funcao) partes.push(`Função: ${funcao}`);
+    if (telefone) partes.push(`Telefone: ${telefone}`);
+    if (email) partes.push(`E-mail: ${email}`);
+    return partes.join(' | ');
+  }
+
+  return (conteudoAtual || '').trim();
+}
+
 export async function obterTodosConhecimentos(): Promise<ItemConhecimento[]> {
   try {
     const supabase = getSupabaseClient();
     const { data, error } = await supabase
       .from('conhecimento')
-      .select('id, titulo, categoria, conteudo, data_atualizacao')
+      .select('id, titulo, categoria, conteudo, data_atualizacao, tipo, dados_estruturados')
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -911,6 +892,8 @@ export async function obterTodosConhecimentos(): Promise<ItemConhecimento[]> {
       titulo: k.titulo,
       categoria: k.categoria,
       conteudo: k.conteudo,
+      tipo: (k.tipo as TipoConhecimento) || 'regra',
+      dadosEstruturados: k.dados_estruturados || undefined,
       dataAtualizacao: k.data_atualizacao || '',
     }));
   } catch (err) {
@@ -925,11 +908,19 @@ export async function adicionarConhecimento(
   const agora = new Date();
   const dataFormatada = agora.toLocaleDateString('pt-BR');
 
+  const tipoEfetivo = dados.tipo || 'regra';
+  const conteudoFinal =
+    dados.conteudo && dados.conteudo.trim()
+      ? dados.conteudo.trim()
+      : formatarConteudoEstruturado(tipoEfetivo, dados.dadosEstruturados, '');
+
   const novoItem: ItemConhecimento = {
     id: `k-${Date.now()}`,
     titulo: dados.titulo.trim(),
-    categoria: dados.categoria.trim() || 'Geral',
-    conteudo: dados.conteudo.trim(),
+    categoria: dados.categoria?.trim() || (tipoEfetivo === 'pix' ? 'Financeiro' : tipoEfetivo === 'link' ? 'Sistemas' : tipoEfetivo === 'contato' ? 'Contatos' : 'Geral'),
+    conteudo: conteudoFinal,
+    tipo: tipoEfetivo,
+    dadosEstruturados: dados.dadosEstruturados || undefined,
     dataAtualizacao: dataFormatada,
   };
 
@@ -940,6 +931,8 @@ export async function adicionarConhecimento(
       titulo: novoItem.titulo,
       categoria: novoItem.categoria,
       conteudo: novoItem.conteudo,
+      tipo: novoItem.tipo,
+      dados_estruturados: novoItem.dadosEstruturados || {},
       data_atualizacao: novoItem.dataAtualizacao,
     });
   } catch (err) {
@@ -971,7 +964,14 @@ export async function atualizarConhecimento(
     };
     if (dados.titulo !== undefined) payload.titulo = dados.titulo.trim();
     if (dados.categoria !== undefined) payload.categoria = dados.categoria.trim();
-    if (dados.conteudo !== undefined) payload.conteudo = dados.conteudo.trim();
+    if (dados.tipo !== undefined) payload.tipo = dados.tipo;
+    if (dados.dadosEstruturados !== undefined) payload.dados_estruturados = dados.dadosEstruturados;
+
+    if (dados.conteudo !== undefined) {
+      payload.conteudo = dados.conteudo.trim();
+    } else if (dados.dadosEstruturados !== undefined) {
+      payload.conteudo = formatarConteudoEstruturado(dados.tipo, dados.dadosEstruturados, '');
+    }
 
     const { data, error } = await supabase
       .from('conhecimento')
@@ -987,6 +987,8 @@ export async function atualizarConhecimento(
       titulo: data.titulo,
       categoria: data.categoria,
       conteudo: data.conteudo,
+      tipo: (data.tipo as TipoConhecimento) || 'regra',
+      dadosEstruturados: data.dados_estruturados || undefined,
       dataAtualizacao: data.data_atualizacao,
     };
   } catch (err) {

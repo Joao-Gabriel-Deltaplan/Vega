@@ -11,8 +11,6 @@ import {
   atualizarContato,
   adicionarMensagem,
   marcarComoLida,
-  criarConversaTeste,
-  criarConversaSimulador,
   removerConversa,
   obterTodosDocumentos,
   obterDocumentosPorNivelAcesso,
@@ -96,6 +94,7 @@ import {
 import { ASSISTENTE } from './config/assistente.js';
 import { extrairPrimeiroNome } from './utils/nomeUtils.js';
 import { analisarDocumentoParaCofre } from './analiseDocumentoService.js';
+import { estruturarConhecimentoComIA } from './conhecimentoEstruturadorService.js';
 import { calcularSimilaridade } from './utils/textoUtils.js';
 import {
   validarTokenWebhook,
@@ -108,6 +107,10 @@ import {
   uploadArquivoStorage,
   sanitizarChaveStorage,
 } from './utils/storageUtils.js';
+import {
+  enfileirarProcessamentoDocumento,
+  retomarDocumentosPendentesAoIniciar,
+} from './processadorSegundoPlanoService.js';
 import { autenticarPainel, validarTokenSessao } from './auth/authService.js';
 import { authMiddleware } from './auth/authMiddleware.js';
 import { eventosPainel } from './eventos/eventosService.js';
@@ -365,14 +368,13 @@ app.delete('/api/usuarios/:id', async (req, res) => {
 });
 
 // ================================================================
-// ROTAS DE CONVERSAS (WHATSAPP REAL & SIMULADOR)
+// ROTAS DE CONVERSAS (WHATSAPP REAL)
 // ================================================================
 
-// GET /api/conversas (Filtra por tipo: whatsapp | simulador | todos)
-app.get('/api/conversas', async (req, res) => {
+// GET /api/conversas (Lista conversas reais do WhatsApp)
+app.get('/api/conversas', async (_req, res) => {
   try {
-    const tipo = req.query.tipo as 'whatsapp' | 'simulador' | 'todos' | undefined;
-    const conversas = await obterTodasConversas(tipo);
+    const conversas = await obterTodasConversas();
     res.json(conversas);
   } catch (erro) {
     console.error('Erro ao buscar conversas:', erro);
@@ -400,26 +402,7 @@ app.get('/api/conversas/:id', async (req, res) => {
   }
 });
 
-// POST /api/conversas/simulador (Cria conversa no simulador escolhendo usuário)
-app.post('/api/conversas/simulador', async (req, res) => {
-  try {
-    const { usuarioId, nome, numero, perfil, pessoa_id } = req.body;
-    const novaConversa = await criarConversaSimulador({
-      id: usuarioId,
-      nome,
-      numero,
-      perfil,
-      pessoa_id,
-    });
-    eventosPainel.emitirConversaAtualizada(novaConversa);
-    res.status(201).json(novaConversa);
-  } catch (erro) {
-    console.error('Erro ao criar conversa no simulador:', erro);
-    res.status(500).json({ erro: 'Erro ao criar conversa no simulador' });
-  }
-});
-
-// DELETE /api/conversas/:id (Exclui conversa, ex: limpeza do simulador)
+// DELETE /api/conversas/:id (Exclui conversa)
 app.delete('/api/conversas/:id', async (req, res) => {
   try {
     const sucesso = await removerConversa(req.params.id);
@@ -438,17 +421,6 @@ app.delete('/api/conversas/:id', async (req, res) => {
   }
 });
 
-// POST /api/conversas/nova-teste (Alias mantido)
-app.post('/api/conversas/nova-teste', async (req, res) => {
-  try {
-    const novaConversa = await criarConversaTeste();
-    eventosPainel.emitirConversaAtualizada(novaConversa);
-    res.status(201).json(novaConversa);
-  } catch (erro) {
-    console.error('Erro ao criar conversa de teste:', erro);
-    res.status(500).json({ erro: 'Erro ao criar conversa de teste' });
-  }
-});
 
 // PATCH /api/contatos/:id (Perfil do Usuário Interno)
 app.patch('/api/contatos/:id', async (req, res) => {
@@ -501,6 +473,67 @@ app.post('/api/documentos/analisar', async (req, res) => {
   } catch (erro) {
     console.error('Erro ao analisar documento:', erro);
     res.status(500).json({ erro: 'Erro ao analisar documento' });
+  }
+});
+
+// POST /api/documentos/upload-direto (Upload imediato e processamento 100% assíncrono em segundo plano)
+app.post('/api/documentos/upload-direto', async (req, res) => {
+  try {
+    const { nomeArquivo, mimeType, base64, tamanho } = req.body;
+    if (!nomeArquivo || !base64) {
+      return res.status(400).json({ erro: 'Arquivo e conteúdo base64 são obrigatórios.' });
+    }
+
+    assegurarDiretorioArquivos();
+    const nomeArquivoSanitizado = path.basename(nomeArquivo);
+    const nomeLimpo = nomeArquivoSanitizado.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ').trim();
+    const caminhoDestino = path.join(ARQUIVOS_DIR, nomeArquivoSanitizado);
+    let storagePath: string = sanitizarChaveStorage(nomeArquivoSanitizado);
+
+    const base64Limpo = base64.replace(/^data:.*?;base64,/, '');
+    const buffer = Buffer.from(base64Limpo, 'base64');
+    try {
+      fs.writeFileSync(caminhoDestino, buffer);
+    } catch {}
+
+    try {
+      storagePath = await uploadArquivoStorage(nomeArquivoSanitizado, buffer, mimeType || 'application/pdf');
+    } catch (errUpload) {
+      console.error('[Cofre Storage ⚠️] Erro no upload para Supabase Storage:', errUpload);
+    }
+
+    const novoDoc: DocumentoRegistro = {
+      id: `doc-${Date.now()}`,
+      titulo: nomeLimpo,
+      arquivo: nomeArquivoSanitizado,
+      tipo: '',
+      titular: '',
+      descricao: `Documento ${nomeLimpo} enviado ao cofre corporativo.`,
+      apelidos: [nomeLimpo.toLowerCase()],
+      visibilidade: 'diretoria',
+      tamanho: tamanho ? `${(tamanho / 1024).toFixed(1)} KB` : undefined,
+      dataCadastro: new Date().toLocaleDateString('pt-BR'),
+      storagePath,
+      statusIndexacao: 'processando',
+    };
+
+    // Salva imediatamente no banco antes de qualquer retorno
+    await adicionarDocumento(novoDoc);
+
+    // Enfileira no worker de segundo plano (continua mesmo com a aba fechada)
+    enfileirarProcessamentoDocumento(novoDoc.id);
+
+    console.log(`[Upload Direto 🚀] Documento "${novoDoc.arquivo}" salvo no cofre e enfileirado para processamento assíncrono.`);
+
+    res.status(201).json({
+      sucesso: true,
+      documento: novoDoc,
+      status: 'processando',
+      mensagem: 'Documento salvo no cofre. Processamento de IA e indexação em andamento em segundo plano.',
+    });
+  } catch (erro) {
+    console.error('Erro no upload direto de documento:', erro);
+    res.status(500).json({ erro: 'Erro ao processar e salvar documento.' });
   }
 });
 
@@ -877,12 +910,28 @@ function normalizarTituloConhecimento(t: string): string {
     .replace(/\s+/g, ' ');
 }
 
+// POST /api/conhecimento/estruturar (Analisa linguagem natural ou tabela e gera itens estruturados com IA)
+app.post('/api/conhecimento/estruturar', async (req, res) => {
+  try {
+    const { texto } = req.body;
+    if (!texto || !String(texto).trim()) {
+      return res.status(400).json({ erro: 'Texto é obrigatório para estruturação.' });
+    }
+
+    const resultado = await estruturarConhecimentoComIA(String(texto));
+    res.json(resultado);
+  } catch (erro) {
+    console.error('Erro ao estruturar conhecimento com IA:', erro);
+    res.status(500).json({ erro: 'Erro ao estruturar conhecimento com IA.' });
+  }
+});
+
 // POST /api/conhecimento (Cadastra novo item de instrução/conhecimento)
 app.post('/api/conhecimento', async (req, res) => {
   try {
-    const { titulo, categoria, conteudo } = req.body;
-    if (!titulo || !conteudo) {
-      return res.status(400).json({ erro: 'Título e conteúdo são obrigatórios.' });
+    const { titulo, categoria, conteudo, tipo, dadosEstruturados } = req.body;
+    if (!titulo) {
+      return res.status(400).json({ erro: 'Título é obrigatório.' });
     }
 
     const todosItens = await obterTodosConhecimentos();
@@ -902,15 +951,17 @@ app.post('/api/conhecimento', async (req, res) => {
       id: `k-${Date.now()}`,
       titulo: String(titulo).trim(),
       categoria: String(categoria || 'Geral').trim(),
-      conteudo: String(conteudo).trim(),
+      conteudo: conteudo ? String(conteudo).trim() : '',
+      tipo: tipo || 'regra',
+      dadosEstruturados: dadosEstruturados || undefined,
       dataAtualizacao: new Date().toLocaleDateString('pt-BR'),
       dataCadastro: new Date().toLocaleDateString('pt-BR'),
     };
 
-    await adicionarConhecimento(novoItem);
-    indexarConhecimentoBackground(novoItem);
+    const itemSalvo = await adicionarConhecimento(novoItem);
+    indexarConhecimentoBackground(itemSalvo);
 
-    res.status(201).json(novoItem);
+    res.status(201).json(itemSalvo);
   } catch (erro) {
     console.error('Erro ao cadastrar item de conhecimento:', erro);
     res.status(500).json({ erro: 'Erro ao salvar instrução na base de conhecimento.' });
@@ -920,7 +971,7 @@ app.post('/api/conhecimento', async (req, res) => {
 // PUT /api/conhecimento/:id (Atualiza uma instrução e reindexa em segundo plano)
 app.put('/api/conhecimento/:id', async (req, res) => {
   try {
-    const { titulo, categoria, conteudo } = req.body;
+    const { titulo, categoria, conteudo, tipo, dadosEstruturados } = req.body;
     const todosItens = await obterTodosConhecimentos();
     const itemExistente = todosItens.find((i) => i.id === req.params.id);
 
@@ -942,9 +993,11 @@ app.put('/api/conhecimento/:id', async (req, res) => {
     }
 
     const itemAtualizado = await atualizarConhecimento(req.params.id, {
-      ...(titulo ? { titulo: String(titulo).trim() } : {}),
-      ...(categoria ? { categoria: String(categoria).trim() } : {}),
-      ...(conteudo ? { conteudo: String(conteudo).trim() } : {}),
+      ...(titulo !== undefined ? { titulo: String(titulo).trim() } : {}),
+      ...(categoria !== undefined ? { categoria: String(categoria).trim() } : {}),
+      ...(conteudo !== undefined ? { conteudo: String(conteudo).trim() } : {}),
+      ...(tipo !== undefined ? { tipo } : {}),
+      ...(dadosEstruturados !== undefined ? { dadosEstruturados } : {}),
     });
 
     if (!itemAtualizado) {
@@ -1426,6 +1479,11 @@ app.listen(PORT, '0.0.0.0', () => {
     .catch((erro) => {
       console.warn('[Vencimentos ⚠️] Erro na inicialização da rotina de vencimentos:', erro);
     });
+
+  // Retomada automática de documentos pendentes ou interrompidos (deploy Railway ou reboot)
+  retomarDocumentosPendentesAoIniciar().catch((erro) => {
+    console.warn('[Worker Segundo Plano ⚠️] Erro ao retomar documentos pendentes no boot:', erro);
+  });
 
   // Executa a limpeza de rastros e áudios com mais de 30 dias uma vez por dia (a cada 24 horas)
   const INTERVALO_DIARIO_MS = 24 * 60 * 60 * 1000;

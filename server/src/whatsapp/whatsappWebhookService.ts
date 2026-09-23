@@ -20,6 +20,16 @@ import {
   registrarInspecaoPrimeiroAudio,
 } from './audioTranscriptionService.js';
 import {
+  extrairInfoDocumentoWhatsApp,
+  processarDocumentoRecebidoWhatsApp,
+  registrarInspecaoPrimeiroDocumento,
+  registrarLogMensagemNaoTexto,
+} from './documentoRecebidoWhatsAppService.js';
+import {
+  buscarPendenciaAtivaWhatsApp,
+  processarRespostaPendenciaWhatsApp,
+} from './pendenciasWhatsAppService.js';
+import {
   obterConversaPorId,
   salvarConversa,
   adicionarMensagem,
@@ -32,6 +42,7 @@ import { ASSISTENTE } from '../config/assistente.js';
 import { eventosPainel } from '../eventos/eventosService.js';
 import { salvarAudioOriginalStorage } from './audioStorageService.js';
 import { formatarHorarioBrasilia, obterAgoraIsoUtc } from '../utils/dataHoraUtils.js';
+import { getSupabaseClient } from '../db/supabaseClient.js';
 
 // Cache em memória para deduplicação de mensagens recebidas
 // Mapeia key.id -> timestamp de recebimento
@@ -482,14 +493,152 @@ export async function processarEventoEvolution(
       };
     }
   } else {
+    // Verifica se é um documento (PDF) ou imagem enviado pelo WhatsApp
+    const infoDoc = extrairInfoDocumentoWhatsApp(evento);
+
+    // 1. Registra no terminal a inspeção detalhada da primeira mídia recebida (sem despejar bytes de base64)
+    if (infoDoc.isDocumento || infoDoc.isImagem || infoDoc.isNaoSuportado) {
+      registrarInspecaoPrimeiroDocumento(evento, infoDoc);
+    }
+
+    if (infoDoc.isDocumento || infoDoc.isImagem) {
+      // Ponto 5: Só perfil admin pode enviar documentos; para os demais, responder que não tem permissão
+      if (usuarioAutorizado.perfil !== 'admin') {
+        const msgSemPermissao =
+          'Você não tem permissão para enviar documentos para o Cofre da VEGA. Apenas administradores podem realizar o envio.';
+        registrarLogMensagemNaoTexto(
+          evento,
+          infoDoc,
+          usuarioAutorizado.nome,
+          false,
+          'Recusado: perfil comum não tem permissão para enviar ao Cofre.'
+        );
+        return {
+          sucesso: true,
+          status: 'processado',
+          resposta: msgSemPermissao,
+          destinatario: remoteJid,
+          mensagemId,
+          usuario: usuarioAutorizado,
+        };
+      }
+
+      const configEvolution = obterConfigEvolution();
+
+      // Se a Evolution API não estiver configurada no servidor E o base64 não veio direto no evento
+      if (!configEvolution && !infoDoc.base64Direto) {
+        const msgSemConfig =
+          'Recebi seu documento, mas a conexão com o servidor da Evolution API não está configurada para download de mídia.';
+        registrarLogMensagemNaoTexto(
+          evento,
+          infoDoc,
+          usuarioAutorizado.nome,
+          false,
+          'Falha: EVOLUTION_API_URL / INSTANCE não configuradas e base64 ausente no payload.'
+        );
+        return {
+          sucesso: true,
+          status: 'processado',
+          resposta: msgSemConfig,
+          destinatario: remoteJid,
+          mensagemId,
+          usuario: usuarioAutorizado,
+        };
+      }
+
+      try {
+        const resultadoDoc = await processarDocumentoRecebidoWhatsApp(
+          evento,
+          infoDoc,
+          usuarioAutorizado,
+          configEvolution
+        );
+
+        registrarLogMensagemNaoTexto(
+          evento,
+          infoDoc,
+          usuarioAutorizado.nome,
+          true,
+          `Enfileirado com sucesso (${infoDoc.nomeArquivo || 'documento'}).`
+        );
+
+        return {
+          sucesso: true,
+          status: 'processado',
+          resposta: resultadoDoc.mensagemResposta,
+          destinatario: remoteJid,
+          mensagemId,
+          usuario: usuarioAutorizado,
+        };
+      } catch (errDoc: any) {
+        const msgErro = errDoc?.message || String(errDoc);
+        console.error('[Webhook WhatsApp ❌] Erro ao processar documento recebido:', msgErro);
+        registrarLogMensagemNaoTexto(
+          evento,
+          infoDoc,
+          usuarioAutorizado.nome,
+          false,
+          `Erro no salvamento: ${msgErro}`
+        );
+        return {
+          sucesso: true,
+          status: 'processado',
+          resposta:
+            'Recebi seu documento, mas ocorreu uma falha temporária ao salvá-lo no Cofre. Por favor, tente enviar novamente.',
+          destinatario: remoteJid,
+          mensagemId,
+          usuario: usuarioAutorizado,
+        };
+      }
+    } else if (infoDoc.isNaoSuportado) {
+      // Ponto 4: Se o arquivo vier de um tipo não suportado, a VEGA responde explicando o que aceita!
+      const msgNaoSuportado = `Olá, ${usuarioAutorizado.nome}! No momento, o Cofre da VEGA aceita documentos em formato PDF e imagens (JPG, PNG e WEBP), além de mensagens de texto e áudio. Não consigo processar arquivos do tipo ${infoDoc.tipoDetectado}.`;
+
+      registrarLogMensagemNaoTexto(
+        evento,
+        infoDoc,
+        usuarioAutorizado.nome,
+        false,
+        `Formato não suportado (${infoDoc.tipoDetectado}). Notificado remetente no WhatsApp.`
+      );
+
+      return {
+        sucesso: true,
+        status: 'processado',
+        resposta: msgNaoSuportado,
+        destinatario: remoteJid,
+        mensagemId,
+        usuario: usuarioAutorizado,
+      };
+    }
+
     // Mensagem de texto tradicional
     textoMensagem = extrairTextoMensagem(evento.message);
     if (!textoMensagem) {
+      // Se não for texto, nem áudio, nem documento/imagem suportado ou não suportado
+      const msgType = String(evento?.messageType || 'desconhecido');
+      if (msgType.toLowerCase().includes('reaction')) {
+        console.log(`[Webhook WhatsApp ℹ️] Reação recebida de "${usuarioAutorizado.nome}": ignorada.`);
+        return {
+          sucesso: true,
+          status: 'ignorado',
+          motivo: 'reacao_mensagem',
+          mensagemId,
+        };
+      }
+
+      console.warn(
+        `[Webhook WhatsApp ⚠️] Mensagem sem texto ou formato não identificado de "${usuarioAutorizado.nome}" (messageType: ${msgType}). Respondendo instruções de formato.`
+      );
+
+      const msgAjuda = `Olá, ${usuarioAutorizado.nome}! Não consegui compreender este formato de mensagem. Você pode me enviar mensagens de texto, áudio, documentos em PDF ou fotos (JPG, PNG e WEBP).`;
       return {
         sucesso: true,
-        status: 'ignorado',
-        motivo: 'mensagem_sem_texto_suportado',
+        status: 'processado',
+        resposta: msgAjuda,
+        destinatario: remoteJid,
         mensagemId,
+        usuario: usuarioAutorizado,
       };
     }
     tipoMensagem = 'texto';
@@ -517,6 +666,36 @@ export async function processarEventoEvolution(
   }
 
   // 5. REMETENTE AUTORIZADO: PROCESSAMENTO COM A VEGA (IA E COFRE)
+  // Atualiza automaticamente pushName (se o nome for provisório) e LID (se ainda não salvo)
+  const pushNameRecebido = evento?.pushName?.trim();
+  const nomeGenerico =
+    !usuarioAutorizado.nome ||
+    usuarioAutorizado.nome.startsWith('Contato ') ||
+    usuarioAutorizado.nome.startsWith('Usuário ') ||
+    usuarioAutorizado.nome.trim() === '';
+
+  if (pushNameRecebido && nomeGenerico) {
+    usuarioAutorizado.nome = pushNameRecebido;
+    try {
+      const supabase = getSupabaseClient();
+      await supabase.from('usuarios').update({ nome: pushNameRecebido }).eq('id', usuarioAutorizado.id);
+      console.log(`[Webhook WhatsApp 👤] Nome do usuário (${usuarioAutorizado.numero}) atualizado para "${pushNameRecebido}" via WhatsApp pushName.`);
+    } catch (errNome) {
+      console.warn('[Webhook WhatsApp ⚠️] Falha ao atualizar pushName no Supabase:', errNome);
+    }
+  }
+
+  if (lidLimpo && !usuarioAutorizado.lid) {
+    usuarioAutorizado.lid = lidLimpo;
+    try {
+      const supabase = getSupabaseClient();
+      await supabase.from('usuarios').update({ lid: lidLimpo }).eq('id', usuarioAutorizado.id);
+      console.log(`[Webhook WhatsApp 🆔] LID "${lidLimpo}" vinculado automaticamente ao usuário "${usuarioAutorizado.nome}".`);
+    } catch (errLid) {
+      console.warn('[Webhook WhatsApp ⚠️] Falha ao vincular LID no Supabase:', errLid);
+    }
+  }
+
   const inicioProcessamento = Date.now();
   console.log(
     `[Webhook WhatsApp 💬] Mensagem autorizada de "${usuarioAutorizado.nome}" (${usuarioAutorizado.numero}) | Perfil: ${usuarioAutorizado.perfil} | Mensagem: "${textoMensagem}"`
@@ -531,7 +710,7 @@ export async function processarEventoEvolution(
 
   const contato: Contato = {
     id: `ct-${usuarioAutorizado.id}`,
-    nome: usuarioAutorizado.nome || evento.pushName || 'Usuário WhatsApp',
+    nome: usuarioAutorizado.nome || pushNameRecebido || 'Usuário WhatsApp',
     telefone: usuarioAutorizado.numero,
     avatarCor: '#25D366',
     cargo: cargoUsuario,
@@ -557,6 +736,8 @@ export async function processarEventoEvolution(
       mensagens: [],
     };
     await salvarConversa(conversa);
+  } else {
+    conversa.contato = contato;
   }
 
   // Registra mensagem do usuário no histórico com fuso de Brasília e timestamp ISO UTC
@@ -576,6 +757,51 @@ export async function processarEventoEvolution(
   const conversaAtualizadaUsuario = await adicionarMensagem(conversaId, msgUsuario);
   if (conversaAtualizadaUsuario) {
     eventosPainel.emitirNovaMensagem(conversaId, msgUsuario, conversaAtualizadaUsuario);
+  }
+
+  // 5.1 VERIFICA SE EXISTE PENDÊNCIA DE VALIDAÇÃO DE DOCUMENTO ATIVA (Supabase, TTL 30m)
+  const pendenciaAtiva = await buscarPendenciaAtivaWhatsApp(conversaId);
+  if (pendenciaAtiva) {
+    const respostaPendencia = await processarRespostaPendenciaWhatsApp(
+      pendenciaAtiva,
+      textoMensagem,
+      usuarioAutorizado.nome
+    );
+
+    if (respostaPendencia) {
+      const assistenteMsgId = `wa-msg-${Date.now()}-vega`;
+      const msgAssistente: Mensagem = {
+        id: assistenteMsgId,
+        remetente: 'assistente',
+        nomeRemetente: ASSISTENTE.nomeExibicao,
+        horario: formatarHorarioBrasilia(),
+        timestamp: obterAgoraIsoUtc(),
+        texto: respostaPendencia,
+        origem: 'motor',
+      };
+
+      const conversaAtualizadaAssistente = await adicionarMensagem(conversaId, msgAssistente);
+      if (conversaAtualizadaAssistente) {
+        eventosPainel.emitirNovaMensagem(conversaId, msgAssistente, conversaAtualizadaAssistente);
+      }
+
+      const tempoTotal = Date.now() - inicioProcessamento;
+      console.log(
+        `[Webhook WhatsApp 🤖] Pendência de documento resolvida em ${tempoTotal} ms para "${usuarioAutorizado.nome}".`
+      );
+
+      return {
+        sucesso: true,
+        status: 'processado',
+        resposta: respostaPendencia,
+        destinatario: remoteJid,
+        mensagemId,
+        usuario: usuarioAutorizado,
+        tempoMs: tempoTotal,
+      };
+    }
+    // Se respostaPendencia for null, a mensagem do usuário não era resposta à pendência;
+    // a pendência foi encerrada e a mensagem segue para o fluxo geral da VEGA abaixo.
   }
 
   // Obtém os documentos disponíveis para o nível de acesso do usuário

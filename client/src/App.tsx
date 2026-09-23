@@ -2,15 +2,13 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { NavigationSidebar, AbaNavegacao } from './components/NavigationSidebar.js';
 import { SidebarConversas } from './components/SidebarConversas.js';
 import { ChatThread } from './components/ChatThread.js';
-import { ContactDetails } from './components/ContactDetails.js';
 import { KnowledgeBaseView } from './components/KnowledgeBaseView.js';
 import { AdminView } from './components/AdminView.js';
 import { UsuariosView } from './components/UsuariosView.js';
-import { SimuladorView } from './components/SimuladorView.js';
 import { ModalAlertasVencimento } from './components/ModalAlertasVencimento.js';
-import { Conversa, Contato, Anexo, Mensagem, SetorUsuario, AlertaVencimento } from './types/chat.js';
-import { MessageSquare, Bot } from 'lucide-react';
+import { Conversa, Anexo, Mensagem, AlertaVencimento } from './types/chat.js';
 import { LoginView } from './components/LoginView.js';
+import { LogoDeltaPlan } from './components/LogoDeltaPlan.js';
 import { useSSE } from './hooks/useSSE.js';
 
 export function App() {
@@ -253,60 +251,6 @@ export function App() {
     }
   };
 
-  // Atualizar perfil do usuário interno
-  const handleAtualizarContato = async (dadosAtualizados: Partial<Contato>) => {
-    if (!conversaAtiva) return;
-
-    const novoNivel =
-      dadosAtualizados.nivelAcesso ||
-      dadosAtualizados.ficha?.nivelAcesso ||
-      conversaAtiva.contato.nivelAcesso ||
-      'geral';
-    const novoCargo =
-      dadosAtualizados.cargo ||
-      dadosAtualizados.ficha?.cargo ||
-      conversaAtiva.contato.cargo ||
-      '';
-    const novoSetor = (dadosAtualizados.setor ||
-      dadosAtualizados.ficha?.setor ||
-      conversaAtiva.contato.setor ||
-      'Administrativo') as SetorUsuario;
-
-    setConversas((prev) =>
-      prev.map((c) => {
-        if (c.id === conversaAtiva.id) {
-          return {
-            ...c,
-            contato: {
-              ...c.contato,
-              ...dadosAtualizados,
-              cargo: novoCargo,
-              setor: novoSetor,
-              nivelAcesso: novoNivel,
-              ficha: {
-                ...c.contato.ficha,
-                ...(dadosAtualizados.ficha || {}),
-                cargo: novoCargo,
-                setor: novoSetor,
-                nivelAcesso: novoNivel,
-              },
-            },
-          };
-        }
-        return c;
-      })
-    );
-
-    try {
-      await fetch(`/api/contatos/${conversaAtiva.contato.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(dadosAtualizados),
-      });
-    } catch (err) {
-      console.error('Erro ao persistir perfil:', err);
-    }
-  };
 
   // Enviar mensagem no WhatsApp pelo painel
   const handleEnviarMensagem = async (texto: string, anexos?: Anexo[], documentoId?: string) => {
@@ -418,12 +362,12 @@ export function App() {
   // Renderizações Condicionais de Autenticação
   if (autenticado === null) {
     return (
-      <div className="h-screen w-screen bg-[#0b141a] flex flex-col items-center justify-center text-wa-textPrimary select-none">
-        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-wa-green to-emerald-700 flex items-center justify-center shadow-lg shadow-emerald-950/50 mb-4 animate-pulse">
-          <Bot className="w-9 h-9 text-slate-950" />
+      <div className="h-screen w-screen bg-[#0b0f14] flex flex-col items-center justify-center text-slate-200 select-none">
+        <div className="mb-4 animate-pulse">
+          <LogoDeltaPlan tamanho="lg" />
         </div>
-        <p className="text-sm font-medium text-wa-textSecondary">
-          Inicializando VEGA Delta Plan...
+        <p className="text-xs font-medium text-slate-400 tracking-wider uppercase">
+          Carregando ambiente corporativo...
         </p>
       </div>
     );
@@ -441,7 +385,7 @@ export function App() {
   }
 
   return (
-    <div className="flex h-screen w-screen bg-wa-bg overflow-hidden font-sans">
+    <div className="flex h-screen w-screen bg-[#0b0f14] overflow-hidden font-sans">
       {/* Barra de Navegação Extrema Esquerda (64px) */}
       <NavigationSidebar
         abaAtiva={abaAtiva}
@@ -461,6 +405,7 @@ export function App() {
             conversas={conversas}
             conversaAtivaId={conversaAtivaId}
             onSelecionarConversa={handleSelecionarConversa}
+            carregando={carregandoConversas}
           />
 
           {/* Coluna 2: Thread do Chat (flex-1) */}
@@ -479,35 +424,30 @@ export function App() {
               }}
             />
           ) : (
-            <div className="flex-1 h-full flex flex-col items-center justify-center bg-wa-chat text-wa-textSecondary p-6 text-center">
-              <div className="w-16 h-16 rounded-2xl bg-wa-green/10 flex items-center justify-center mb-4">
-                <MessageSquare className="w-8 h-8 text-wa-green animate-pulse" />
+            <div className="flex-1 h-full flex flex-col items-center justify-center bg-[#0b0f14] text-slate-400 p-6 text-center select-none wa-chat-pattern">
+              <div className="max-w-md p-8 rounded-2xl bg-[#121820] border border-[#202937] shadow-xl flex flex-col items-center text-center">
+                <div className="mb-4">
+                  <LogoDeltaPlan tamanho="lg" />
+                </div>
+                <h2 className="text-lg font-semibold text-slate-100 mb-2">
+                  Atendimento WhatsApp • VEGA
+                </h2>
+                <p className="text-xs text-slate-400 leading-relaxed mb-4">
+                  {carregandoConversas
+                    ? 'Carregando histórico de conversas do Supabase...'
+                    : 'Selecione uma conversa na lista ao lado para visualizar os diálogos em tempo real e acompanhar as interações com a IA.'}
+                </p>
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#18202b] border border-[#263345] text-[11px] text-slate-400 font-medium">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                  <span>Base do Cofre pronta para consultas</span>
+                </div>
               </div>
-              <h2 className="text-xl font-semibold text-wa-textPrimary mb-1">
-                WhatsApp Delta Plan • VEGA
-              </h2>
-              <p className="text-sm max-w-md text-wa-textSecondary">
-                {carregandoConversas
-                  ? 'Carregando conversas do WhatsApp...'
-                  : 'Nenhuma conversa selecionada. As mensagens trocadas pelo WhatsApp espelham aqui em tempo real.'}
-              </p>
             </div>
-          )}
-
-          {/* Coluna 3: Ficha do Contato (~280px) */}
-          {conversaAtiva && (
-            <ContactDetails
-              conversa={conversaAtiva}
-              onAtualizarContato={handleAtualizarContato}
-            />
           )}
         </div>
       )}
 
-      {/* Aba 2: Simulador da VEGA */}
-      {abaAtiva === 'simulador' && <SimuladorView />}
-
-      {/* Aba 3: Gestão de Usuários Autorizados */}
+      {/* Aba: Gestão de Usuários Autorizados */}
       {abaAtiva === 'usuarios' && <UsuariosView />}
 
       {/* Aba 4: Base da VEGA (Conhecimento & Documentos) */}

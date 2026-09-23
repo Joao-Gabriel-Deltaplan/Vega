@@ -1,12 +1,5 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { UsuarioWhatsApp } from './types.js';
 import { getSupabaseClient } from '../db/supabaseClient.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const USUARIOS_JSON_PATH = path.resolve(__dirname, '../../../data/usuarios.json');
 
 /**
  * Normaliza um identificador @lid para comparação
@@ -19,36 +12,14 @@ export function normalizarLid(lidRaw?: string | null): string {
 }
 
 /**
- * Lê os usuários configurados localmente em data/usuarios.json (se existir)
+ * Retorna lista vazia caso o banco esteja indisponível (mantido para compatibilidade).
  */
 export function obterUsuariosLocais(): UsuarioWhatsApp[] {
-  try {
-    if (fs.existsSync(USUARIOS_JSON_PATH)) {
-      const conteudo = fs.readFileSync(USUARIOS_JSON_PATH, 'utf-8');
-      const lista = JSON.parse(conteudo);
-      if (Array.isArray(lista)) {
-        return lista.map((u: any) => ({
-          id: String(u.id || `usr-${Date.now()}`),
-          numero: String(u.numero || '').replace(/\D/g, ''),
-          lid: u.lid ? String(u.lid).trim() : null,
-          nome: String(u.nome || ''),
-          perfil: u.perfil === 'admin' ? 'admin' : 'comum',
-          pessoa_id: u.pessoa_id || null,
-          ativo: u.ativo !== false,
-          dataCadastro: u.dataCadastro,
-        }));
-      }
-    }
-  } catch (err) {
-    console.warn('[WhatsApp Usuários ⚠️] Não foi possível ler data/usuarios.json local:', err);
-  }
   return [];
 }
 
 /**
- * Lê todos os usuários cadastrados no Supabase (tabela usuarios).
- * A fonte da verdade é o Supabase. O arquivo data/usuarios.json atua
- * exclusivamente como fallback offline caso o banco esteja indisponível.
+ * Lê todos os usuários cadastrados exclusivamente no Supabase (tabela usuarios).
  */
 export async function obterTodosUsuariosWhatsApp(): Promise<UsuarioWhatsApp[]> {
   try {
@@ -76,9 +47,7 @@ export async function obterTodosUsuariosWhatsApp(): Promise<UsuarioWhatsApp[]> {
     console.warn('[WhatsApp Usuários ⚠️] Erro de conexão com Supabase:', erro);
   }
 
-  // Fallback offline (se Supabase falhar ou estiver vazio em dev)
-  console.warn('[WhatsApp Usuários ⚠️] Usando fallback de data/usuarios.json...');
-  return obterUsuariosLocais();
+  return [];
 }
 
 /**

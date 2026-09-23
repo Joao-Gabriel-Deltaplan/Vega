@@ -169,50 +169,50 @@ export const AdminView: React.FC<AdminViewProps> = ({ conversas }) => {
   const totalBuscasSemResultado = buscasSemResultado.length;
 
   return (
-    <div className="flex-1 h-full bg-wa-bg overflow-y-auto p-6 text-wa-textPrimary">
+    <div className="flex-1 h-full bg-[#0b0f14] overflow-y-auto p-6 text-slate-100">
       <div className="max-w-5xl mx-auto space-y-6 pb-16">
-        {/* Header Principal com Alternador de Sub-Abas */}
-        <div className="border-b border-wa-border pb-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        {/* Header Principal com Alternador de Sub-Abas Padronizado */}
+        <div className="border-b border-[#1e2633] pb-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2.5 mb-1">
-              <div className="w-9 h-9 rounded-xl bg-wa-green/20 text-wa-greenLight flex items-center justify-center shadow">
-                <Settings className="w-5 h-5 text-wa-green" />
+              <div className="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center font-bold">
+                <Settings className="w-5 h-5" />
               </div>
-              <h1 className="text-xl font-bold text-wa-textPrimary">
-                Painel de Administração • {ASSISTENTE.nome} ({ASSISTENTE.empresa})
+              <h1 className="text-base font-semibold text-slate-100">
+                Painel de Configurações & Métricas • {ASSISTENTE.nome}
               </h1>
             </div>
-            <p className="text-xs text-wa-textSecondary">
-              Gestão de cotas de IA, tarifas por milhão de tokens, performance determinística e cofre corporativo.
+            <p className="text-xs text-slate-400">
+              Monitoramento de cotas de IA, tarifas de tokens, custos operacionais e saúde dos serviços
             </p>
           </div>
 
-          {/* Seletor de Sub-Abas */}
-          <div className="flex items-center gap-1.5 p-1 bg-wa-panel border border-wa-border rounded-xl shadow-inner self-start md:self-auto">
+          {/* Seletor de Sub-Abas Estilo Segmented Control */}
+          <div className="flex items-center gap-1 p-1 bg-[#121820] border border-[#202937] rounded-xl self-start md:self-auto">
             <button
               onClick={() => setSubAba('uso_ia')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
                 subAba === 'uso_ia'
-                  ? 'bg-wa-green text-slate-950 shadow'
-                  : 'text-wa-textSecondary hover:text-wa-textPrimary hover:bg-wa-bg/60'
+                  ? 'bg-emerald-500 text-slate-950 font-semibold shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-[#18202b]'
               }`}
             >
               <Activity className="w-4 h-4" />
-              <span>Uso da IA</span>
+              <span>Consumo da IA</span>
               {metricasIA?.alertaRPD && (
                 <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
               )}
             </button>
             <button
               onClick={() => setSubAba('geral')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
                 subAba === 'geral'
-                  ? 'bg-wa-green text-slate-950 shadow'
-                  : 'text-wa-textSecondary hover:text-wa-textPrimary hover:bg-wa-bg/60'
+                  ? 'bg-emerald-500 text-slate-950 font-semibold shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-[#18202b]'
               }`}
             >
               <FolderLock className="w-4 h-4" />
-              <span>Geral & Cofre</span>
+              <span>Serviços & Cofre</span>
             </button>
           </div>
         </div>
@@ -774,7 +774,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ conversas }) => {
                     Últimas 50 Chamadas ao Modelo de IA
                   </h2>
                   <p className="text-xs text-wa-textMuted mt-0.5">
-                    Histórico detalhado gravado em <code>data/uso_ia.json</code>
+                    Histórico detalhado registrado no Supabase (tabela <code>uso_ia</code>)
                   </p>
                 </div>
                 <span className="text-xs text-wa-textSecondary font-mono">

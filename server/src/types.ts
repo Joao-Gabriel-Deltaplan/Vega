@@ -17,11 +17,35 @@ export type MotivoBuscaSemResultado =
   | 'inexistente_documento'
   | 'inexistente_conhecimento';
 
+export type TipoConhecimento = 'pix' | 'link' | 'contato' | 'regra';
+
+export interface DadosPix {
+  titular: string;
+  tipoChave: 'CNPJ' | 'CPF' | 'Celular' | 'E-mail' | 'Aleatória';
+  chave: string;
+  banco?: string;
+}
+
+export interface DadosLink {
+  nomeSistema: string;
+  link: string;
+  finalidade?: string;
+}
+
+export interface DadosContato {
+  nome: string;
+  funcao?: string;
+  telefone?: string;
+  email?: string;
+}
+
 export interface ItemConhecimento {
   id: string;
   titulo: string;
   categoria: string;
   conteudo: string;
+  tipo?: TipoConhecimento;
+  dadosEstruturados?: DadosPix | DadosLink | DadosContato | Record<string, any>;
   dataAtualizacao: string;
   dataCadastro?: string;
 }
@@ -85,7 +109,7 @@ export interface DocumentoRegistro {
   visibilidade: VisibilidadeDoc;
   tamanho?: string;
   dataCadastro?: string;
-  statusIndexacao?: 'indexado' | 'pendente' | 'erro';
+  statusIndexacao?: 'processando' | 'indexado' | 'pendente' | 'erro' | 'substituido';
   erroIndexacao?: string;
   dataValidade?: string | null;
   origemValidade?: 'extraído automaticamente' | 'corrigido pelo chat' | 'manual';
@@ -93,6 +117,7 @@ export interface DocumentoRegistro {
   silenciarAlertas?: boolean;
   trechoValidade?: string | null;
   storagePath?: string;
+  metadata?: Record<string, any>;
 }
 
 export type StatusAlertaVencimento = 'a_vencer' | 'vence_hoje' | 'vencido';
@@ -167,6 +192,8 @@ export interface AnaliseDocumentoResponse {
   tituloSugerido: string;
   tipoSugerido: string;
   titularSugerido: string;
+  nomeNoDocumento?: string | null;
+  novoTitularSugerido?: boolean;
   apelidosSugeridos: string[];
   visibilidadeSugerida: VisibilidadeDoc;
   descricaoSugerida: string;

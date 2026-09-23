@@ -32,28 +32,29 @@ export interface RespostaMotorBusca {
   titularesPossiveis?: string[];
 }
 
+const EQUIVALENCIAS_PADRAO: Record<string, string[]> = {
+  CNH: ['CPF', 'RG', 'nome', 'data de nascimento', 'filiação'],
+  CTPS: ['CPF', 'RG'],
+  RG: ['CPF', 'filiação'],
+  PASSAPORTE: ['CPF', 'nome', 'data de nascimento'],
+  CONTRATO_SOCIAL: ['CNPJ', 'razão social', 'sócios'],
+  CARTAO_CNPJ: ['CNPJ', 'razão social', 'endereço'],
+};
+
 /**
- * Carrega o mapa de equivalências de documentos (data/equivalencias.json)
+ * Carrega o mapa de equivalências de documentos.
+ * Prioriza config/equivalencias.json se existir; caso contrário, utiliza a base nativa em memória.
  */
 export function carregarEquivalencias(): Record<string, string[]> {
   const caminho = path.resolve(__dirname, '../../../config/equivalencias.json');
-  const caminhoFallback = path.resolve(__dirname, '../../../data/equivalencias.json');
-  const caminhoEfetivo = fs.existsSync(caminho) ? caminho : caminhoFallback;
-  if (fs.existsSync(caminhoEfetivo)) {
+  if (fs.existsSync(caminho)) {
     try {
-      return JSON.parse(fs.readFileSync(caminhoEfetivo, 'utf-8'));
+      return JSON.parse(fs.readFileSync(caminho, 'utf-8'));
     } catch (e) {
       console.error('Erro ao ler equivalencias.json:', e);
     }
   }
-  return {
-    CNH: ['CPF', 'RG', 'nome', 'data de nascimento', 'filiação'],
-    CTPS: ['CPF', 'RG'],
-    RG: ['CPF', 'filiação'],
-    PASSAPORTE: ['CPF', 'nome', 'data de nascimento'],
-    CONTRATO_SOCIAL: ['CNPJ', 'razão social', 'sócios'],
-    CARTAO_CNPJ: ['CNPJ', 'razão social', 'endereço'],
-  };
+  return EQUIVALENCIAS_PADRAO;
 }
 
 /**
@@ -856,29 +857,30 @@ export async function buscarDocumentos(
   };
 }
 
+const FRASES_PADRAO: string[] = [
+  'Aqui está seu {titulo}, {primeiroNome}.',
+  'Segue o {titulo}, {primeiroNome}.',
+  'Encontrei aqui — {titulo} em anexo, {primeiroNome}.',
+];
+
 /**
- * Obtém uma frase de acompanhamento a partir de data/frases.json
+ * Obtém uma frase de acompanhamento para envio de documento.
+ * Prioriza config/frases.json se existir; caso contrário, utiliza os templates nativos em memória.
  */
 export function obterFraseAcompanhamento(titulo: string, primeiroNome?: string): string {
   const caminhoFrases = path.resolve(__dirname, '../../../config/frases.json');
-  const caminhoFallback = path.resolve(__dirname, '../../../data/frases.json');
-  const caminhoEfetivo = fs.existsSync(caminhoFrases) ? caminhoFrases : caminhoFallback;
-  let templates = [
-    'Aqui está seu {titulo}, {primeiroNome}.',
-    'Segue o {titulo}, {primeiroNome}.',
-    'Encontrei aqui — {titulo} em anexo, {primeiroNome}.',
-  ];
+  let templates = FRASES_PADRAO;
 
   try {
-    if (fs.existsSync(caminhoEfetivo)) {
-      const conteudo = fs.readFileSync(caminhoEfetivo, 'utf-8');
+    if (fs.existsSync(caminhoFrases)) {
+      const conteudo = fs.readFileSync(caminhoFrases, 'utf-8');
       const parsed = JSON.parse(conteudo);
       if (Array.isArray(parsed) && parsed.length > 0) {
         templates = parsed;
       }
     }
   } catch (err) {
-    console.error('Erro ao ler frases.json:', err);
+    console.error('Erro ao ler frases.json de configuração:', err);
   }
 
   const template = templates[Math.floor(Math.random() * templates.length)];

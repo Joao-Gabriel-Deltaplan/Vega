@@ -1,170 +1,186 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Brain,
-  Plus,
   Save,
   Trash2,
   FileText,
   Search,
   CheckCircle,
-  Info,
   UploadCloud,
-  FileUp,
-  Shield,
-  Edit3,
   X,
-  Tag,
   Sparkles,
   Loader2,
   Image as ImageIcon,
   ExternalLink,
   Building2,
   AlertCircle,
-  UserCheck,
   ChevronDown,
   ChevronUp,
-  Edit,
+  Edit2,
   AlertTriangle,
   Clock,
   CheckCircle2,
-  Calendar,
   BellOff,
+  FolderLock,
+  BookOpen,
+  Filter,
+  Copy,
+  Check,
+  CreditCard,
+  Globe,
+  Phone,
+  Mail,
 } from 'lucide-react';
 import { ASSISTENTE } from '../config/assistente.js';
 import {
   DocumentoRegistro,
-  VisibilidadeDoc,
-  AnaliseDocumentoResponse,
   FichaTitular,
+  ItemConhecimento,
+  DadosPix,
+  DadosLink,
+  DadosContato,
 } from '../types/chat.js';
-
-interface ItemConhecimento {
-  id: string;
-  titulo: string;
-  categoria: string;
-  conteudo: string;
-  dataAtualizacao: string;
-}
-
-const CONHECIMENTOS_INICIAIS: ItemConhecimento[] = [
-  {
-    id: 'k-1',
-    titulo: 'Regra de Negócio: Proposta Comercial e Orçamentos',
-    categoria: 'Comercial',
-    conteudo:
-      'Ao enviar propostas em PDF, destacar que os projetos de IA da Delta Plan possuem prazo médio de implantação de 10 a 15 dias úteis, com garantia de suporte técnico de 30 dias após o go-live.',
-    dataAtualizacao: '14/09/2026',
-  },
-  {
-    id: 'k-2',
-    titulo: 'Política de Agendamento de Reuniões',
-    categoria: 'Atendimento',
-    conteudo:
-      'Reuniões de diagnóstico são realizadas de segunda a sexta, das 09h às 18h. Nunca agendar no mesmo dia com menos de 2 horas de antecedência. Sempre solicitar o e-mail do lead para envio do convite do Google Meet.',
-    dataAtualizacao: '12/09/2026',
-  },
-  {
-    id: 'k-3',
-    titulo: 'Dúvidas Frequentes sobre Segurança de Dados (LGPD)',
-    categoria: 'Segurança',
-    conteudo:
-      'Informar aos clientes que nenhum dado sensível de conversas é utilizado para treinamento de modelos públicos. A Delta Plan segue rigorosamente a LGPD e utiliza servidores com criptografia de ponta a ponta.',
-    dataAtualizacao: '10/09/2026',
-  },
-];
+import { obterPaletaAvatar, obterIniciais } from '../utils/avatarUtils.js';
 
 interface KnowledgeBaseViewProps {
   subAbaInicial?: 'conhecimento' | 'documentos';
 }
 
+const FUSO_HORARIO_PADRAO = 'America/Sao_Paulo';
+
+/**
+ * Formata qualquer data ou timestamp para DD/MM/AAAA no fuso de Brasília.
+ */
+function formatarDataBrasilia(dataStr?: string | null): string {
+  if (!dataStr || !dataStr.trim()) return '—';
+  const limpo = dataStr.trim();
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(limpo)) {
+    return limpo;
+  }
+  const d = new Date(limpo);
+  if (isNaN(d.getTime())) return limpo;
+  return new Intl.DateTimeFormat('pt-BR', {
+    timeZone: FUSO_HORARIO_PADRAO,
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(d);
+}
+
+/**
+ * Identifica a situação de validade de um documento.
+ */
+function obterSituacaoValidade(
+  dataValidadeStr?: string | null
+): 'valido' | 'vencendo' | 'vencido' | 'sem_validade' {
+  if (!dataValidadeStr || !dataValidadeStr.trim()) return 'sem_validade';
+  const match = dataValidadeStr.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return 'sem_validade';
+
+  const dia = parseInt(match[1], 10);
+  const mes = parseInt(match[2], 10) - 1;
+  const ano = parseInt(match[3], 10);
+  const dValidade = new Date(ano, mes, dia, 0, 0, 0, 0);
+
+  const agora = new Date();
+  const ref = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate(), 0, 0, 0, 0);
+  const diffMs = dValidade.getTime() - ref.getTime();
+  const diasRestantes = Math.round(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diasRestantes < 0) return 'vencido';
+  if (diasRestantes <= 60) return 'vencendo';
+  return 'valido';
+}
+
 export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
-  subAbaInicial = 'conhecimento',
+  subAbaInicial = 'documentos',
 }) => {
   const [subAba, setSubAba] = useState<'conhecimento' | 'documentos'>(subAbaInicial);
 
   // ==========================================
-  // ESTADOS DA SUB-ABA CONHECIMENTO (TEXTO)
+  // ESTADOS DA SUB-ABA CONHECIMENTO
   // ==========================================
-  const [itensConhecimento, setItensConhecimento] = useState<ItemConhecimento[]>(CONHECIMENTOS_INICIAIS);
+  const [itensConhecimento, setItensConhecimento] = useState<ItemConhecimento[]>([]);
+  const [carregandoConhecimento, setCarregandoConhecimento] = useState(true);
   const [buscaConhecimento, setBuscaConhecimento] = useState('');
-  const [novoTitulo, setNovoTitulo] = useState('');
-  const [novaCategoria, setNovaCategoria] = useState('Geral');
-  const [novoConteudo, setNovoConteudo] = useState('');
-  const [exibirFormConhecimento, setExibirFormConhecimento] = useState(false);
-  const [mensagemSucessoConhecimento, setMensagemSucessoConhecimento] = useState('');
-  const [erroConhecimento, setErroConhecimento] = useState('');
+  const [filtroTipoConhecimento, setFiltroTipoConhecimento] = useState<
+    'todos' | 'pix' | 'link' | 'contato' | 'regra'
+  >('todos');
 
-  // Edição de item de Conhecimento existente
-  const [itemEditandoConhecimento, setItemEditandoConhecimento] = useState<ItemConhecimento | null>(null);
-  const [editTituloConhecimento, setEditTituloConhecimento] = useState('');
-  const [editCategoriaConhecimento, setEditCategoriaConhecimento] = useState('Geral');
-  const [editConteudoConhecimento, setEditConteudoConhecimento] = useState('');
-  const [salvandoEdicaoConhecimento, setSalvandoEdicaoConhecimento] = useState(false);
-  const [erroEdicaoConhecimento, setErroEdicaoConhecimento] = useState('');
+  // Entrada única de texto com IA
+  const [textoEntradaUnica, setTextoEntradaUnica] = useState('');
+  const [estruturandoComIA, setEstruturandoComIA] = useState(false);
+  const [erroEstruturacao, setErroEstruturacao] = useState('');
+  const [itensSugeridosIA, setItensSugeridosIA] = useState<ItemConhecimento[]>([]);
+  const [salvandoItensSugeridos, setSalvandoItensSugeridos] = useState(false);
+
+  // Edição em linha na lista
+  const [idEditandoEmLinha, setIdEditandoEmLinha] = useState<string | null>(null);
+  const [draftEdicaoLinha, setDraftEdicaoLinha] = useState<ItemConhecimento | null>(null);
+  const [salvandoEdicaoLinha, setSalvandoEdicaoLinha] = useState(false);
+  const [mensagemSucessoConhecimento, setMensagemSucessoConhecimento] = useState('');
+
+  // Feedback de cópia (ex: Chave PIX)
+  const [copiadoId, setCopiadoId] = useState<string | null>(null);
 
   // ==========================================
-  // ESTADOS DA SUB-ABA DOCUMENTOS (COFRE COM TITULARES)
+  // ESTADOS DA SUB-ABA DOCUMENTOS (COFRE)
   // ==========================================
   const [documentos, setDocumentos] = useState<DocumentoRegistro[]>([]);
   const [buscaDocumentos, setBuscaDocumentos] = useState('');
-  const [carregandoDocs, setCarregandoDocs] = useState(false);
+  const [filtroTitularDoc, setFiltroTitularDoc] = useState('todos');
+  const [filtroTipoDoc, setFiltroTipoDoc] = useState('todos');
+  const [filtroValidadeDoc, setFiltroValidadeDoc] = useState('todas');
+  const [carregandoDocs, setCarregandoDocs] = useState(true);
+  const [carregandoTitulares, setCarregandoTitulares] = useState(true);
   const [arrastandoArquivo, setArrastandoArquivo] = useState(false);
-  const [analisandoArquivo, setAnalisandoArquivo] = useState(false);
+  const [uploadandoDireto, setUploadandoDireto] = useState(false);
   const [erroUpload, setErroUpload] = useState('');
-  const [mensagemSucessoDoc, setMensagemSucessoDoc] = useState('');
 
-  // Titulares agrupados no cofre (fichas e documentos)
+  // Linha de notificação de upload sem fricção com correção rápida
+  const [uploadRecente, setUploadRecente] = useState<{
+    docId: string;
+    titulo: string;
+    titular: string;
+    tipo: string;
+    precisaPerguntar: boolean;
+    camposFaltantes: string[];
+    nomeNoDocumento?: string | null;
+    novoTitularSugerido?: boolean;
+  } | null>(null);
+  const [exibirCorrecaoRapida, setExibirCorrecaoRapida] = useState(false);
+  const [correcaoTitular, setCorrecaoTitular] = useState('');
+  const [correcaoTipo, setCorrecaoTipo] = useState('');
+  const [salvandoCorrecao, setSalvandoCorrecao] = useState(false);
+
+  // Titulares cadastrados no cofre
   const [titulares, setTitulares] = useState<FichaTitular[]>([]);
   const [titularesExpandidos, setTitularesExpandidos] = useState<Record<string, boolean>>({});
-  const [mensagemSucessoTitular, setMensagemSucessoTitular] = useState('');
-
-  // Card de confirmação de cadastro pós-análise com conferência de titular
-  const [cardConfirmacao, setCardConfirmacao] = useState<{
-    nomeArquivo: string;
-    tamanhoFormatado: string;
-    base64: string;
-    titulo: string;
-    tipo: string;
-    titular: string;
-    apelidos: string;
-    visibilidade: VisibilidadeDoc;
-    descricao: string;
-    camposTitular?: Record<string, { valor: string; conferido: boolean }>;
-    dataValidade?: string;
-  } | null>(null);
-  const [salvandoCadastro, setSalvandoCadastro] = useState(false);
-
-  // Modal de edição de metadados de documento existente
-  const [docEditando, setDocEditando] = useState<DocumentoRegistro | null>(null);
-  const [editTitulo, setEditTitulo] = useState('');
-  const [editTipo, setEditTipo] = useState('');
-  const [editTitular, setEditTitular] = useState('');
-  const [editDataValidade, setEditDataValidade] = useState('');
-  const [editSilenciarAlertas, setEditSilenciarAlertas] = useState(false);
-  const [editApelidos, setEditApelidos] = useState('');
-  const [editVisibilidade, setEditVisibilidade] = useState<VisibilidadeDoc>('diretoria');
-  const [editDescricao, setEditDescricao] = useState('');
-  const [salvandoEdicao, setSalvandoEdicao] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Carrega itens da Base de Conhecimento do backend
+  // ==========================================
+  // CARREGAMENTO DE DADOS
+  // ==========================================
   const carregarConhecimentos = async () => {
+    setCarregandoConhecimento(true);
     try {
       const res = await fetch('/api/conhecimento');
       if (res.ok) {
         const dados = await res.json();
-        if (Array.isArray(dados) && dados.length > 0) {
+        if (Array.isArray(dados)) {
           setItensConhecimento(dados);
         }
       }
     } catch (err) {
       console.error('Erro ao buscar base de conhecimento:', err);
+    } finally {
+      setCarregandoConhecimento(false);
     }
   };
 
-  // Carrega titulares do backend
   const carregarTitulares = async () => {
+    setCarregandoTitulares(true);
     try {
       const res = await fetch('/api/titulares');
       if (res.ok) {
@@ -175,12 +191,13 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
       }
     } catch (err) {
       console.error('Erro ao buscar titulares:', err);
+    } finally {
+      setCarregandoTitulares(false);
     }
   };
 
-  // Carrega documentos do backend
-  const carregarDocumentos = async () => {
-    setCarregandoDocs(true);
+  const carregarDocumentos = async (silencioso: boolean = false) => {
+    if (!silencioso) setCarregandoDocs(true);
     try {
       const res = await fetch('/api/documentos');
       if (res.ok) {
@@ -192,7 +209,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
     } catch (err) {
       console.error('Erro ao buscar documentos da Base:', err);
     } finally {
-      setCarregandoDocs(false);
+      if (!silencioso) setCarregandoDocs(false);
     }
   };
 
@@ -202,7 +219,19 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
     carregarTitulares();
   }, []);
 
-  // Ajusta se subAbaInicial mudar externamente
+  // Polling automático e silencioso enquanto houver documentos com status 'processando'
+  useEffect(() => {
+    const temProcessando = documentos.some((d) => d.statusIndexacao === 'processando');
+    if (!temProcessando) return;
+
+    const interval = setInterval(() => {
+      carregarDocumentos(true);
+      carregarTitulares();
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [documentos]);
+
   useEffect(() => {
     if (subAbaInicial) {
       setSubAba(subAbaInicial);
@@ -210,199 +239,36 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   }, [subAbaInicial]);
 
   // ==========================================
-  // HANDLERS DE CONHECIMENTO
+  // 1. UPLOAD DE DOCUMENTO SEM FRICÇÃO
   // ==========================================
-  const normalizarTitulo = (t: string) =>
-    t
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-      .trim()
-      .replace(/\s+/g, ' ');
-
-  const itensFiltradosConhecimento = itensConhecimento.filter(
-    (item) =>
-      item.titulo.toLowerCase().includes(buscaConhecimento.toLowerCase()) ||
-      item.conteudo.toLowerCase().includes(buscaConhecimento.toLowerCase()) ||
-      item.categoria.toLowerCase().includes(buscaConhecimento.toLowerCase())
-  );
-
-  const handleSalvarNovoConhecimento = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErroConhecimento('');
-    if (!novoTitulo.trim() || !novoConteudo.trim()) return;
-
-    // Validação de título duplicado na interface (ignorando maiúsculas e espaços)
-    const tituloNorm = normalizarTitulo(novoTitulo);
-    const duplicado = itensConhecimento.find(
-      (item) => normalizarTitulo(item.titulo) === tituloNorm
-    );
-    if (duplicado) {
-      setErroConhecimento(
-        `Já existe uma instrução com o título "${duplicado.titulo}" na aba Conhecimento. Escolha um título único.`
-      );
-      return;
-    }
-
-    try {
-      const res = await fetch('/api/conhecimento', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          titulo: novoTitulo.trim(),
-          categoria: novaCategoria,
-          conteudo: novoConteudo.trim(),
-        }),
-      });
-
-      if (res.ok) {
-        const salvo = await res.json();
-        setItensConhecimento((prev) => [salvo, ...prev]);
-        setNovoTitulo('');
-        setNovoConteudo('');
-        setErroConhecimento('');
-        setExibirFormConhecimento(false);
-        setMensagemSucessoConhecimento('Novo conhecimento registrado com sucesso!');
-        setTimeout(() => setMensagemSucessoConhecimento(''), 3000);
-      } else {
-        const erroJson = await res.json().catch(() => ({ erro: 'Erro ao cadastrar instrução' }));
-        setErroConhecimento(erroJson.erro || 'Falha ao salvar instrução na base de conhecimento.');
-      }
-    } catch (erro) {
-      console.error('Erro ao cadastrar conhecimento:', erro);
-      setErroConhecimento('Erro de conexão ao salvar instrução.');
-    }
-  };
-
-  const handleAbrirEdicaoConhecimento = (item: ItemConhecimento) => {
-    setItemEditandoConhecimento(item);
-    setEditTituloConhecimento(item.titulo);
-    setEditCategoriaConhecimento(item.categoria);
-    setEditConteudoConhecimento(item.conteudo);
-    setErroEdicaoConhecimento('');
-  };
-
-  const handleSalvarEdicaoConhecimento = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!itemEditandoConhecimento) return;
-    setErroEdicaoConhecimento('');
-
-    if (!editTituloConhecimento.trim() || !editConteudoConhecimento.trim()) {
-      setErroEdicaoConhecimento('Título e conteúdo são obrigatórios.');
-      return;
-    }
-
-    // Validação de duplicata de título na edição
-    const tituloNorm = normalizarTitulo(editTituloConhecimento);
-    const duplicado = itensConhecimento.find(
-      (i) => i.id !== itemEditandoConhecimento.id && normalizarTitulo(i.titulo) === tituloNorm
-    );
-    if (duplicado) {
-      setErroEdicaoConhecimento(
-        `Já existe outra instrução com o título "${duplicado.titulo}" na aba Conhecimento. Escolha um título único.`
-      );
-      return;
-    }
-
-    setSalvandoEdicaoConhecimento(true);
-    try {
-      const res = await fetch(`/api/conhecimento/${itemEditandoConhecimento.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          titulo: editTituloConhecimento.trim(),
-          categoria: editCategoriaConhecimento.trim(),
-          conteudo: editConteudoConhecimento.trim(),
-        }),
-      });
-
-      if (res.ok) {
-        const atualizado = await res.json();
-        setItensConhecimento((prev) =>
-          prev.map((i) => (i.id === atualizado.id ? atualizado : i))
-        );
-        setItemEditandoConhecimento(null);
-        setMensagemSucessoConhecimento(`Instrução "${atualizado.titulo}" atualizada com sucesso!`);
-        setTimeout(() => setMensagemSucessoConhecimento(''), 3000);
-      } else {
-        const erroJson = await res.json().catch(() => ({ erro: 'Erro ao atualizar instrução' }));
-        setErroEdicaoConhecimento(erroJson.erro || 'Falha ao atualizar instrução na base de conhecimento.');
-      }
-    } catch (erro) {
-      console.error('Erro ao editar conhecimento:', erro);
-      setErroEdicaoConhecimento('Erro de conexão ao atualizar instrução.');
-    } finally {
-      setSalvandoEdicaoConhecimento(false);
-    }
-  };
-
-  const handleExcluirConhecimento = async (id: string) => {
-    try {
-      const res = await fetch(`/api/conhecimento/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        setItensConhecimento((prev) => prev.filter((i) => i.id !== id));
-      }
-    } catch (erro) {
-      console.error('Erro ao excluir conhecimento:', erro);
-    }
-  };
-
-  // ==========================================
-  // HELPERS DE TITULARES NO COFRE
-  // ==========================================
-  const toggleTitularExpandido = (titId: string) => {
-    setTitularesExpandidos((prev) => ({
-      ...prev,
-      [titId]: prev[titId] === undefined ? false : !prev[titId],
-    }));
-  };
-
-  const isTitularAberto = (titId: string) => {
-    return titularesExpandidos[titId] !== false; // Aberto por padrão
-  };
-
-  const docPertenceAoTitular = (doc: DocumentoRegistro, tit: FichaTitular): boolean => {
-    if (!doc.titular) return false;
-    const dTit = doc.titular.toLowerCase().trim();
-    const tNome = tit.nome.toLowerCase().trim();
-    if (dTit === tNome) return true;
-    if (doc.titular === tit.id) return true;
-    const primeiroNomeTit = tNome.split(' ')[0];
-    if (primeiroNomeTit.length >= 3 && dTit.includes(primeiroNomeTit)) return true;
-    return false;
-  };
-
-  // ==========================================
-  // HANDLERS DE DOCUMENTOS (DRAG & DROP E ANÁLISE)
-  // ==========================================
-  const processarArquivo = async (file: File) => {
+  const processarArquivoSemFriccao = async (file: File) => {
     setErroUpload('');
+    setUploadRecente(null);
+    setExibirCorrecaoRapida(false);
 
-    // Limite de 50MB
     const LIMITE_BYTES = 50 * 1024 * 1024;
     if (file.size > LIMITE_BYTES) {
       setErroUpload('O arquivo excede o limite máximo permitido de 50MB.');
       return;
     }
 
-    // Aceita apenas PDF ou imagem (.png, .jpg, .jpeg, .webp)
     const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
     const isImg = file.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(file.name);
     if (!isPdf && !isImg) {
-      setErroUpload('Formato não suportado. Por favor envie arquivos PDF ou imagens (.png, .jpg, .jpeg, .webp).');
+      setErroUpload(
+        'Formato não suportado. Por favor envie arquivos PDF ou imagens (.png, .jpg, .jpeg, .webp).'
+      );
       return;
     }
 
-    setAnalisandoArquivo(true);
-    const tamanhoFormatado = `${(file.size / 1024).toFixed(1)} KB`;
+    setUploadandoDireto(true);
 
     const reader = new FileReader();
     reader.onload = async () => {
       const base64 = reader.result as string;
 
       try {
-        // Chama /api/documentos/analisar
-        const res = await fetch('/api/documentos/analisar', {
+        const res = await fetch('/api/documentos/upload-direto', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -414,165 +280,59 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
         });
 
         if (res.ok) {
-          const analise: AnaliseDocumentoResponse = await res.json();
-          const camposTit: Record<string, { valor: string; conferido: boolean }> = {};
-          if (analise.camposSugeridosTitular) {
-            for (const [k, v] of Object.entries(analise.camposSugeridosTitular)) {
-              if (v) {
-                camposTit[k] = { valor: v, conferido: false };
-              }
-            }
-          }
+          const resultado = await res.json();
+          const docSalvo: DocumentoRegistro = resultado.documento;
 
-          setCardConfirmacao({
-            nomeArquivo: file.name,
-            tamanhoFormatado,
-            base64,
-            titulo: analise.tituloSugerido || file.name,
-            tipo: analise.tipoSugerido || 'Outros',
-            titular: analise.titularSugerido || 'Delta Plan',
-            apelidos: analise.apelidosSugeridos ? analise.apelidosSugeridos.join(', ') : '',
-            visibilidade: analise.visibilidadeSugerida || 'diretoria',
-            descricao: analise.descricaoSugerida || '',
-            camposTitular: camposTit,
+          // Atualiza listas do Cofre
+          setDocumentos((prev) => [docSalvo, ...prev]);
+          await carregarTitulares();
+
+          // Configura estado para notificação e perguntas
+          setUploadRecente({
+            docId: docSalvo.id,
+            titulo: docSalvo.titulo,
+            titular: docSalvo.titular || '',
+            tipo: docSalvo.tipo || '',
+            precisaPerguntar: Boolean(resultado.precisaPerguntar),
+            camposFaltantes: resultado.camposFaltantes || [],
+            nomeNoDocumento: resultado.nomeNoDocumento || null,
+            novoTitularSugerido: !!resultado.novoTitularSugerido,
           });
+
+          setCorrecaoTitular(docSalvo.titular || resultado.nomeNoDocumento || '');
+          setCorrecaoTipo(docSalvo.tipo || '');
+
+          if (resultado.precisaPerguntar) {
+            setExibirCorrecaoRapida(true);
+          }
         } else {
-          // Fallback se rota falhar
-          const nomeLimpo = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ');
-          setCardConfirmacao({
-            nomeArquivo: file.name,
-            tamanhoFormatado,
-            base64,
-            titulo: nomeLimpo.charAt(0).toUpperCase() + nomeLimpo.slice(1),
-            tipo: 'Outros',
-            titular: 'Delta Plan',
-            apelidos: '',
-            visibilidade: 'diretoria',
-            descricao: '',
-            camposTitular: {},
-          });
+          const erroJson = await res.json().catch(() => ({}));
+          setErroUpload(
+            erroJson.erro || 'Erro ao salvar documento no cofre. Tente novamente.'
+          );
         }
       } catch (err) {
-        console.error('Erro na análise do arquivo:', err);
-        setErroUpload('Erro ao analisar o arquivo. Tente novamente.');
+        console.error('Erro no upload direto:', err);
+        setErroUpload('Erro de conexão ao enviar documento.');
       } finally {
-        setAnalisandoArquivo(false);
+        setUploadandoDireto(false);
       }
     };
 
     reader.readAsDataURL(file);
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setArrastandoArquivo(true);
-  };
+  const handleSalvarCorrecaoRapida = async () => {
+    if (!uploadRecente) return;
+    setSalvandoCorrecao(true);
 
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setArrastandoArquivo(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setArrastandoArquivo(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      processarArquivo(e.dataTransfer.files[0]);
-    }
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      processarArquivo(e.target.files[0]);
-      e.target.value = '';
-    }
-  };
-
-  // Confirmação do cadastro após edição dos campos sugeridos
-  const handleConfirmarCadastroDoc = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!cardConfirmacao || !cardConfirmacao.titulo.trim()) return;
-
-    setSalvandoCadastro(true);
     try {
-      const apelidosArr = cardConfirmacao.apelidos
-        .split(',')
-        .map((a) => a.trim())
-        .filter(Boolean);
-
-      const res = await fetch('/api/documentos', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          titulo: cardConfirmacao.titulo.trim(),
-          arquivo: cardConfirmacao.nomeArquivo,
-          tipo: cardConfirmacao.tipo,
-          titular: cardConfirmacao.titular,
-          descricao: cardConfirmacao.descricao.trim(),
-          visibilidade: cardConfirmacao.visibilidade,
-          apelidos: apelidosArr,
-          tamanho: cardConfirmacao.tamanhoFormatado,
-          base64: cardConfirmacao.base64,
-          camposTitularConferidos: cardConfirmacao.camposTitular,
-        }),
-      });
-
-      if (res.ok) {
-        const novoDoc: DocumentoRegistro = await res.json();
-        setDocumentos((prev) => [novoDoc, ...prev]);
-        await carregarTitulares();
-        setCardConfirmacao(null);
-        setMensagemSucessoDoc(`Documento "${novoDoc.titulo}" cadastrado com sucesso no cofre!`);
-        setTimeout(() => setMensagemSucessoDoc(''), 3500);
-      } else {
-        const erroJson = await res.json().catch(() => ({}));
-        setErroUpload(erroJson.erro || 'Erro ao salvar documento no cofre. Verifique o formato ou tente novamente.');
-      }
-    } catch (err) {
-      console.error('Erro ao cadastrar documento:', err);
-      setErroUpload('Erro ao conectar ao servidor para cadastrar documento.');
-    } finally {
-      setSalvandoCadastro(false);
-    }
-  };
-
-  // Abrir modal de edição de metadados
-  const abrirEdicaoDoc = (doc: DocumentoRegistro) => {
-    setDocEditando(doc);
-    setEditTitulo(doc.titulo);
-    setEditTipo(doc.tipo || 'Outros');
-    setEditTitular(doc.titular || 'Delta Plan');
-    setEditDataValidade(doc.dataValidade || '');
-    setEditSilenciarAlertas(Boolean(doc.silenciarAlertas));
-    setEditApelidos(doc.apelidos ? doc.apelidos.join(', ') : '');
-    setEditVisibilidade(doc.visibilidade);
-    setEditDescricao(doc.descricao || '');
-  };
-
-  // Salvar alterações de metadados
-  const handleSalvarEdicaoDoc = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!docEditando || !editTitulo.trim()) return;
-
-    setSalvandoEdicao(true);
-    try {
-      const apelidosArr = editApelidos
-        .split(',')
-        .map((a) => a.trim())
-        .filter(Boolean);
-
-      const res = await fetch(`/api/documentos/${docEditando.id}`, {
+      const res = await fetch(`/api/documentos/${uploadRecente.docId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          titulo: editTitulo.trim(),
-          tipo: editTipo.trim(),
-          titular: editTitular.trim(),
-          descricao: editDescricao.trim(),
-          visibilidade: editVisibilidade,
-          apelidos: apelidosArr,
-          dataValidade: editDataValidade.trim() ? editDataValidade.trim() : null,
-          silenciarAlertas: editSilenciarAlertas,
+          titular: correcaoTitular.trim(),
+          tipo: correcaoTipo.trim(),
         }),
       });
 
@@ -581,21 +341,29 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
         setDocumentos((prev) =>
           prev.map((d) => (d.id === docAtualizado.id ? docAtualizado : d))
         );
-        setDocEditando(null);
-        setMensagemSucessoDoc(`Metadados de "${docAtualizado.titulo}" atualizados!`);
-        setTimeout(() => setMensagemSucessoDoc(''), 3000);
+        setUploadRecente({
+          docId: docAtualizado.id,
+          titulo: docAtualizado.titulo,
+          titular: docAtualizado.titular || '',
+          tipo: docAtualizado.tipo || '',
+          precisaPerguntar: false,
+          camposFaltantes: [],
+          nomeNoDocumento: null,
+          novoTitularSugerido: false,
+        });
+        setExibirCorrecaoRapida(false);
+        await carregarTitulares();
       }
     } catch (err) {
-      console.error('Erro ao editar documento:', err);
+      console.error('Erro ao salvar correção:', err);
     } finally {
-      setSalvandoEdicao(false);
+      setSalvandoCorrecao(false);
     }
   };
 
-  // Excluir documento (registro + arquivo físico)
   const handleExcluirDoc = async (id: string, titulo: string) => {
     const confirmacao = window.confirm(
-      `Confirma a exclusão de "${titulo}" do Cofre?\n\nEsta ação removerá o registro e apagará permanentemente o arquivo físico do disco.`
+      `Confirma a exclusão de "${titulo}" do Cofre? Esta ação removerá o arquivo permanentemente.`
     );
     if (!confirmacao) return;
 
@@ -603,8 +371,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
       const res = await fetch(`/api/documentos/${id}`, { method: 'DELETE' });
       if (res.ok) {
         setDocumentos((prev) => prev.filter((d) => d.id !== id));
-        setMensagemSucessoDoc(`Documento "${titulo}" e arquivo físico excluídos do cofre.`);
-        setTimeout(() => setMensagemSucessoDoc(''), 3500);
+        if (uploadRecente?.docId === id) setUploadRecente(null);
       }
     } catch (err) {
       console.error('Erro ao excluir documento:', err);
@@ -612,1295 +379,1980 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   };
 
   // ==========================================
-  // HANDLERS DE TITULARES
+  // 2. ENTRADA ÚNICA COM IA (ABA CONHECIMENTO)
   // ==========================================
-  const handleCriarNovoTitular = async (nome: string) => {
+  const handleEstruturarComIA = async () => {
+    if (!textoEntradaUnica.trim()) return;
+    setErroEstruturacao('');
+    setEstruturandoComIA(true);
+
     try {
-      const res = await fetch('/api/titulares', {
+      const res = await fetch('/api/conhecimento/estruturar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nome }),
+        body: JSON.stringify({ texto: textoEntradaUnica.trim() }),
       });
+
       if (res.ok) {
-        const novo = await res.json();
-        setTitulares((prev) => [...prev, novo]);
-        setMensagemSucessoTitular(`Titular "${novo.nome}" cadastrado com sucesso!`);
-        setTimeout(() => setMensagemSucessoTitular(''), 3000);
+        const dados = await res.json();
+        if (dados.sucesso && Array.isArray(dados.itens) && dados.itens.length > 0) {
+          const itensFormatados: ItemConhecimento[] = dados.itens.map(
+            (it: any, index: number) => ({
+              id: `temp-${Date.now()}-${index}`,
+              titulo: it.titulo,
+              categoria: it.categoria,
+              conteudo: it.conteudo,
+              tipo: it.tipo,
+              dadosEstruturados: it.dadosEstruturados,
+              dataAtualizacao: new Date().toLocaleDateString('pt-BR'),
+            })
+          );
+          setItensSugeridosIA(itensFormatados);
+        } else {
+          setErroEstruturacao(
+            dados.mensagem || 'Não foi possível estruturar a informação com a IA.'
+          );
+        }
+      } else {
+        setErroEstruturacao('Erro ao conectar com a IA para estruturação.');
       }
     } catch (err) {
-      console.error('Erro ao criar titular:', err);
+      console.error('Erro ao estruturar:', err);
+      setErroEstruturacao('Erro de conexão ao estruturar conhecimento.');
+    } finally {
+      setEstruturandoComIA(false);
     }
   };
 
-  const handleExcluirTitular = async (id: string, nome: string) => {
-    const confirmacao = window.confirm(`Confirma a exclusão da ficha do titular "${nome}"?`);
+  const handleSalvarItemSugerido = async (item: ItemConhecimento) => {
+    setSalvandoItensSugeridos(true);
+    try {
+      const res = await fetch('/api/conhecimento', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          titulo: item.titulo,
+          categoria: item.categoria,
+          conteudo: item.conteudo,
+          tipo: item.tipo,
+          dadosEstruturados: item.dadosEstruturados,
+        }),
+      });
+
+      if (res.ok) {
+        const salvo = await res.json();
+        setItensConhecimento((prev) => [salvo, ...prev]);
+        setItensSugeridosIA((prev) => prev.filter((i) => i.id !== item.id));
+
+        if (itensSugeridosIA.length <= 1) {
+          setTextoEntradaUnica('');
+        }
+
+        setMensagemSucessoConhecimento(`Item "${salvo.titulo}" salvo com sucesso!`);
+        setTimeout(() => setMensagemSucessoConhecimento(''), 3000);
+      }
+    } catch (err) {
+      console.error('Erro ao salvar item sugerido:', err);
+    } finally {
+      setSalvandoItensSugeridos(false);
+    }
+  };
+
+  const handleSalvarTodosSugeridos = async () => {
+    if (itensSugeridosIA.length === 0) return;
+    setSalvandoItensSugeridos(true);
+
+    try {
+      for (const item of itensSugeridosIA) {
+        const res = await fetch('/api/conhecimento', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            titulo: item.titulo,
+            categoria: item.categoria,
+            conteudo: item.conteudo,
+            tipo: item.tipo,
+            dadosEstruturados: item.dadosEstruturados,
+          }),
+        });
+        if (res.ok) {
+          const salvo = await res.json();
+          setItensConhecimento((prev) => [salvo, ...prev]);
+        }
+      }
+
+      setItensSugeridosIA([]);
+      setTextoEntradaUnica('');
+      setMensagemSucessoConhecimento('Todos os itens foram cadastrados na Base da VEGA!');
+      setTimeout(() => setMensagemSucessoConhecimento(''), 3500);
+    } catch (err) {
+      console.error('Erro ao salvar todos:', err);
+    } finally {
+      setSalvandoItensSugeridos(false);
+    }
+  };
+
+  // ==========================================
+  // 3. EDIÇÃO EM LINHA (SEM MODAL PESADO)
+  // ==========================================
+  const handleIniciarEdicaoLinha = (item: ItemConhecimento) => {
+    setIdEditandoEmLinha(item.id);
+    setDraftEdicaoLinha(JSON.parse(JSON.stringify(item)));
+  };
+
+  const handleSalvarEdicaoLinha = async () => {
+    if (!draftEdicaoLinha) return;
+    setSalvandoEdicaoLinha(true);
+
+    try {
+      const res = await fetch(`/api/conhecimento/${draftEdicaoLinha.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          titulo: draftEdicaoLinha.titulo,
+          categoria: draftEdicaoLinha.categoria,
+          conteudo: draftEdicaoLinha.conteudo,
+          tipo: draftEdicaoLinha.tipo,
+          dadosEstruturados: draftEdicaoLinha.dadosEstruturados,
+        }),
+      });
+
+      if (res.ok) {
+        const atualizado = await res.json();
+        setItensConhecimento((prev) =>
+          prev.map((i) => (i.id === atualizado.id ? atualizado : i))
+        );
+        setIdEditandoEmLinha(null);
+        setDraftEdicaoLinha(null);
+        setMensagemSucessoConhecimento(`"${atualizado.titulo}" atualizado com sucesso!`);
+        setTimeout(() => setMensagemSucessoConhecimento(''), 3000);
+      }
+    } catch (err) {
+      console.error('Erro ao salvar edição em linha:', err);
+    } finally {
+      setSalvandoEdicaoLinha(false);
+    }
+  };
+
+  const handleExcluirConhecimento = async (id: string, titulo: string) => {
+    const confirmacao = window.confirm(`Deseja realmente excluir "${titulo}"?`);
     if (!confirmacao) return;
 
     try {
-      const res = await fetch(`/api/titulares/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/conhecimento/${id}`, { method: 'DELETE' });
       if (res.ok) {
-        setTitulares((prev) => prev.filter((t) => t.id !== id));
-        setMensagemSucessoTitular(`Titular "${nome}" excluído.`);
-        setTimeout(() => setMensagemSucessoTitular(''), 3000);
+        setItensConhecimento((prev) => prev.filter((i) => i.id !== id));
+        if (idEditandoEmLinha === id) setIdEditandoEmLinha(null);
       }
     } catch (err) {
-      console.error('Erro ao excluir titular:', err);
+      console.error('Erro ao excluir:', err);
     }
   };
 
-  // Filtragem de documentos por título, apelido, tipo ou titular
-  const documentosFiltrados = documentos.filter((doc) => {
-    const termo = buscaDocumentos.toLowerCase().trim();
-    if (!termo) return true;
-    const tituloMatch = doc.titulo.toLowerCase().includes(termo);
-    const tipoMatch = doc.tipo?.toLowerCase().includes(termo);
-    const titularMatch = doc.titular?.toLowerCase().includes(termo);
-    const apelidoMatch = doc.apelidos?.some((ap) => ap.toLowerCase().includes(termo));
-    const descricaoMatch = doc.descricao?.toLowerCase().includes(termo);
-    return tituloMatch || tipoMatch || titularMatch || apelidoMatch || descricaoMatch;
-  });
+  const copiarChave = (id: string, chave: string) => {
+    if (!chave) return;
+    navigator.clipboard.writeText(chave);
+    setCopiadoId(id);
+    setTimeout(() => setCopiadoId(null), 2000);
+  };
 
-  // Filtragem de titulares no cofre (por nome, dados cadastrais ou se possui documento que case com a busca)
-  const titularesFiltrados = titulares.filter((tit) => {
-    const termo = buscaDocumentos.toLowerCase().trim();
-    if (!termo) return true;
-    const matchNome = tit.nome.toLowerCase().includes(termo);
-    const matchCampos = Object.entries(tit.campos || {}).some(
-      ([k, v]) =>
-        k.toLowerCase().includes(termo) ||
-        (v?.valor && v.valor.toLowerCase().includes(termo))
-    );
-    const matchDocs = documentosFiltrados.some((d) => docPertenceAoTitular(d, tit));
-    return matchNome || matchCampos || matchDocs;
-  });
+  // ==========================================
+  // FILTRAGEM DE CONHECIMENTO
+  // ==========================================
+  const contadoresTipo = useMemo(() => {
+    return {
+      todos: itensConhecimento.length,
+      pix: itensConhecimento.filter((i) => i.tipo === 'pix').length,
+      link: itensConhecimento.filter((i) => i.tipo === 'link').length,
+      contato: itensConhecimento.filter((i) => i.tipo === 'contato').length,
+      regra: itensConhecimento.filter((i) => !i.tipo || i.tipo === 'regra').length,
+    };
+  }, [itensConhecimento]);
 
-  // Renderizador do selo colorido de validade do documento
-  const renderSeloValidade = (dataValidadeStr?: string | null, origemValidade?: string) => {
-    if (!dataValidadeStr || !dataValidadeStr.trim()) return null;
+  const itensConhecimentoFiltrados = useMemo(() => {
+    return itensConhecimento.filter((item) => {
+      const termo = buscaConhecimento.toLowerCase().trim();
+      const matchBusca =
+        !termo ||
+        item.titulo.toLowerCase().includes(termo) ||
+        item.conteudo.toLowerCase().includes(termo) ||
+        item.categoria.toLowerCase().includes(termo);
 
-    const match = dataValidadeStr.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-    if (!match) return null;
+      let matchTipo = true;
+      if (filtroTipoConhecimento === 'pix') matchTipo = item.tipo === 'pix';
+      else if (filtroTipoConhecimento === 'link') matchTipo = item.tipo === 'link';
+      else if (filtroTipoConhecimento === 'contato') matchTipo = item.tipo === 'contato';
+      else if (filtroTipoConhecimento === 'regra') matchTipo = !item.tipo || item.tipo === 'regra';
 
-    const dia = parseInt(match[1], 10);
-    const mes = parseInt(match[2], 10) - 1;
-    const ano = parseInt(match[3], 10);
-    const dValidade = new Date(ano, mes, dia, 0, 0, 0, 0);
+      return matchBusca && matchTipo;
+    });
+  }, [itensConhecimento, buscaConhecimento, filtroTipoConhecimento]);
 
-    const agora = new Date();
-    const ref = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate(), 0, 0, 0, 0);
-    const diffMs = dValidade.getTime() - ref.getTime();
-    const diasRestantes = Math.round(diffMs / (1000 * 60 * 60 * 24));
+  // ==========================================
+  // HELPERS DO COFRE
+  // ==========================================
+  const toggleTitularExpandido = (titId: string) => {
+    setTitularesExpandidos((prev) => ({
+      ...prev,
+      [titId]: prev[titId] === undefined ? false : !prev[titId],
+    }));
+  };
 
-    if (diasRestantes < 0) {
-      const diasPos = Math.abs(diasRestantes);
+  const isTitularAberto = (titId: string) => titularesExpandidos[titId] !== false;
+
+  const docPertenceAoTitular = (doc: DocumentoRegistro, tit: FichaTitular): boolean => {
+    if (!doc.titular) return false;
+    const dTit = doc.titular.toLowerCase().trim();
+    const tNome = tit.nome.toLowerCase().trim();
+    if (dTit === tNome || doc.titular === tit.id) return true;
+    const primeiroNomeTit = tNome.split(' ')[0];
+    if (primeiroNomeTit.length >= 3 && dTit.includes(primeiroNomeTit)) return true;
+    return false;
+  };
+
+  const isDocumentoEmpresa = (doc: DocumentoRegistro): boolean => {
+    if (!doc.titular || !doc.titular.trim()) return true;
+    const t = doc.titular.toLowerCase().trim();
+    if (t.includes('delta') || t.includes('empresa') || t.includes('geral') || t === 'corporativo') {
+      return true;
+    }
+    return !titulares.some((tit) => docPertenceAoTitular(doc, tit));
+  };
+
+  const tiposDocumentosDisponiveis = useMemo(() => {
+    const tipos = new Set<string>();
+    tipos.add('Contrato');
+    tipos.add('Financeiro');
+    tipos.add('Documento Pessoal');
+    tipos.add('Normativo');
+    tipos.add('Proposta');
+    tipos.add('Outros');
+    documentos.forEach((d) => {
+      if (d.tipo && d.tipo.trim()) tipos.add(d.tipo.trim());
+    });
+    return Array.from(tipos);
+  }, [documentos]);
+
+  const documentosFiltrados = useMemo(() => {
+    return documentos.filter((doc) => {
+      const termo = buscaDocumentos.toLowerCase().trim();
+      const matchBusca =
+        !termo ||
+        doc.titulo.toLowerCase().includes(termo) ||
+        (doc.tipo && doc.tipo.toLowerCase().includes(termo)) ||
+        (doc.titular && doc.titular.toLowerCase().includes(termo)) ||
+        (doc.descricao && doc.descricao.toLowerCase().includes(termo)) ||
+        doc.apelidos?.some((ap) => ap.toLowerCase().includes(termo));
+
+      let matchTitular = true;
+      if (filtroTitularDoc === 'empresa') {
+        matchTitular = isDocumentoEmpresa(doc);
+      } else if (filtroTitularDoc !== 'todos') {
+        const titAlvo = titulares.find((t) => t.id === filtroTitularDoc);
+        matchTitular = titAlvo ? docPertenceAoTitular(doc, titAlvo) : false;
+      }
+
+      const matchTipo =
+        filtroTipoDoc === 'todos' ||
+        (doc.tipo && doc.tipo.toLowerCase() === filtroTipoDoc.toLowerCase());
+
+      const sitValidade = obterSituacaoValidade(doc.dataValidade);
+      let matchValidade = true;
+      if (filtroValidadeDoc === 'validos') matchValidade = sitValidade === 'valido';
+      else if (filtroValidadeDoc === 'vencendo') matchValidade = sitValidade === 'vencendo';
+      else if (filtroValidadeDoc === 'vencidos') matchValidade = sitValidade === 'vencido';
+      else if (filtroValidadeDoc === 'sem_validade') matchValidade = sitValidade === 'sem_validade';
+
+      return matchBusca && matchTitular && matchTipo && matchValidade;
+    });
+  }, [documentos, buscaDocumentos, filtroTitularDoc, filtroTipoDoc, filtroValidadeDoc, titulares]);
+
+  const titularesFiltrados = useMemo(() => {
+    if (filtroTitularDoc === 'empresa') return [];
+    return titulares
+      .filter((tit) => {
+        if (filtroTitularDoc !== 'todos' && tit.id !== filtroTitularDoc) return false;
+        const termo = buscaDocumentos.toLowerCase().trim();
+        if (!termo) return true;
+        return tit.nome.toLowerCase().includes(termo) || documentosFiltrados.some((d) => docPertenceAoTitular(d, tit));
+      })
+      .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR', { sensitivity: 'base' }));
+  }, [titulares, filtroTitularDoc, buscaDocumentos, documentosFiltrados]);
+
+  const documentosEmpresaFiltrados = useMemo(() => {
+    if (filtroTitularDoc !== 'todos' && filtroTitularDoc !== 'empresa') return [];
+    return documentosFiltrados.filter((d) => isDocumentoEmpresa(d));
+  }, [documentosFiltrados, filtroTitularDoc]);
+
+  // ==========================================
+  // RENDERIZADOR DO SELO DE VALIDADE
+  // ==========================================
+  const renderSeloValidade = (dataValidadeStr?: string | null) => {
+    if (!dataValidadeStr || !dataValidadeStr.trim()) {
+      return (
+        <span className="text-[10px] text-slate-500 font-medium px-2 py-0.5 rounded bg-[#18202b] border border-[#202937]">
+          Sem validade
+        </span>
+      );
+    }
+
+    const situacao = obterSituacaoValidade(dataValidadeStr);
+
+    if (situacao === 'vencido') {
       return (
         <span
-          className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-rose-500/20 text-rose-300 border border-rose-500/40 flex items-center gap-1 shadow-sm"
-          title={`Vencido em ${dataValidadeStr} (${diasPos} dias atrás) • Origem: ${origemValidade || 'extraído automaticamente'}`}
+          className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-rose-500/15 text-rose-300 border border-rose-500/30 flex items-center gap-1"
+          title={`Vencido em ${dataValidadeStr}`}
         >
           <AlertTriangle className="w-3 h-3 text-rose-400" />
-          <span>VENCIDO: {dataValidadeStr}</span>
+          <span>Vencido ({dataValidadeStr})</span>
         </span>
       );
     }
 
-    if (diasRestantes === 0) {
+    if (situacao === 'vencendo') {
       return (
         <span
-          className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-rose-500 text-white flex items-center gap-1 shadow-sm"
-          title={`Vence hoje (${dataValidadeStr}) • Origem: ${origemValidade || 'extraído automaticamente'}`}
-        >
-          <AlertTriangle className="w-3 h-3 text-white" />
-          <span>VENCE HOJE!</span>
-        </span>
-      );
-    }
-
-    if (diasRestantes <= 60) {
-      return (
-        <span
-          className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1 shadow-sm"
-          title={`Vence em ${diasRestantes} dias (${dataValidadeStr}) • Origem: ${origemValidade || 'extraído automaticamente'}`}
+          className="px-2 py-0.5 rounded text-[10px] font-semibold tracking-wider uppercase bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1"
+          title={`Vence em breve (${dataValidadeStr})`}
         >
           <Clock className="w-3 h-3 text-amber-400" />
-          <span>VENCE EM {diasRestantes}D ({dataValidadeStr})</span>
+          <span>Vence em breve ({dataValidadeStr})</span>
         </span>
       );
     }
 
     return (
       <span
-        className="px-2 py-0.5 rounded text-[10px] font-semibold tracking-wider bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 flex items-center gap-1 shadow-sm"
-        title={`Válido até ${dataValidadeStr} (${diasRestantes} dias restantes) • Origem: ${origemValidade || 'extraído automaticamente'}`}
+        className="px-2 py-0.5 rounded text-[10px] font-medium tracking-wide bg-emerald-500/10 text-emerald-300 border border-emerald-500/25 flex items-center gap-1"
+        title={`Válido até ${dataValidadeStr}`}
       >
         <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-        <span>VÁLIDO ATÉ {dataValidadeStr}</span>
+        <span>Válido até {dataValidadeStr}</span>
       </span>
     );
   };
 
-  // Renderizador reutilizável de cards de documento
-  const renderCardDocumento = (doc: DocumentoRegistro) => {
+  // ==========================================
+  // RENDERIZADOR DE ITEM COMPACTO DO COFRE
+  // ==========================================
+  const renderItemDocumentoCompacto = (doc: DocumentoRegistro) => {
     const isPdf = doc.arquivo.toLowerCase().endsWith('.pdf');
     const isImg = /\.(png|jpe?g|webp)$/i.test(doc.arquivo);
+    const dataFormatada = formatarDataBrasilia(doc.dataCadastro);
 
     return (
       <div
         key={doc.id}
-        className="p-4 bg-wa-panel border border-wa-border rounded-xl flex flex-col justify-between gap-3 hover:border-wa-border/80 transition-all shadow-sm"
+        className="group p-3 bg-[#121820] hover:bg-[#161e29] border border-[#202937] hover:border-[#2d3a4f] rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all"
       >
-        <div className="space-y-2.5">
-          {/* Cabeçalho do Card com Título e Badges */}
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex items-start gap-2.5 min-w-0">
-              {isPdf ? (
-                <div className="p-2 rounded-lg bg-wa-bg border border-wa-border flex-shrink-0 mt-0.5">
-                  <FileText className="w-5 h-5 text-rose-400" />
-                </div>
-              ) : isImg ? (
-                <div className="w-10 h-10 rounded-lg bg-wa-bg border border-wa-border flex-shrink-0 mt-0.5 overflow-hidden flex items-center justify-center relative shadow-sm">
-                  <img
-                    src={`/arquivos/${encodeURIComponent(doc.arquivo)}`}
-                    alt={doc.titulo}
-                    className="w-full h-full object-cover rounded-lg"
-                    onError={(e) => {
-                      (e.currentTarget as HTMLElement).style.display = 'none';
-                    }}
-                  />
-                  <ImageIcon className="w-5 h-5 text-sky-400 pointer-events-none" style={{ position: 'absolute', zIndex: 0 }} />
-                </div>
-              ) : (
-                <div className="p-2 rounded-lg bg-wa-bg border border-wa-border flex-shrink-0 mt-0.5">
-                  <FileText className="w-5 h-5 text-amber-400" />
-                </div>
-              )}
-              <div className="min-w-0">
-                <h3 className="font-semibold text-sm text-wa-textPrimary truncate" title={doc.titulo}>
-                  {doc.titulo}
-                </h3>
-                <p className="text-[11px] text-wa-textMuted truncate">
-                  {doc.arquivo}
-                  {doc.dataCadastro ? ` • ${doc.dataCadastro}` : ''}
-                </p>
+        <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
+          <div className="flex-shrink-0">
+            {isPdf ? (
+              <div className="w-9 h-9 rounded-lg bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 shadow-sm">
+                <FileText className="w-4 h-4" />
               </div>
-            </div>
-
-            {/* Badges Visuais: Status de Indexação e Visibilidade */}
-            <div className="flex items-center gap-1.5 flex-shrink-0">
-              {doc.statusIndexacao === 'erro' && (
-                <span
-                  className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm flex items-center gap-1"
-                  title={doc.erroIndexacao || 'Falha na indexação deste documento.'}
-                >
-                  <AlertCircle className="w-3 h-3 text-rose-400" />
-                  <span>NÃO INDEXADO</span>
-                </span>
-              )}
-              {doc.statusIndexacao === 'pendente' && (
-                <span
-                  className="px-2 py-0.5 rounded text-[10px] font-medium tracking-wider bg-sky-500/20 text-sky-300 border border-sky-500/40 shadow-sm flex items-center gap-1"
-                  title="Indexando no banco de busca inteligente..."
-                >
-                  <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
-                  <span>INDEXANDO...</span>
-                </span>
-              )}
-              <span
-                className={`px-2.5 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase flex-shrink-0 ${
-                  doc.visibilidade === 'diretoria'
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm shadow-amber-950/20'
-                    : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm shadow-emerald-950/20'
-                }`}
-              >
-                {doc.visibilidade === 'diretoria' ? 'DIRETORIA' : 'GERAL'}
-              </span>
-            </div>
-          </div>
-
-          {/* Alerta explicativo se a indexação falhar */}
-          {doc.statusIndexacao === 'erro' && (
-            <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/25 text-[11px] text-rose-300 flex items-start gap-1.5 shadow-sm">
-              <AlertCircle className="w-3.5 h-3.5 text-rose-400 flex-shrink-0 mt-0.5" />
-              <div className="min-w-0">
-                <span className="font-semibold text-rose-200">Falha na indexação: </span>
-                <span className="leading-tight break-words">{doc.erroIndexacao || 'Não foi possível extrair o conteúdo deste documento.'}</span>
+            ) : isImg ? (
+              <div className="w-9 h-9 rounded-lg bg-sky-500/10 border border-sky-500/20 overflow-hidden flex items-center justify-center text-sky-400 relative shadow-sm">
+                <img
+                  src={`/arquivos/${encodeURIComponent(doc.arquivo)}`}
+                  alt={doc.titulo}
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLElement).style.display = 'none';
+                  }}
+                />
+                <ImageIcon className="w-4 h-4 pointer-events-none absolute" />
               </div>
-            </div>
-          )}
-
-          {/* Metadados adicionais: Tipo, Titular e Selo de Validade */}
-          <div className="flex flex-wrap items-center gap-2 text-[11px] text-wa-textSecondary">
-            {doc.tipo && (
-              <span className="px-2 py-0.5 bg-wa-bg rounded border border-wa-border text-[10px] font-medium text-wa-textPrimary">
-                {doc.tipo}
-              </span>
-            )}
-            {doc.titular && (
-              <span className="flex items-center gap-1 text-[11px] text-wa-textMuted">
-                <Building2 className="w-3 h-3 text-wa-green" />
-                <span>{doc.titular}</span>
-              </span>
-            )}
-            {renderSeloValidade(doc.dataValidade, doc.origemValidade)}
-            {doc.silenciarAlertas && (
-              <span
-                className="px-2 py-0.5 rounded text-[10px] font-medium bg-wa-bg text-wa-textMuted border border-wa-border flex items-center gap-1 shadow-sm"
-                title="Alertas de vencimento desativados para este documento"
-              >
-                <BellOff className="w-3 h-3 text-amber-400" />
-                <span>Alertas silenciados</span>
-              </span>
+            ) : (
+              <div className="w-9 h-9 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shadow-sm">
+                <FileText className="w-4 h-4" />
+              </div>
             )}
           </div>
 
-          {/* Descrição */}
-          {doc.descricao && (
-            <p className="text-xs text-wa-textSecondary line-clamp-2 leading-relaxed">
-              {doc.descricao}
-            </p>
-          )}
-
-          {/* Badges de Apelidos */}
-          {doc.apelidos && doc.apelidos.length > 0 && (
-            <div className="flex flex-wrap gap-1 pt-1">
-              {doc.apelidos.map((ap, i) => (
-                <span
-                  key={i}
-                  className="text-[9px] px-1.5 py-0.2 rounded bg-wa-bg text-wa-textMuted border border-wa-border"
-                >
-                  #{ap}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h4 className="text-xs sm:text-sm font-semibold text-slate-100 truncate max-w-sm sm:max-w-md">
+                {doc.titulo}
+              </h4>
+              {doc.tipo && (
+                <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-[#18202b] text-slate-300 border border-[#202937]">
+                  {doc.tipo}
                 </span>
-              ))}
+              )}
             </div>
-          )}
+
+            <div className="flex items-center gap-2.5 mt-1 text-[11px] text-slate-400 flex-wrap">
+              <span className="truncate max-w-[200px]" title={doc.arquivo}>
+                {doc.arquivo}
+              </span>
+              <span>•</span>
+              <span>Enviado em {dataFormatada}</span>
+              {doc.silenciarAlertas && (
+                <span className="flex items-center gap-1 text-[10px] text-slate-400">
+                  <BellOff className="w-3 h-3 text-amber-400" />
+                  <span>Silenciado</span>
+                </span>
+              )}
+            </div>
+          </div>
         </div>
 
-        {/* Botões de Ação no Rodapé do Card */}
-        <div className="flex items-center justify-end gap-2 pt-3 border-t border-wa-border/50 text-xs">
-          {/* Botão Visualizar */}
-          <a
-            href={`/arquivos/${encodeURIComponent((doc.arquivo || '').trim())}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="px-2.5 py-1.5 rounded-lg bg-wa-bg hover:bg-wa-panelHover text-wa-textSecondary hover:text-wa-textPrimary border border-wa-border transition-colors flex items-center gap-1.5"
-            title="Visualizar documento em nova aba"
-          >
-            <ExternalLink className="w-3.5 h-3.5 text-wa-greenLight" />
-            <span>Visualizar</span>
-          </a>
+        <div className="flex items-center justify-between sm:justify-end gap-2.5 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-[#202937]/50">
+          {/* Selos de Status de Indexação (Processando, Indexado, Erro) */}
+          {doc.statusIndexacao === 'processando' && (
+            <span
+              className="px-2 py-0.5 rounded text-[10px] font-semibold tracking-wider uppercase bg-sky-500/15 text-sky-300 border border-sky-500/30 flex items-center gap-1.5 animate-pulse"
+              title="A IA está analisando metadados e indexando o documento em segundo plano."
+            >
+              <Loader2 className="w-3 h-3 text-sky-400 animate-spin" />
+              <span>Processando</span>
+            </span>
+          )}
 
-          {/* Botão Editar Metadados */}
-          <button
-            onClick={() => abrirEdicaoDoc(doc)}
-            className="px-2.5 py-1.5 rounded-lg bg-wa-bg hover:bg-wa-panelHover text-wa-textSecondary hover:text-wa-textPrimary border border-wa-border transition-colors flex items-center gap-1.5 cursor-pointer"
-            title="Editar metadados, visibilidade e apelidos"
-          >
-            <Edit3 className="w-3.5 h-3.5 text-wa-greenLight" />
-            <span>Editar</span>
-          </button>
+          {doc.statusIndexacao === 'indexado' && (
+            <span
+              className="px-2 py-0.5 rounded text-[10px] font-medium tracking-wide bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 flex items-center gap-1"
+              title="Documento totalmente indexado e pronto para consultas da VEGA."
+            >
+              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+              <span>Indexado</span>
+            </span>
+          )}
 
-          {/* Botão Excluir */}
-          <button
-            onClick={() => handleExcluirDoc(doc.id, doc.titulo)}
-            className="px-2.5 py-1.5 rounded-lg bg-wa-bg hover:bg-rose-500/20 text-wa-textSecondary hover:text-rose-400 border border-wa-border hover:border-rose-500/40 transition-colors flex items-center gap-1.5 cursor-pointer"
-            title="Excluir documento e arquivo físico do cofre"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>Excluir</span>
-          </button>
+          {doc.statusIndexacao === 'erro' && (
+            <span
+              className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-rose-500/20 text-rose-300 border border-rose-500/40 flex items-center gap-1 cursor-help"
+              title={doc.erroIndexacao || 'Falha no processamento deste documento.'}
+            >
+              <AlertCircle className="w-3 h-3 text-rose-400" />
+              <span>Erro</span>
+            </span>
+          )}
+
+          {renderSeloValidade(doc.dataValidade)}
+
+          <div className="flex items-center gap-1">
+            <a
+              href={`/arquivos/${encodeURIComponent((doc.arquivo || '').trim())}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-1.5 rounded-lg bg-[#18202b] hover:bg-[#202937] text-slate-300 hover:text-emerald-400 border border-[#202937] transition-colors"
+              title="Visualizar documento em nova aba"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+
+            <button
+              onClick={() => handleExcluirDoc(doc.id, doc.titulo)}
+              className="p-1.5 rounded-lg bg-[#18202b] hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 border border-[#202937] hover:border-rose-500/30 transition-colors cursor-pointer"
+              title="Excluir documento do cofre"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       </div>
     );
   };
 
   return (
-    <div className="flex-1 h-full bg-wa-bg overflow-y-auto p-6 text-wa-textPrimary">
-      <div className="max-w-5xl mx-auto space-y-6 pb-16">
-        {/* Header Principal */}
-        <div className="border-b border-wa-border pb-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2.5 mb-1">
-              <div className="w-9 h-9 rounded-xl bg-wa-green/20 text-wa-greenLight flex items-center justify-center shadow">
-                <Brain className="w-5 h-5 text-wa-green" />
-              </div>
-              <h1 className="text-xl font-bold text-wa-textPrimary">
-                Base da {ASSISTENTE.nome}
-              </h1>
+    <div className="flex-1 h-full bg-[#0b0f14] overflow-y-auto p-6 text-slate-100">
+      <div className="max-w-7xl mx-auto space-y-6 pb-16 w-full">
+        {/* CABEÇALHO */}
+        <div className="border-b border-[#1e2633] pb-5">
+          <div className="flex items-center gap-2.5 mb-1.5">
+            <div className="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center font-bold">
+              <Brain className="w-5 h-5" />
             </div>
-            <p className="text-xs text-wa-textSecondary">
-              Central de inteligência corporativa: configure o conhecimento analítico e os documentos oficiais do cofre.
-            </p>
+            <h1 className="text-base font-semibold text-slate-100">
+              Base da {ASSISTENTE.nome}
+            </h1>
           </div>
-
-          {/* Sub-abas no Topo */}
-          <div className="flex items-center gap-1.5 p-1 bg-wa-panel border border-wa-border rounded-xl shadow-inner self-start md:self-auto">
-            <button
-              onClick={() => setSubAba('conhecimento')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                subAba === 'conhecimento'
-                  ? 'bg-wa-green text-slate-950 shadow'
-                  : 'text-wa-textSecondary hover:text-wa-textPrimary hover:bg-wa-bg/60'
-              }`}
-            >
-              <span>📘</span>
-              <span>Conhecimento</span>
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                subAba === 'conhecimento' ? 'bg-slate-950/20 text-slate-950' : 'bg-wa-bg text-wa-textMuted'
-              }`}>
-                {itensConhecimento.length}
-              </span>
-            </button>
-            <button
-              onClick={() => setSubAba('documentos')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                subAba === 'documentos'
-                  ? 'bg-wa-green text-slate-950 shadow'
-                  : 'text-wa-textSecondary hover:text-wa-textPrimary hover:bg-wa-bg/60'
-              }`}
-            >
-              <span>📁</span>
-              <span>Cofre de Documentos</span>
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                subAba === 'documentos' ? 'bg-slate-950/20 text-slate-950' : 'bg-wa-bg text-wa-textMuted'
-              }`}>
-                {documentos.length}
-              </span>
-            </button>
-          </div>
-        </div>
-
-        {/* Linha Explicativa da Sub-aba Ativa */}
-        <div className="p-3 bg-wa-panel/70 border border-wa-border rounded-xl flex items-center gap-2.5 text-xs text-wa-textSecondary">
-          <Info className="w-4 h-4 text-wa-green flex-shrink-0" />
-          <p>
-            {subAba === 'conhecimento'
-              ? 'Regras, diretrizes e orientações analíticas que a VEGA lê para responder às dúvidas da equipe.'
-              : 'Documentos oficiais, fichas cadastrais agrupadas por titular e arquivos do cofre corporativo.'}
+          <p className="text-xs text-slate-400">
+            Documentos e regras que a VEGA usa para responder
           </p>
         </div>
 
-        {/* ========================================================================= */}
-        {/* SUB-ABA 1: CONHECIMENTO                                                   */}
-        {/* ========================================================================= */}
-        {subAba === 'conhecimento' && (
-          <div className="space-y-6 animate-fadeIn">
-            {mensagemSucessoConhecimento && (
-              <div className="p-3 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded-lg text-xs flex items-center gap-2 animate-fadeIn">
-                <CheckCircle className="w-4 h-4" />
-                <span>{mensagemSucessoConhecimento}</span>
-              </div>
+        {/* ABAS SUBLINHADAS ALINHADAS À ESQUERDA */}
+        <div className="flex items-center gap-6 border-b border-[#202937] pt-1">
+          <button
+            onClick={() => setSubAba('documentos')}
+            className={`flex items-center gap-2 pb-3 text-xs sm:text-sm font-medium transition-all relative cursor-pointer ${
+              subAba === 'documentos'
+                ? 'text-emerald-400 font-semibold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <FolderLock className="w-4 h-4" />
+            <span>Cofre de Documentos</span>
+            <span
+              className={`text-[11px] px-2 py-0.5 rounded-full font-bold ml-1 ${
+                subAba === 'documentos'
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                  : 'bg-[#18202b] text-slate-400 border border-[#202937]'
+              }`}
+            >
+              {carregandoDocs ? <Loader2 className="w-2.5 h-2.5 animate-spin inline" /> : documentos.length}
+            </span>
+            {subAba === 'documentos' && (
+              <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500 rounded-full" />
             )}
+          </button>
 
-            {erroConhecimento && (
-              <div className="p-3 bg-rose-500/20 border border-rose-500/40 text-rose-300 rounded-lg text-xs flex items-center gap-2 animate-fadeIn">
-                <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                <span>{erroConhecimento}</span>
-              </div>
+          <button
+            onClick={() => setSubAba('conhecimento')}
+            className={`flex items-center gap-2 pb-3 text-xs sm:text-sm font-medium transition-all relative cursor-pointer ${
+              subAba === 'conhecimento'
+                ? 'text-emerald-400 font-semibold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <BookOpen className="w-4 h-4" />
+            <span>Conhecimento & Regras</span>
+            <span
+              className={`text-[11px] px-2 py-0.5 rounded-full font-bold ml-1 ${
+                subAba === 'conhecimento'
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                  : 'bg-[#18202b] text-slate-400 border border-[#202937]'
+              }`}
+            >
+              {carregandoConhecimento ? <Loader2 className="w-2.5 h-2.5 animate-spin inline" /> : itensConhecimento.length}
+            </span>
+            {subAba === 'conhecimento' && (
+              <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500 rounded-full" />
             )}
-
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="relative flex-1 max-w-md">
-                <Search className="w-4 h-4 text-wa-textSecondary absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  placeholder="Buscar no conhecimento cadastrado..."
-                  value={buscaConhecimento}
-                  onChange={(e) => setBuscaConhecimento(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-wa-panel border border-wa-border rounded-lg text-xs text-wa-textPrimary placeholder:text-wa-textMuted focus:border-wa-green focus:outline-none"
-                />
-              </div>
-
-              <button
-                onClick={() => {
-                  setErroConhecimento('');
-                  setExibirFormConhecimento(!exibirFormConhecimento);
-                }}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-wa-green hover:bg-wa-greenHover text-slate-950 text-xs font-semibold rounded-lg shadow transition-all active:scale-95 self-start sm:self-auto cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>{exibirFormConhecimento ? 'Cancelar' : 'Ensinar nova instrução'}</span>
-              </button>
-            </div>
-
-            {/* Formulário de Adicionar Conhecimento */}
-            {exibirFormConhecimento && (
-              <form
-                onSubmit={handleSalvarNovoConhecimento}
-                className="p-5 bg-wa-panel border border-wa-border rounded-xl space-y-4 animate-fadeIn"
-              >
-                <div className="flex items-center gap-2 text-sm font-semibold text-wa-textPrimary border-b border-wa-border pb-3">
-                  <Sparkles className="w-4 h-4 text-wa-green" />
-                  <span>Cadastrar Nova Regra ou Informação</span>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-                  <div className="md:col-span-2">
-                    <label className="block text-wa-textSecondary mb-1 font-medium">
-                      Título ou Tópico *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="Ex: Política de Reajuste de Contratos"
-                      value={novoTitulo}
-                      onChange={(e) => {
-                        setNovoTitulo(e.target.value);
-                        setErroConhecimento('');
-                      }}
-                      className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-wa-textSecondary mb-1 font-medium">
-                      Categoria
-                    </label>
-                    <select
-                      value={novaCategoria}
-                      onChange={(e) => setNovaCategoria(e.target.value)}
-                      className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none"
-                    >
-                      <option value="Geral">Geral</option>
-                      <option value="Comercial">Comercial</option>
-                      <option value="Atendimento">Atendimento</option>
-                      <option value="Segurança">Segurança</option>
-                      <option value="Operações">Operações</option>
-                    </select>
-                  </div>
-
-                  <div className="md:col-span-3">
-                    <label className="block text-wa-textSecondary mb-1 font-medium">
-                      Conteúdo ou Instrução detalhada *
-                    </label>
-                    <textarea
-                      required
-                      rows={4}
-                      placeholder="Descreva exatamente o que a VEGA deve saber sobre este assunto..."
-                      value={novoConteudo}
-                      onChange={(e) => setNovoConteudo(e.target.value)}
-                      className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none resize-none leading-relaxed"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex justify-end gap-2 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setExibirFormConhecimento(false);
-                      setErroConhecimento('');
-                    }}
-                    className="px-4 py-2 bg-wa-bg hover:bg-wa-panelHover text-wa-textSecondary hover:text-wa-textPrimary rounded-lg text-xs font-medium cursor-pointer"
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-4 py-2 bg-wa-green hover:bg-wa-greenHover text-slate-950 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow cursor-pointer"
-                  >
-                    <Save className="w-3.5 h-3.5" />
-                    <span>Salvar Conhecimento</span>
-                  </button>
-                </div>
-              </form>
-            )}
-
-            {/* Lista de Conhecimentos */}
-            <div className="space-y-3">
-              <h2 className="text-xs font-semibold text-wa-textSecondary uppercase tracking-wider">
-                Instruções Registradas ({itensFiltradosConhecimento.length})
-              </h2>
-
-              {itensFiltradosConhecimento.length === 0 ? (
-                <div className="p-8 text-center text-wa-textSecondary text-xs bg-wa-panel border border-dashed border-wa-border rounded-xl">
-                  Nenhuma instrução encontrada.
-                </div>
-              ) : (
-                itensFiltradosConhecimento.map((item) => (
-                  <div
-                    key={item.id}
-                    className="p-4 bg-wa-panel border border-wa-border rounded-xl space-y-2 hover:border-wa-border/80 transition-all"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-center gap-2">
-                        <FileText className="w-4 h-4 text-wa-green flex-shrink-0" />
-                        <h3 className="font-semibold text-sm text-wa-textPrimary">
-                          {item.titulo}
-                        </h3>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-wa-bg text-wa-textSecondary border border-wa-border">
-                          {item.categoria}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        <button
-                          onClick={() => handleAbrirEdicaoConhecimento(item)}
-                          className="p-1.5 text-wa-textMuted hover:text-wa-green hover:bg-wa-green/10 rounded transition-colors cursor-pointer"
-                          title="Editar instrução (título, categoria e conteúdo)"
-                        >
-                          <Edit className="w-4 h-4" />
-                        </button>
-
-                        <button
-                          onClick={() => handleExcluirConhecimento(item.id)}
-                          className="p-1.5 text-wa-textMuted hover:text-rose-400 hover:bg-rose-500/10 rounded transition-colors cursor-pointer"
-                          title="Excluir regra de conhecimento"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <p className="text-xs text-wa-textSecondary leading-relaxed whitespace-pre-wrap">
-                      {item.conteudo}
-                    </p>
-
-                    <div className="text-[10px] text-wa-textMuted pt-1 flex items-center justify-between border-t border-wa-border/40">
-                      <span>Última atualização: {item.dataAtualizacao}</span>
-                      <span className="text-wa-greenLight flex items-center gap-1">
-                        <CheckCircle className="w-3 h-3" />
-                        Ativo para a VEGA
-                      </span>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
+          </button>
+        </div>
 
         {/* ========================================================================= */}
-        {/* SUB-ABA 2: DOCUMENTOS DO COFRE                                            */}
+        {/* ABA 1: COFRE DE DOCUMENTOS (UPLOAD SEM FRICÇÃO)                           */}
         {/* ========================================================================= */}
         {subAba === 'documentos' && (
-          <div className="space-y-6 animate-fadeIn">
-            {/* Mensagens de Feedback */}
-            {(mensagemSucessoDoc || mensagemSucessoTitular) && (
-              <div className="p-3 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded-lg text-xs flex items-center gap-2 animate-fadeIn">
-                <CheckCircle className="w-4 h-4" />
-                <span>{mensagemSucessoDoc || mensagemSucessoTitular}</span>
-              </div>
-            )}
+          <div className="space-y-5 animate-fadeIn">
             {erroUpload && (
-              <div className="p-3 bg-rose-500/20 border border-rose-500/40 text-rose-300 rounded-lg text-xs flex items-center gap-2 animate-fadeIn">
-                <AlertCircle className="w-4 h-4" />
+              <div className="p-3 bg-rose-500/15 border border-rose-500/30 text-rose-300 rounded-xl text-xs flex items-center gap-2 animate-fadeIn">
+                <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
                 <span>{erroUpload}</span>
               </div>
             )}
 
-            {/* Input oculto para clique */}
             <input
               type="file"
               ref={fileInputRef}
-              onChange={handleFileChange}
+              onChange={(e) => {
+                if (e.target.files && e.target.files[0]) {
+                  processarArquivoSemFriccao(e.target.files[0]);
+                  e.target.value = '';
+                }
+              }}
               accept=".pdf,.png,.jpg,.jpeg,.webp,image/*,application/pdf"
               className="hidden"
             />
 
-            {/* ÁREA DE UPLOAD DRAG & DROP */}
+            {/* ÁREA DE UPLOAD COM ARRASTAR E SOLTAR */}
             <div
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setArrastandoArquivo(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                setArrastandoArquivo(false);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setArrastandoArquivo(false);
+                if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                  processarArquivoSemFriccao(e.dataTransfer.files[0]);
+                }
+              }}
               onClick={() => fileInputRef.current?.click()}
-              className={`p-6 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center text-center cursor-pointer transition-all ${
+              className={`p-6 rounded-xl border border-dashed transition-all text-center cursor-pointer flex flex-col items-center justify-center gap-2 ${
                 arrastandoArquivo
-                  ? 'border-wa-green bg-wa-green/10 scale-[1.01]'
-                  : 'border-wa-border hover:border-wa-green/60 bg-wa-panel/40 hover:bg-wa-panel/80'
+                  ? 'bg-emerald-500/10 border-emerald-500/60 scale-[1.005]'
+                  : 'bg-[#121820]/70 hover:bg-[#121820] border-[#202937] hover:border-[#2d3a4f]'
               }`}
             >
-              {analisandoArquivo ? (
-                <div className="flex flex-col items-center gap-3 py-4 text-wa-green">
-                  <Loader2 className="w-8 h-8 animate-spin" />
-                  <div className="text-xs font-medium">
-                    <p className="font-semibold text-wa-textPrimary">Analisando documento...</p>
-                    <p className="text-wa-textSecondary text-[11px] mt-0.5">
-                      Identificando título, tipo, titular, visibilidade e apelidos sugeridos
-                    </p>
-                  </div>
+              {uploadandoDireto ? (
+                <div className="flex flex-col items-center gap-2 py-2 text-emerald-400">
+                  <Loader2 className="w-7 h-7 animate-spin" />
+                  <p className="text-xs font-semibold text-slate-100">
+                    A IA está analisando e salvando seu documento...
+                  </p>
+                  <p className="text-[11px] text-slate-400">
+                    Extraindo tipo, titular e salvando direto no cofre
+                  </p>
                 </div>
               ) : (
-                <div className="flex flex-col items-center gap-3 py-2">
-                  <div className="w-12 h-12 rounded-2xl bg-wa-green/20 text-wa-greenLight flex items-center justify-center shadow-inner">
-                    <UploadCloud className="w-6 h-6 text-wa-green" />
+                <div className="flex flex-col items-center gap-2 py-1">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shadow-sm">
+                    <UploadCloud className="w-5 h-5" />
                   </div>
                   <div>
-                    <p className="text-sm font-semibold text-wa-textPrimary">
-                      Arraste e solte o arquivo aqui ou <span className="text-wa-greenLight underline">clique para selecionar</span>
+                    <p className="text-xs font-medium text-slate-200">
+                      Arraste e solte o arquivo aqui ou{' '}
+                      <span className="text-emerald-400 font-semibold underline underline-offset-2">
+                        clique para selecionar
+                      </span>
                     </p>
-                    <p className="text-xs text-wa-textSecondary mt-1">
-                      Aceita documentos PDF e imagens (.png, .jpg, .jpeg, .webp) até <strong>50MB</strong>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      PDF, PNG, JPG, JPEG ou WEBP (salvamento automático com IA)
                     </p>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* CARD DE CONFIRMAÇÃO DE CADASTRO PÓS-ANÁLISE */}
-            {cardConfirmacao && (
-              <form
-                onSubmit={handleConfirmarCadastroDoc}
-                className="p-5 bg-wa-panel border border-wa-green/50 rounded-xl space-y-4 shadow-xl animate-fadeIn"
+            {/* NOTIFICAÇÃO DISCRETA PÓS-UPLOAD OU PERGUNTA DA IA */}
+            {uploadRecente && (
+              <div
+                className={`p-3.5 bg-[#121820] border rounded-xl space-y-3 animate-fadeIn shadow-sm ${
+                  uploadRecente.precisaPerguntar
+                    ? 'border-amber-500/50 bg-[#141a23]'
+                    : 'border-emerald-500/40'
+                }`}
               >
-                <div className="flex items-center justify-between border-b border-wa-border pb-3">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-wa-textPrimary">
-                    <Sparkles className="w-4 h-4 text-wa-green" />
-                    <span>Confirmar Cadastro no Cofre da VEGA</span>
+                <div className="flex items-start sm:items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2">
+                    {uploadRecente.precisaPerguntar ? (
+                      <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                    ) : (
+                      <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                    )}
+                    <div className="text-slate-200">
+                      {uploadRecente.precisaPerguntar ? (
+                        <span>
+                          {uploadRecente.novoTitularSugerido && uploadRecente.nomeNoDocumento ? (
+                            <>
+                              Identifiquei o nome{' '}
+                              <strong className="text-amber-300">
+                                "{uploadRecente.nomeNoDocumento}"
+                              </strong>{' '}
+                              no documento. Deseja cadastrar como um novo titular ou vincular a um
+                              existente?
+                            </>
+                          ) : (
+                            <>
+                              Documento salvo no cofre. A IA precisa que você confirme:{' '}
+                              <strong className="text-amber-300">
+                                {uploadRecente.camposFaltantes.join(', ')}
+                              </strong>
+                              .
+                            </>
+                          )}
+                        </span>
+                      ) : (
+                        <span>
+                          Salvo como <strong className="text-emerald-400">{uploadRecente.tipo}</strong>{' '}
+                          de <strong className="text-slate-100">{uploadRecente.titular}</strong>
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setCardConfirmacao(null)}
-                    className="p-1 text-wa-textSecondary hover:text-wa-textPrimary"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+
+                  <div className="flex items-center gap-3 flex-shrink-0">
+                    {!uploadRecente.precisaPerguntar && (
+                      <button
+                        onClick={() => setExibirCorrecaoRapida(!exibirCorrecaoRapida)}
+                        className="text-xs text-emerald-400 hover:text-emerald-300 font-medium underline underline-offset-2 cursor-pointer"
+                      >
+                        {exibirCorrecaoRapida ? 'fechar' : 'corrigir'}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setUploadRecente(null)}
+                      className="text-slate-400 hover:text-slate-200 p-0.5 cursor-pointer"
+                      title="Dispensar aviso"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
 
-                <div className="p-3 bg-wa-bg rounded-lg border border-wa-border flex items-center gap-3">
-                  <FileUp className="w-6 h-6 text-wa-green flex-shrink-0" />
-                  <div className="min-w-0">
-                    <p className="font-semibold text-xs text-wa-textPrimary truncate">
-                      {cardConfirmacao.nomeArquivo}
-                    </p>
-                    <p className="text-[11px] text-wa-textSecondary">
-                      Tamanho: {cardConfirmacao.tamanhoFormatado} • Análise concluída
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 text-xs">
-                  {/* Título */}
-                  <div className="md:col-span-2">
-                    <label className="block text-wa-textSecondary mb-1 font-medium">
-                      Título do Documento *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={cardConfirmacao.titulo}
-                      onChange={(e) =>
-                        setCardConfirmacao({ ...cardConfirmacao, titulo: e.target.value })
-                      }
-                      className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none font-medium"
-                    />
-                  </div>
-
-                  {/* Tipo */}
-                  <div>
-                    <label className="block text-wa-textSecondary mb-1 font-medium">
-                      Tipo de Documento
-                    </label>
-                    <select
-                      value={cardConfirmacao.tipo}
-                      onChange={(e) =>
-                        setCardConfirmacao({ ...cardConfirmacao, tipo: e.target.value })
-                      }
-                      className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none"
-                    >
-                      <option value="Contrato">Contrato</option>
-                      <option value="Financeiro">Financeiro</option>
-                      <option value="Documento Pessoal">Documento Pessoal</option>
-                      <option value="Normativo">Normativo</option>
-                      <option value="Proposta">Proposta</option>
-                      <option value="Outros">Outros</option>
-                    </select>
-                  </div>
-
-                  {/* Titular */}
-                  <div>
-                    <label className="block text-wa-textSecondary mb-1 font-medium">
-                      Titular / Empresa
-                    </label>
-                    <input
-                      type="text"
-                      value={cardConfirmacao.titular}
-                      onChange={(e) =>
-                        setCardConfirmacao({ ...cardConfirmacao, titular: e.target.value })
-                      }
-                      placeholder="Ex: Delta Plan, Thomaz..."
-                      className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none"
-                    />
-                  </div>
-
-                  {/* Nível de Visibilidade */}
-                  <div>
-                    <label className="block text-wa-textSecondary mb-1 font-medium flex items-center gap-1">
-                      <Shield className="w-3.5 h-3.5 text-wa-green" />
-                      Visibilidade *
-                    </label>
-                    <select
-                      value={cardConfirmacao.visibilidade}
-                      onChange={(e) =>
-                        setCardConfirmacao({
-                          ...cardConfirmacao,
-                          visibilidade: e.target.value as VisibilidadeDoc,
-                        })
-                      }
-                      className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none font-semibold"
-                    >
-                      <option value="diretoria">DIRETORIA (Restrito à Diretoria)</option>
-                      <option value="geral">GERAL (Acesso de Todos)</option>
-                    </select>
-                  </div>
-
-                  {/* Apelidos / Palavras-chave */}
-                  <div className="md:col-span-1">
-                    <label className="block text-wa-textSecondary mb-1 font-medium flex items-center gap-1">
-                      <Tag className="w-3.5 h-3.5 text-wa-green" />
-                      Apelidos / Sinônimos
-                    </label>
-                    <input
-                      type="text"
-                      value={cardConfirmacao.apelidos}
-                      onChange={(e) =>
-                        setCardConfirmacao({ ...cardConfirmacao, apelidos: e.target.value })
-                      }
-                      placeholder="Separados por vírgula"
-                      className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none"
-                    />
-                  </div>
-
-                  {/* Descrição */}
-                  <div className="md:col-span-3">
-                    <label className="block text-wa-textSecondary mb-1 font-medium">
-                      Descrição ou Finalidade (Opcional)
-                    </label>
-                    <textarea
-                      rows={2}
-                      value={cardConfirmacao.descricao}
-                      onChange={(e) =>
-                        setCardConfirmacao({ ...cardConfirmacao, descricao: e.target.value })
-                      }
-                      className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none resize-none"
-                    />
-                  </div>
-
-                  {/* CONFERÊNCIA OBRIGATÓRIA DE DADOS DO TITULAR */}
-                  {cardConfirmacao.camposTitular &&
-                    Object.keys(cardConfirmacao.camposTitular).length > 0 && (
-                      <div className="md:col-span-3 p-4 bg-wa-bg rounded-xl border border-wa-green/30 space-y-3 mt-1">
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-wa-border pb-2">
-                          <div className="flex items-center gap-2">
-                            <UserCheck className="w-4 h-4 text-wa-green" />
-                            <span className="font-semibold text-xs text-wa-textPrimary">
-                              Conferência de Dados do Titular ({cardConfirmacao.titular || 'Titular'})
-                            </span>
-                          </div>
-                          <span className="text-[11px] text-wa-textSecondary">
-                            Marque <strong>"Confere"</strong> para validar cada dado extraído
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          {Object.entries(cardConfirmacao.camposTitular).map(([cKey, cItem]) => (
-                            <div
-                              key={cKey}
-                              className={`p-2.5 rounded-lg border transition-all flex items-center gap-3 ${
-                                cItem.conferido
-                                  ? 'bg-wa-green/10 border-wa-green/40'
-                                  : 'bg-wa-panel border-wa-border'
-                              }`}
-                            >
-                              <div className="flex-1 min-w-0">
-                                <label className="text-[10px] font-bold uppercase tracking-wider text-wa-textSecondary block mb-1">
-                                  {cKey}
-                                </label>
-                                <input
-                                  type="text"
-                                  value={cItem.valor}
-                                  onChange={(e) => {
-                                    const novoValor = e.target.value;
-                                    setCardConfirmacao({
-                                      ...cardConfirmacao,
-                                      camposTitular: {
-                                        ...cardConfirmacao.camposTitular,
-                                        [cKey]: { ...cItem, valor: novoValor },
-                                      },
-                                    });
-                                  }}
-                                  className="w-full px-2.5 py-1 bg-wa-bg border border-wa-border rounded text-xs text-wa-textPrimary font-medium focus:border-wa-green focus:outline-none"
-                                />
-                              </div>
-
-                              <label className="flex items-center gap-1.5 px-3 py-1.5 bg-wa-bg hover:bg-wa-panelHover rounded-lg border border-wa-border cursor-pointer select-none text-xs font-semibold text-wa-textPrimary">
-                                <input
-                                  type="checkbox"
-                                  checked={cItem.conferido}
-                                  onChange={(e) => {
-                                    setCardConfirmacao({
-                                      ...cardConfirmacao,
-                                      camposTitular: {
-                                        ...cardConfirmacao.camposTitular,
-                                        [cKey]: { ...cItem, conferido: e.target.checked },
-                                      },
-                                    });
-                                  }}
-                                  className="w-4 h-4 accent-wa-green rounded cursor-pointer"
-                                />
-                                <span className={cItem.conferido ? 'text-wa-green' : 'text-wa-textSecondary'}>
-                                  Confere
-                                </span>
-                              </label>
-                            </div>
-                          ))}
-                        </div>
+                {/* PAINEL DE PERGUNTA / CORREÇÃO RÁPIDA */}
+                {(exibirCorrecaoRapida || uploadRecente.precisaPerguntar) && (
+                  <div className="pt-3 border-t border-[#202937] space-y-3 text-xs animate-fadeIn">
+                    {uploadRecente.novoTitularSugerido && uploadRecente.nomeNoDocumento && (
+                      <div className="flex flex-wrap items-center gap-2 bg-[#18202b] p-2.5 rounded-lg border border-[#202937]">
+                        <span className="text-slate-300 text-[11px]">Sugestão rápida:</span>
+                        <button
+                          type="button"
+                          onClick={() => setCorrecaoTitular(uploadRecente.nomeNoDocumento || '')}
+                          className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded text-[11px] font-semibold transition-colors cursor-pointer"
+                        >
+                          + Cadastrar "{uploadRecente.nomeNoDocumento}"
+                        </button>
+                        {titulares.map((tit) => (
+                          <button
+                            key={tit.id}
+                            type="button"
+                            onClick={() => setCorrecaoTitular(tit.nome)}
+                            className="px-2 py-1 bg-[#121820] hover:bg-[#202937] text-slate-300 border border-[#202937] rounded text-[11px] transition-colors cursor-pointer"
+                          >
+                            Vincular a {tit.nome}
+                          </button>
+                        ))}
                       </div>
                     )}
-                </div>
 
-                <div className="flex justify-end gap-2 pt-2 border-t border-wa-border">
-                  <button
-                    type="button"
-                    onClick={() => setCardConfirmacao(null)}
-                    className="px-4 py-2 bg-wa-bg hover:bg-wa-panelHover text-wa-textSecondary hover:text-wa-textPrimary rounded-lg text-xs font-medium"
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={salvandoCadastro || !cardConfirmacao.titulo.trim()}
-                    className="px-4 py-2 bg-wa-green hover:bg-wa-greenHover text-slate-950 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow disabled:opacity-50"
-                  >
-                    <CheckCircle className="w-3.5 h-3.5" />
-                    <span>{salvandoCadastro ? 'Cadastrando...' : 'Confirmar Cadastro no Cofre'}</span>
-                  </button>
-                </div>
-              </form>
+                    <div className="flex flex-col sm:flex-row items-center gap-3">
+                      <div className="flex-1 w-full sm:w-auto">
+                        <label className="block text-[10px] text-slate-400 font-medium mb-1">
+                          Titular do Documento:
+                        </label>
+                        <input
+                          type="text"
+                          list="lista-titulares-sugestoes"
+                          value={correcaoTitular}
+                          onChange={(e) => setCorrecaoTitular(e.target.value)}
+                          placeholder="Digite o nome do titular ou escolha da lista"
+                          className="w-full px-2.5 py-1.5 bg-[#0b0f14] border border-[#202937] rounded-lg text-slate-100 focus:border-emerald-500 focus:outline-none"
+                        />
+                        <datalist id="lista-titulares-sugestoes">
+                          {titulares.map((tit) => (
+                            <option key={tit.id} value={tit.nome} />
+                          ))}
+                          <option value="Delta Plan" />
+                        </datalist>
+                      </div>
+
+                      <div className="flex-1 w-full sm:w-auto">
+                        <label className="block text-[10px] text-slate-400 font-medium mb-1">
+                          Tipo de Documento:
+                        </label>
+                        <input
+                          type="text"
+                          list="lista-tipos-sugestoes"
+                          value={correcaoTipo}
+                          onChange={(e) => setCorrecaoTipo(e.target.value)}
+                          placeholder="Ex: Passaporte, CNH, RG, Contrato Social..."
+                          className="w-full px-2.5 py-1.5 bg-[#0b0f14] border border-[#202937] rounded-lg text-slate-100 focus:border-emerald-500 focus:outline-none"
+                        />
+                        <datalist id="lista-tipos-sugestoes">
+                          <option value="Passaporte" />
+                          <option value="CNH" />
+                          <option value="RG" />
+                          <option value="Título de Eleitor" />
+                          <option value="Certidão de Nascimento" />
+                          <option value="Certidão de Casamento" />
+                          <option value="Contrato Social" />
+                          <option value="Alvará de Funcionamento" />
+                          <option value="Cartão CNPJ" />
+                          <option value="Nota Fiscal" />
+                          <option value="ART" />
+                          <option value="CRT" />
+                          <option value="Procuração" />
+                          <option value="Comprovante de Endereço" />
+                          <option value="Financeiro" />
+                          <option value="Normativo" />
+                        </datalist>
+                      </div>
+
+                      <div className="self-end sm:self-auto pt-2 sm:pt-4">
+                        <button
+                          onClick={handleSalvarCorrecaoRapida}
+                          disabled={salvandoCorrecao}
+                          className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold rounded-lg text-xs flex items-center gap-1 shadow cursor-pointer disabled:opacity-50"
+                        >
+                          {salvandoCorrecao ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Check className="w-3 h-3" />
+                          )}
+                          <span>Salvar confirmação</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
 
-            {/* BARRA DE BUSCA DE DOCUMENTOS */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+            {/* FILTROS E BUSCA DO COFRE */}
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pt-2">
               <div className="relative flex-1 max-w-md">
-                <Search className="w-4 h-4 text-wa-textSecondary absolute left-3 top-1/2 -translate-y-1/2" />
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
-                  placeholder="Buscar por documento, titular, apelido ou dado cadastral..."
+                  placeholder="Buscar por nome, titular, tipo ou palavra-chave..."
                   value={buscaDocumentos}
                   onChange={(e) => setBuscaDocumentos(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-wa-panel border border-wa-border rounded-lg text-xs text-wa-textPrimary placeholder:text-wa-textMuted focus:border-wa-green focus:outline-none"
+                  className="w-full pl-9 pr-4 py-2 bg-[#121820] border border-[#202937] rounded-lg text-xs text-slate-100 placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none"
                 />
               </div>
 
-              <div className="flex items-center gap-2 self-start sm:self-auto">
-                <span className="text-xs text-wa-textMuted">
-                  {documentosFiltrados.length} doc(s) • {titulares.length} titular(es)
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nome = window.prompt('Nome completo do novo titular:');
-                    if (nome && nome.trim()) {
-                      handleCriarNovoTitular(nome.trim());
-                    }
-                  }}
-                  className="px-2.5 py-1.5 bg-wa-bg hover:bg-wa-panelHover text-wa-textSecondary hover:text-wa-green rounded-lg text-xs font-medium border border-wa-border flex items-center gap-1 transition-colors cursor-pointer"
-                  title="Cadastrar novo titular manualmente"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Novo Titular</span>
-                </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 bg-[#121820] border border-[#202937] rounded-lg px-2.5 py-1.5 text-xs">
+                  <Filter className="w-3 h-3 text-slate-400" />
+                  <select
+                    value={filtroTitularDoc}
+                    onChange={(e) => setFiltroTitularDoc(e.target.value)}
+                    className="bg-transparent text-slate-200 text-xs focus:outline-none cursor-pointer"
+                  >
+                    <option value="todos" className="bg-[#121820] text-slate-200">
+                      Todos os Titulares
+                    </option>
+                    <option value="empresa" className="bg-[#121820] text-slate-200">
+                      Documentos da Empresa
+                    </option>
+                    {titulares.map((tit) => (
+                      <option key={tit.id} value={tit.id} className="bg-[#121820] text-slate-200">
+                        {tit.nome}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-1.5 bg-[#121820] border border-[#202937] rounded-lg px-2.5 py-1.5 text-xs">
+                  <select
+                    value={filtroTipoDoc}
+                    onChange={(e) => setFiltroTipoDoc(e.target.value)}
+                    className="bg-transparent text-slate-200 text-xs focus:outline-none cursor-pointer"
+                  >
+                    <option value="todos" className="bg-[#121820] text-slate-200">
+                      Todos os Tipos
+                    </option>
+                    {tiposDocumentosDisponiveis.map((t) => (
+                      <option key={t} value={t} className="bg-[#121820] text-slate-200">
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-1.5 bg-[#121820] border border-[#202937] rounded-lg px-2.5 py-1.5 text-xs">
+                  <select
+                    value={filtroValidadeDoc}
+                    onChange={(e) => setFiltroValidadeDoc(e.target.value)}
+                    className="bg-transparent text-slate-200 text-xs focus:outline-none cursor-pointer"
+                  >
+                    <option value="todas" className="bg-[#121820] text-slate-200">
+                      Todas as Validades
+                    </option>
+                    <option value="validos" className="bg-[#121820] text-slate-200">
+                      Válidos
+                    </option>
+                    <option value="vencendo" className="bg-[#121820] text-slate-200">
+                      Vencendo em breve
+                    </option>
+                    <option value="vencidos" className="bg-[#121820] text-slate-200">
+                      Vencidos
+                    </option>
+                    <option value="sem_validade" className="bg-[#121820] text-slate-200">
+                      Sem validade
+                    </option>
+                  </select>
+                </div>
               </div>
             </div>
 
-            {/* AGRUPAMENTO NO COFRE: TITULARES E SEUS RESPECTIVOS DOCUMENTOS */}
-            {titulares.length === 0 && documentosFiltrados.length === 0 ? (
-              <div className="p-8 text-center text-wa-textSecondary text-xs bg-wa-panel border border-dashed border-wa-border rounded-xl">
-                {carregandoDocs
-                  ? 'Carregando cofre...'
-                  : 'Nenhum documento ou titular encontrado com os critérios de busca.'}
+            {/* LISTAGEM DOS DOCUMENTOS */}
+            {carregandoDocs || carregandoTitulares ? (
+              <div className="p-12 text-center text-slate-400 text-xs bg-[#121820] border border-[#202937] rounded-xl flex flex-col items-center justify-center gap-2.5 shadow-sm">
+                <Loader2 className="w-6 h-6 text-emerald-400 animate-spin" />
+                <span className="font-medium text-slate-200">Carregando documentos do cofre...</span>
+              </div>
+            ) : documentos.length === 0 ? (
+              <div className="p-12 text-center text-slate-400 text-xs bg-[#121820] border border-[#202937] rounded-xl flex flex-col items-center justify-center gap-2">
+                <FolderLock className="w-8 h-8 text-slate-500 mb-1" />
+                <span className="font-semibold text-slate-200 text-sm">Nenhum documento no Cofre</span>
+                <span className="text-slate-400 max-w-sm">
+                  Arraste seus arquivos acima para salvá-los automaticamente.
+                </span>
               </div>
             ) : (
               <div className="space-y-6">
-                {/* 1. SEÇÃO DOS TITULARES (FICHA + DOCUMENTOS) */}
+                {documentosEmpresaFiltrados.length > 0 && (
+                  <div className="bg-[#121820] border border-[#202937] rounded-xl p-4 sm:p-5 space-y-3.5 shadow-sm">
+                    <div className="flex items-center justify-between border-b border-[#202937] pb-3">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                          <Building2 className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <h3 className="font-semibold text-xs sm:text-sm text-slate-100">
+                            Documentos da Empresa (Delta Plan)
+                          </h3>
+                          <p className="text-[11px] text-slate-400">
+                            Contratos corporativos, normas e arquivos institucionais
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-xs text-slate-400 font-medium px-2 py-0.5 rounded-full bg-[#18202b] border border-[#202937]">
+                        {documentosEmpresaFiltrados.length} doc(s)
+                      </span>
+                    </div>
+
+                    <div className="space-y-2">
+                      {documentosEmpresaFiltrados.map((doc) => renderItemDocumentoCompacto(doc))}
+                    </div>
+                  </div>
+                )}
+
                 {titularesFiltrados.map((tit) => {
                   const docsDoTitular = documentosFiltrados.filter((d) => docPertenceAoTitular(d, tit));
                   const aberto = isTitularAberto(tit.id);
+                  const paleta = obterPaletaAvatar(tit.nome);
+                  const iniciais = obterIniciais(tit.nome);
 
                   return (
                     <div
                       key={tit.id}
-                      className="bg-wa-panel border border-wa-border rounded-xl overflow-hidden shadow-sm transition-all"
+                      className="bg-[#121820] border border-[#202937] rounded-xl overflow-hidden shadow-sm transition-all"
                     >
-                      {/* Cabeçalho do Titular (Acordeão) */}
                       <div
                         onClick={() => toggleTitularExpandido(tit.id)}
-                        className="p-4 bg-wa-panelHover/40 hover:bg-wa-panelHover/80 border-b border-wa-border/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer select-none transition-colors"
+                        className="p-3.5 sm:p-4 bg-[#121820] hover:bg-[#161e29] border-b border-[#202937]/70 flex items-center justify-between gap-3 cursor-pointer select-none transition-colors"
                       >
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-xl bg-wa-green/15 text-wa-green flex items-center justify-center font-bold text-base border border-wa-green/30 flex-shrink-0">
-                            {tit.nome.charAt(0).toUpperCase()}
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div
+                            className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs flex-shrink-0 shadow-sm"
+                            style={{
+                              backgroundColor: paleta.bg,
+                              color: paleta.text,
+                              border: `1px solid ${paleta.border}`,
+                            }}
+                          >
+                            {iniciais}
                           </div>
-                          <div>
+
+                          <div className="min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
-                              <h3 className="font-bold text-sm text-wa-textPrimary">
+                              <h3 className="font-semibold text-xs sm:text-sm text-slate-100 truncate">
                                 {tit.nome}
                               </h3>
-                              <span className="font-mono text-[10px] text-wa-textMuted px-2 py-0.5 bg-wa-bg rounded border border-wa-border">
-                                {tit.id}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-2 mt-1 text-[11px] text-wa-textMuted flex-wrap">
-                              <span className="text-wa-textSecondary">
-                                📁 <strong>{docsDoTitular.length}</strong> documento(s) no cofre
+                              <span className="text-[10px] text-slate-400 px-2 py-0.5 rounded-full bg-[#18202b] border border-[#202937]">
+                                {docsDoTitular.length} documento(s)
                               </span>
                             </div>
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2 self-end sm:self-auto" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            type="button"
-                            onClick={() => handleExcluirTitular(tit.id, tit.nome)}
-                            className="p-1.5 bg-wa-bg hover:bg-rose-500/20 text-wa-textSecondary hover:text-rose-400 rounded-lg text-xs border border-wa-border hover:border-rose-500/40 transition-colors cursor-pointer"
-                            title="Excluir titular"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-
+                        <div className="flex items-center gap-1.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
                           <button
                             type="button"
                             onClick={() => toggleTitularExpandido(tit.id)}
-                            className="p-1.5 bg-wa-bg hover:bg-wa-panel text-wa-textSecondary hover:text-wa-textPrimary rounded-lg border border-wa-border transition-colors cursor-pointer ml-1"
-                            title={aberto ? 'Recolher titular' : 'Expandir titular'}
+                            className="p-1.5 bg-[#18202b] hover:bg-[#202937] text-slate-300 rounded-lg border border-[#202937] transition-colors cursor-pointer"
                           >
-                            {aberto ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                            {aberto ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                           </button>
                         </div>
                       </div>
 
-                      {/* Conteúdo Expandido do Titular: Lista de Documentos */}
                       {aberto && (
-                        <div className="p-5 space-y-4 animate-fadeIn">
-                          <div className="flex items-center justify-between border-b border-wa-border/60 pb-2">
-                            <div className="flex items-center gap-2 text-xs font-bold text-wa-textPrimary uppercase tracking-wider">
-                              <FileText className="w-4 h-4 text-wa-green" />
-                              <span>Documentos de {tit.nome} ({docsDoTitular.length})</span>
-                            </div>
-                            <span className="text-[11px] text-wa-textMuted">
-                              Arquivos vinculados a este titular
-                            </span>
-                          </div>
-
+                        <div className="p-4 space-y-2.5 animate-fadeIn bg-[#0e131a]/40">
                           {docsDoTitular.length === 0 ? (
-                            <div className="p-6 bg-wa-bg/40 rounded-lg border border-dashed border-wa-border text-center text-xs text-wa-textMuted">
-                              Nenhum documento cadastrado para este titular ainda. Faça o upload acima indicando "{tit.nome}".
+                            <div className="p-5 text-center text-xs text-slate-500 border border-dashed border-[#202937] rounded-lg">
+                              Nenhum documento vinculado a este titular até o momento.
                             </div>
                           ) : (
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                              {docsDoTitular.map((doc) => renderCardDocumento(doc))}
-                            </div>
+                            docsDoTitular.map((doc) => renderItemDocumentoCompacto(doc))
                           )}
                         </div>
                       )}
                     </div>
                   );
                 })}
+              </div>
+            )}
+          </div>
+        )}
 
-                {/* 2. SEÇÃO DE DOCUMENTOS CORPORATIVOS / SEM TITULAR ESPECÍFICO */}
-                {(() => {
-                  const docsCorporativos = documentosFiltrados.filter(
-                    (d) => !titulares.some((tit) => docPertenceAoTitular(d, tit))
-                  );
+        {/* ========================================================================= */}
+        {/* ABA 2: CONHECIMENTO & REGRAS (ENTRADA ÚNICA COM IA + ITENS ESTRUTURADOS) */}
+        {/* ========================================================================= */}
+        {subAba === 'conhecimento' && (
+          <div className="space-y-6 animate-fadeIn">
+            {mensagemSucessoConhecimento && (
+              <div className="p-3 bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 rounded-xl text-xs flex items-center gap-2 animate-fadeIn">
+                <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                <span>{mensagemSucessoConhecimento}</span>
+              </div>
+            )}
 
-                  if (docsCorporativos.length === 0) return null;
+            {/* ENTRADA ÚNICA: "O QUE A VEGA PRECISA SABER?" */}
+            <div className="p-5 bg-[#121820] border border-[#202937] rounded-xl space-y-3.5 shadow-sm">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-emerald-400" />
+                  <label className="text-xs sm:text-sm font-semibold text-slate-100">
+                    O que a VEGA precisa saber?
+                  </label>
+                </div>
+                <span className="text-[11px] text-slate-400">
+                  Aceita linguagem natural ou colagem de planilhas Excel
+                </span>
+              </div>
+
+              <textarea
+                rows={3}
+                value={textoEntradaUnica}
+                onChange={(e) => {
+                  setTextoEntradaUnica(e.target.value);
+                  setErroEstruturacao('');
+                }}
+                placeholder="Exemplos:&#10;• 'A chave PIX da Delta Plan é o CNPJ 12.345.678/0001-90 no Banco Santander'&#10;• 'Para acessar o sistema de orçamentos use https://orcamentos.deltaplan.com.br'&#10;• 'Carlos Silva é do suporte técnico, telefone (14) 99888-7766' ou cole linhas de tabelas..."
+                className="w-full px-3.5 py-2.5 bg-[#0b0f14] border border-[#202937] rounded-xl text-xs text-slate-100 placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none resize-none leading-relaxed"
+              />
+
+              {erroEstruturacao && (
+                <div className="p-2.5 bg-rose-500/15 border border-rose-500/30 text-rose-300 rounded-lg text-xs flex items-center gap-2">
+                  <AlertCircle className="w-3.5 h-3.5 text-rose-400 flex-shrink-0" />
+                  <span>{erroEstruturacao}</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between pt-1">
+                <span className="text-[11px] text-slate-400">
+                  A IA identifica o tipo (PIX, Link, Contato ou Regra) e sugere os campos em linha.
+                </span>
+
+                <button
+                  type="button"
+                  onClick={handleEstruturarComIA}
+                  disabled={estruturandoComIA || !textoEntradaUnica.trim()}
+                  className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-semibold rounded-lg shadow flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {estruturandoComIA ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-3.5 h-3.5" />
+                  )}
+                  <span>{estruturandoComIA ? 'Estruturando com IA...' : 'Estruturar com IA'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* PRÉVIA DOS ITENS ESTRUTURADOS PELA IA (PARA CONFERÊNCIA EM LINHA) */}
+            {itensSugeridosIA.length > 0 && (
+              <div className="p-5 bg-[#121820] border border-emerald-500/40 rounded-xl space-y-4 animate-fadeIn shadow-lg">
+                <div className="flex items-center justify-between border-b border-[#202937] pb-3">
+                  <div className="flex items-center gap-2 text-xs sm:text-sm font-semibold text-slate-100">
+                    <CheckCircle className="w-4 h-4 text-emerald-400" />
+                    <span>
+                      {itensSugeridosIA.length === 1
+                        ? '1 item identificado pela IA (confira antes de salvar):'
+                        : `${itensSugeridosIA.length} itens identificados pela IA (confira antes de salvar):`}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {itensSugeridosIA.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={handleSalvarTodosSugeridos}
+                        disabled={salvandoItensSugeridos}
+                        className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                      >
+                        <Check className="w-3 h-3" />
+                        <span>Salvar todos</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setItensSugeridosIA([])}
+                      className="text-xs text-slate-400 hover:text-slate-200 px-2 py-1"
+                    >
+                      Descartar
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {itensSugeridosIA.map((item, idx) => (
+                    <div
+                      key={item.id}
+                      className="p-3.5 bg-[#0b0f14] border border-[#202937] rounded-xl space-y-3"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${
+                              item.tipo === 'pix'
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                : item.tipo === 'link'
+                                ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
+                                : item.tipo === 'contato'
+                                ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                                : 'bg-[#18202b] text-slate-300 border border-[#202937]'
+                            }`}
+                          >
+                            {item.tipo === 'pix'
+                              ? 'Chave PIX'
+                              : item.tipo === 'link'
+                              ? 'Link'
+                              : item.tipo === 'contato'
+                              ? 'Contato'
+                              : 'Regra'}
+                          </span>
+                          <span className="text-xs font-semibold text-slate-100">
+                            {item.titulo}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleSalvarItemSugerido(item)}
+                            disabled={salvandoItensSugeridos}
+                            className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg text-xs font-semibold flex items-center gap-1 shadow cursor-pointer disabled:opacity-50"
+                          >
+                            <Check className="w-3 h-3" />
+                            <span>Confirmar e Salvar</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* CAMPOS ESPECÍFICOS DO TIPO PARA AJUSTE INLINE */}
+                      {item.tipo === 'pix' && (
+                        <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs">
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">
+                              Titular:
+                            </label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosPix)?.titular || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? {
+                                          ...i,
+                                          dadosEstruturados: { ...i.dadosEstruturados, titular: val },
+                                        }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">
+                              Tipo da Chave:
+                            </label>
+                            <select
+                              value={(item.dadosEstruturados as DadosPix)?.tipoChave || 'CNPJ'}
+                              onChange={(e) => {
+                                const val = e.target.value as any;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? {
+                                          ...i,
+                                          dadosEstruturados: { ...i.dadosEstruturados, tipoChave: val },
+                                        }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                            >
+                              <option value="CNPJ">CNPJ</option>
+                              <option value="CPF">CPF</option>
+                              <option value="Celular">Celular</option>
+                              <option value="E-mail">E-mail</option>
+                              <option value="Aleatória">Aleatória</option>
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">Chave:</label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosPix)?.chave || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? {
+                                          ...i,
+                                          dadosEstruturados: { ...i.dadosEstruturados, chave: val },
+                                        }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-emerald-400 font-mono focus:outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">Banco:</label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosPix)?.banco || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? {
+                                          ...i,
+                                          dadosEstruturados: { ...i.dadosEstruturados, banco: val },
+                                        }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {item.tipo === 'link' && (
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">
+                              Nome do Sistema:
+                            </label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosLink)?.nomeSistema || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? {
+                                          ...i,
+                                          dadosEstruturados: { ...i.dadosEstruturados, nomeSistema: val },
+                                        }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">URL / Link:</label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosLink)?.link || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? {
+                                          ...i,
+                                          dadosEstruturados: { ...i.dadosEstruturados, link: val },
+                                        }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-sky-400 focus:outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">
+                              Finalidade:
+                            </label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosLink)?.finalidade || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? {
+                                          ...i,
+                                          dadosEstruturados: { ...i.dadosEstruturados, finalidade: val },
+                                        }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {item.tipo === 'contato' && (
+                        <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs">
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">Nome:</label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosContato)?.nome || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? {
+                                          ...i,
+                                          dadosEstruturados: { ...i.dadosEstruturados, nome: val },
+                                        }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">Função:</label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosContato)?.funcao || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? {
+                                          ...i,
+                                          dadosEstruturados: { ...i.dadosEstruturados, funcao: val },
+                                        }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">
+                              Telefone:
+                            </label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosContato)?.telefone || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? {
+                                          ...i,
+                                          dadosEstruturados: { ...i.dadosEstruturados, telefone: val },
+                                        }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">E-mail:</label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosContato)?.email || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? {
+                                          ...i,
+                                          dadosEstruturados: { ...i.dadosEstruturados, email: val },
+                                        }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {(!item.tipo || item.tipo === 'regra') && (
+                        <div>
+                          <label className="text-[10px] text-slate-400 block mb-0.5">
+                            Conteúdo da Regra:
+                          </label>
+                          <textarea
+                            rows={2}
+                            value={item.conteudo}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setItensSugeridosIA((prev) =>
+                                prev.map((i, ix) => (ix === idx ? { ...i, conteudo: val } : i))
+                              );
+                            }}
+                            className="w-full px-2.5 py-1.5 bg-[#121820] border border-[#202937] rounded text-slate-100 text-xs focus:outline-none resize-none"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* FILTROS POR TIPO E BUSCA NA LISTA */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+              {/* Chips de Filtro por Tipo */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setFiltroTipoConhecimento('todos')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                    filtroTipoConhecimento === 'todos'
+                      ? 'bg-emerald-500 text-slate-950 font-semibold'
+                      : 'bg-[#121820] hover:bg-[#18202b] text-slate-300 border border-[#202937]'
+                  }`}
+                >
+                  Todos ({contadoresTipo.todos})
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setFiltroTipoConhecimento('pix')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
+                    filtroTipoConhecimento === 'pix'
+                      ? 'bg-emerald-500 text-slate-950 font-semibold'
+                      : 'bg-[#121820] hover:bg-[#18202b] text-slate-300 border border-[#202937]'
+                  }`}
+                >
+                  <CreditCard className="w-3.5 h-3.5" />
+                  <span>PIX ({contadoresTipo.pix})</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setFiltroTipoConhecimento('link')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
+                    filtroTipoConhecimento === 'link'
+                      ? 'bg-emerald-500 text-slate-950 font-semibold'
+                      : 'bg-[#121820] hover:bg-[#18202b] text-slate-300 border border-[#202937]'
+                  }`}
+                >
+                  <Globe className="w-3.5 h-3.5" />
+                  <span>Links ({contadoresTipo.link})</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setFiltroTipoConhecimento('contato')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
+                    filtroTipoConhecimento === 'contato'
+                      ? 'bg-emerald-500 text-slate-950 font-semibold'
+                      : 'bg-[#121820] hover:bg-[#18202b] text-slate-300 border border-[#202937]'
+                  }`}
+                >
+                  <Phone className="w-3.5 h-3.5" />
+                  <span>Contatos ({contadoresTipo.contato})</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setFiltroTipoConhecimento('regra')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
+                    filtroTipoConhecimento === 'regra'
+                      ? 'bg-emerald-500 text-slate-950 font-semibold'
+                      : 'bg-[#121820] hover:bg-[#18202b] text-slate-300 border border-[#202937]'
+                  }`}
+                >
+                  <BookOpen className="w-3.5 h-3.5" />
+                  <span>Regras ({contadoresTipo.regra})</span>
+                </button>
+              </div>
+
+              {/* Campo de Busca Livre */}
+              <div className="relative w-full sm:w-64">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Filtrar por texto..."
+                  value={buscaConhecimento}
+                  onChange={(e) => setBuscaConhecimento(e.target.value)}
+                  className="w-full pl-8 pr-3 py-1.5 bg-[#121820] border border-[#202937] rounded-lg text-xs text-slate-100 placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* LISTAGEM DOS ITENS COM EDIÇÃO EM LINHA */}
+            {carregandoConhecimento ? (
+              <div className="p-12 text-center text-slate-400 text-xs bg-[#121820] border border-[#202937] rounded-xl flex flex-col items-center justify-center gap-2.5 shadow-sm">
+                <Loader2 className="w-6 h-6 text-emerald-400 animate-spin" />
+                <span className="font-medium text-slate-200">Carregando conhecimento da VEGA...</span>
+              </div>
+            ) : itensConhecimentoFiltrados.length === 0 ? (
+              <div className="p-10 text-center text-slate-400 text-xs bg-[#121820] border border-[#202937] rounded-xl flex flex-col items-center justify-center gap-2">
+                <BookOpen className="w-7 h-7 text-slate-500 mb-1" />
+                <span className="font-semibold text-slate-200 text-sm">Nenhum item encontrado</span>
+                <span className="text-slate-400">
+                  Escreva na caixa acima para cadastrar chaves PIX, links, contatos ou regras.
+                </span>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {itensConhecimentoFiltrados.map((item) => {
+                  const isEditando = idEditandoEmLinha === item.id;
+                  const dPix = item.tipo === 'pix' ? (item.dadosEstruturados as DadosPix) : null;
+                  const dLink = item.tipo === 'link' ? (item.dadosEstruturados as DadosLink) : null;
+                  const dCt = item.tipo === 'contato' ? (item.dadosEstruturados as DadosContato) : null;
 
                   return (
-                    <div className="bg-wa-panel border border-wa-border rounded-xl p-5 space-y-4 shadow-sm">
-                      <div className="flex items-center justify-between border-b border-wa-border pb-3">
-                        <div className="flex items-center gap-2">
-                          <Building2 className="w-4 h-4 text-wa-green" />
-                          <h3 className="font-bold text-sm text-wa-textPrimary">
-                            Documentos Gerais & Corporativos da Delta Plan ({docsCorporativos.length})
-                          </h3>
-                        </div>
-                        <span className="text-xs text-wa-textMuted">Documentos corporativos sem titular pessoal</span>
-                      </div>
+                    <div
+                      key={item.id}
+                      className="group p-3.5 bg-[#121820] hover:bg-[#161e29] border border-[#202937] hover:border-[#2d3a4f] rounded-xl transition-all space-y-3"
+                    >
+                      {/* MODO EDIÇÃO EM LINHA */}
+                      {isEditando && draftEdicaoLinha ? (
+                        <div className="space-y-3 animate-fadeIn">
+                          <div className="flex items-center justify-between gap-2 border-b border-[#202937] pb-2">
+                            <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                              <Edit2 className="w-3.5 h-3.5" />
+                              <span>Editando em linha: {item.titulo}</span>
+                            </span>
 
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {docsCorporativos.map((doc) => renderCardDocumento(doc))}
-                      </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setIdEditandoEmLinha(null);
+                                  setDraftEdicaoLinha(null);
+                                }}
+                                className="px-3 py-1 bg-[#18202b] hover:bg-[#202937] text-slate-300 rounded text-xs cursor-pointer"
+                              >
+                                Cancelar
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleSalvarEdicaoLinha}
+                                disabled={salvandoEdicaoLinha}
+                                className="px-3.5 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold rounded text-xs flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                              >
+                                {salvandoEdicaoLinha ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Save className="w-3 h-3" />
+                                )}
+                                <span>Salvar</span>
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                            <div className="sm:col-span-2">
+                              <label className="text-[10px] text-slate-400 block mb-1">Título:</label>
+                              <input
+                                type="text"
+                                value={draftEdicaoLinha.titulo}
+                                onChange={(e) =>
+                                  setDraftEdicaoLinha({ ...draftEdicaoLinha, titulo: e.target.value })
+                                }
+                                className="w-full px-2.5 py-1.5 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-1">Categoria:</label>
+                              <input
+                                type="text"
+                                value={draftEdicaoLinha.categoria}
+                                onChange={(e) =>
+                                  setDraftEdicaoLinha({
+                                    ...draftEdicaoLinha,
+                                    categoria: e.target.value,
+                                  })
+                                }
+                                className="w-full px-2.5 py-1.5 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                              />
+                            </div>
+                          </div>
+
+                          {/* CAMPOS ESPECÍFICOS DO TIPO EM EDIÇÃO */}
+                          {draftEdicaoLinha.tipo === 'pix' && (
+                            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs pt-1">
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">
+                                  Titular:
+                                </label>
+                                <input
+                                  type="text"
+                                  value={(draftEdicaoLinha.dadosEstruturados as DadosPix)?.titular || ''}
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        titular: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">
+                                  Tipo da Chave:
+                                </label>
+                                <select
+                                  value={
+                                    (draftEdicaoLinha.dadosEstruturados as DadosPix)?.tipoChave || 'CNPJ'
+                                  }
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        tipoChave: e.target.value as any,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                                >
+                                  <option value="CNPJ">CNPJ</option>
+                                  <option value="CPF">CPF</option>
+                                  <option value="Celular">Celular</option>
+                                  <option value="E-mail">E-mail</option>
+                                  <option value="Aleatória">Aleatória</option>
+                                </select>
+                              </div>
+
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">
+                                  Chave:
+                                </label>
+                                <input
+                                  type="text"
+                                  value={(draftEdicaoLinha.dadosEstruturados as DadosPix)?.chave || ''}
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        chave: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-emerald-400 font-mono focus:outline-none"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">
+                                  Banco:
+                                </label>
+                                <input
+                                  type="text"
+                                  value={(draftEdicaoLinha.dadosEstruturados as DadosPix)?.banco || ''}
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        banco: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {draftEdicaoLinha.tipo === 'link' && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs pt-1">
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">
+                                  URL / Link:
+                                </label>
+                                <input
+                                  type="text"
+                                  value={(draftEdicaoLinha.dadosEstruturados as DadosLink)?.link || ''}
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        link: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-sky-400 focus:outline-none"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">
+                                  Finalidade:
+                                </label>
+                                <input
+                                  type="text"
+                                  value={
+                                    (draftEdicaoLinha.dadosEstruturados as DadosLink)?.finalidade || ''
+                                  }
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        finalidade: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {draftEdicaoLinha.tipo === 'contato' && (
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs pt-1">
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">
+                                  Função / Cargo:
+                                </label>
+                                <input
+                                  type="text"
+                                  value={
+                                    (draftEdicaoLinha.dadosEstruturados as DadosContato)?.funcao || ''
+                                  }
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        funcao: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">
+                                  Telefone:
+                                </label>
+                                <input
+                                  type="text"
+                                  value={
+                                    (draftEdicaoLinha.dadosEstruturados as DadosContato)?.telefone || ''
+                                  }
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        telefone: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">
+                                  E-mail:
+                                </label>
+                                <input
+                                  type="text"
+                                  value={
+                                    (draftEdicaoLinha.dadosEstruturados as DadosContato)?.email || ''
+                                  }
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        email: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {(!draftEdicaoLinha.tipo || draftEdicaoLinha.tipo === 'regra') && (
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-1">
+                                Conteúdo da Instrução / Regra:
+                              </label>
+                              <textarea
+                                rows={3}
+                                value={draftEdicaoLinha.conteudo}
+                                onChange={(e) =>
+                                  setDraftEdicaoLinha({
+                                    ...draftEdicaoLinha,
+                                    conteudo: e.target.value,
+                                  })
+                                }
+                                className="w-full px-2.5 py-1.5 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 text-xs focus:outline-none resize-none"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        /* MODO LEITURA COMPACTO */
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
+                            {/* Ícone por tipo */}
+                            <div className="flex-shrink-0">
+                              {item.tipo === 'pix' ? (
+                                <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shadow-sm">
+                                  <CreditCard className="w-4 h-4" />
+                                </div>
+                              ) : item.tipo === 'link' ? (
+                                <div className="w-9 h-9 rounded-xl bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400 shadow-sm">
+                                  <Globe className="w-4 h-4" />
+                                </div>
+                              ) : item.tipo === 'contato' ? (
+                                <div className="w-9 h-9 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shadow-sm">
+                                  <Phone className="w-4 h-4" />
+                                </div>
+                              ) : (
+                                <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shadow-sm">
+                                  <BookOpen className="w-4 h-4" />
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Informações centrais */}
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h4 className="text-xs sm:text-sm font-semibold text-slate-100 truncate">
+                                  {item.titulo}
+                                </h4>
+                                <span
+                                  className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${
+                                    item.tipo === 'pix'
+                                      ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                                      : item.tipo === 'link'
+                                      ? 'bg-sky-500/15 text-sky-300 border border-sky-500/30'
+                                      : item.tipo === 'contato'
+                                      ? 'bg-purple-500/15 text-purple-300 border border-purple-500/30'
+                                      : 'bg-[#18202b] text-slate-400 border border-[#202937]'
+                                  }`}
+                                >
+                                  {item.tipo === 'pix'
+                                    ? 'PIX'
+                                    : item.tipo === 'link'
+                                    ? 'Link'
+                                    : item.tipo === 'contato'
+                                    ? 'Contato'
+                                    : item.categoria || 'Regra'}
+                                </span>
+                              </div>
+
+                              {/* Linha detalhada por tipo */}
+                              {item.tipo === 'pix' && dPix ? (
+                                <div className="flex items-center gap-2 mt-1 text-xs text-slate-300 flex-wrap">
+                                  <span className="font-mono bg-[#0b0f14] px-2 py-0.5 rounded border border-[#202937] text-emerald-400 select-all">
+                                    {dPix.chave}
+                                  </span>
+                                  <button
+                                    onClick={() => copiarChave(item.id, dPix.chave)}
+                                    className="p-1 rounded bg-[#18202b] hover:bg-[#202937] text-slate-400 hover:text-emerald-400 transition-colors cursor-pointer flex items-center gap-1 text-[11px]"
+                                    title="Copiar chave PIX"
+                                  >
+                                    {copiadoId === item.id ? (
+                                      <>
+                                        <Check className="w-3 h-3 text-emerald-400" />
+                                        <span className="text-emerald-400 font-medium">Copiado</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-3 h-3" />
+                                        <span>Copiar</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  {dPix.banco && <span>• Banco: {dPix.banco}</span>}
+                                  {dPix.titular && <span>• Titular: {dPix.titular}</span>}
+                                </div>
+                              ) : item.tipo === 'link' && dLink ? (
+                                <div className="flex items-center gap-2 mt-1 text-xs text-slate-300 flex-wrap">
+                                  <a
+                                    href={dLink.link}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-sky-400 hover:text-sky-300 underline underline-offset-2 flex items-center gap-1"
+                                  >
+                                    <span>{dLink.link}</span>
+                                    <ExternalLink className="w-3 h-3" />
+                                  </a>
+                                  {dLink.finalidade && (
+                                    <span className="text-slate-400">({dLink.finalidade})</span>
+                                  )}
+                                </div>
+                              ) : item.tipo === 'contato' && dCt ? (
+                                <div className="flex items-center gap-2.5 mt-1 text-xs text-slate-300 flex-wrap">
+                                  {dCt.funcao && (
+                                    <span className="text-slate-400">{dCt.funcao}</span>
+                                  )}
+                                  {dCt.telefone && (
+                                    <span className="flex items-center gap-1 text-slate-300">
+                                      <Phone className="w-3 h-3 text-purple-400" />
+                                      <span>{dCt.telefone}</span>
+                                    </span>
+                                  )}
+                                  {dCt.email && (
+                                    <span className="flex items-center gap-1 text-slate-300">
+                                      <Mail className="w-3 h-3 text-purple-400" />
+                                      <span>{dCt.email}</span>
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <p className="text-xs text-slate-400 truncate mt-1 max-w-xl">
+                                  {item.conteudo}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Ações à direita */}
+                          <div className="flex items-center justify-between sm:justify-end gap-3 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-[#202937]/50">
+                            <span className="text-[11px] text-slate-500 whitespace-nowrap">
+                              {formatarDataBrasilia(item.dataAtualizacao)}
+                            </span>
+
+                            <div className="flex items-center gap-1 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button
+                                onClick={() => handleIniciarEdicaoLinha(item)}
+                                className="p-1.5 rounded-lg bg-[#18202b] hover:bg-[#202937] text-slate-300 hover:text-emerald-400 border border-[#202937] transition-colors cursor-pointer"
+                                title="Editar em linha"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+
+                              <button
+                                onClick={() => handleExcluirConhecimento(item.id, item.titulo)}
+                                className="p-1.5 rounded-lg bg-[#18202b] hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 border border-[#202937] hover:border-rose-500/30 transition-colors cursor-pointer"
+                                title="Excluir item"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
-                })()}
+                })}
               </div>
             )}
           </div>
         )}
       </div>
-
-      {/* MODAL DE EDIÇÃO DE CONHECIMENTO */}
-      {itemEditandoConhecimento && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
-          <div className="bg-wa-panel border border-wa-border rounded-xl max-w-lg w-full p-5 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between border-b border-wa-border pb-3">
-              <div className="flex items-center gap-2 text-wa-textPrimary font-semibold text-sm">
-                <Edit className="w-4 h-4 text-wa-green" />
-                <span>Editar Instrução de Conhecimento</span>
-              </div>
-              <button
-                onClick={() => setItemEditandoConhecimento(null)}
-                className="text-wa-textSecondary hover:text-wa-textPrimary p-1 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {erroEdicaoConhecimento && (
-              <div className="p-3 bg-rose-500/20 border border-rose-500/40 text-rose-300 rounded-lg text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                <span>{erroEdicaoConhecimento}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleSalvarEdicaoConhecimento} className="space-y-3.5 text-xs">
-              <div>
-                <label className="block text-wa-textSecondary mb-1 font-medium">
-                  Título da Instrução *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={editTituloConhecimento}
-                  onChange={(e) => {
-                    setEditTituloConhecimento(e.target.value);
-                    setErroEdicaoConhecimento('');
-                  }}
-                  className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none font-semibold"
-                />
-              </div>
-
-              <div>
-                <label className="block text-wa-textSecondary mb-1 font-medium">
-                  Categoria
-                </label>
-                <select
-                  value={editCategoriaConhecimento}
-                  onChange={(e) => setEditCategoriaConhecimento(e.target.value)}
-                  className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none"
-                >
-                  <option value="Geral">Geral</option>
-                  <option value="Comercial">Comercial</option>
-                  <option value="Atendimento">Atendimento</option>
-                  <option value="Segurança">Segurança</option>
-                  <option value="Operações">Operações</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-wa-textSecondary mb-1 font-medium">
-                  Conteúdo / Regra da Instrução *
-                </label>
-                <textarea
-                  required
-                  rows={6}
-                  value={editConteudoConhecimento}
-                  onChange={(e) => setEditConteudoConhecimento(e.target.value)}
-                  className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none resize-none leading-relaxed"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2 border-t border-wa-border">
-                <button
-                  type="button"
-                  onClick={() => setItemEditandoConhecimento(null)}
-                  className="px-4 py-2 bg-wa-bg hover:bg-wa-panelHover text-wa-textSecondary hover:text-wa-textPrimary rounded-lg text-xs font-medium cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={salvandoEdicaoConhecimento || !editTituloConhecimento.trim()}
-                  className="px-4 py-2 bg-wa-green hover:bg-wa-greenHover text-slate-950 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow disabled:opacity-50 cursor-pointer"
-                >
-                  <Save className="w-3.5 h-3.5" />
-                  <span>{salvandoEdicaoConhecimento ? 'Salvando...' : 'Salvar Alterações'}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL DE EDIÇÃO DE METADADOS */}
-      {docEditando && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
-          <div className="bg-wa-panel border border-wa-border rounded-xl max-w-lg w-full p-5 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between border-b border-wa-border pb-3">
-              <div className="flex items-center gap-2 text-wa-textPrimary font-semibold text-sm">
-                <Edit3 className="w-4 h-4 text-wa-green" />
-                <span>Editar Metadados do Documento</span>
-              </div>
-              <button
-                onClick={() => setDocEditando(null)}
-                className="text-wa-textSecondary hover:text-wa-textPrimary p-1"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleSalvarEdicaoDoc} className="space-y-3.5 text-xs">
-              <div className="p-2.5 bg-wa-bg rounded-lg border border-wa-border">
-                <span className="text-[10px] text-wa-textMuted">Arquivo físico associado:</span>
-                <p className="font-mono text-xs text-wa-greenLight">{docEditando.arquivo}</p>
-              </div>
-
-              {/* Título */}
-              <div>
-                <label className="block text-wa-textSecondary mb-1 font-medium">
-                  Título do Documento *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={editTitulo}
-                  onChange={(e) => setEditTitulo(e.target.value)}
-                  className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none font-medium"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                {/* Tipo */}
-                <div>
-                  <label className="block text-wa-textSecondary mb-1 font-medium">
-                    Tipo de Documento
-                  </label>
-                  <select
-                    value={editTipo}
-                    onChange={(e) => setEditTipo(e.target.value)}
-                    className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none"
-                  >
-                    <option value="Contrato">Contrato</option>
-                    <option value="Financeiro">Financeiro</option>
-                    <option value="Documento Pessoal">Documento Pessoal</option>
-                    <option value="Normativo">Normativo</option>
-                    <option value="Proposta">Proposta</option>
-                    <option value="Outros">Outros</option>
-                  </select>
-                </div>
-
-                {/* Titular */}
-                <div>
-                  <label className="block text-wa-textSecondary mb-1 font-medium">
-                    Titular / Empresa
-                  </label>
-                  <input
-                    type="text"
-                    value={editTitular}
-                    onChange={(e) => setEditTitular(e.target.value)}
-                    className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                {/* Visibilidade */}
-                <div>
-                  <label className="block text-wa-textSecondary mb-1 font-medium flex items-center gap-1">
-                    <Shield className="w-3.5 h-3.5 text-wa-green" />
-                    Nível de Visibilidade
-                  </label>
-                  <select
-                    value={editVisibilidade}
-                    onChange={(e) => setEditVisibilidade(e.target.value as VisibilidadeDoc)}
-                    className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none font-semibold"
-                  >
-                    <option value="diretoria">DIRETORIA (Restrito à Diretoria)</option>
-                    <option value="geral">GERAL (Acesso de Todos)</option>
-                  </select>
-                </div>
-
-                {/* Data de Validade */}
-                <div>
-                  <label className="block text-wa-textSecondary mb-1 font-medium flex items-center gap-1">
-                    <Calendar className="w-3.5 h-3.5 text-amber-400" />
-                    Data de Validade (DD/MM/AAAA)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Ex: 26/08/2034 ou em branco"
-                    value={editDataValidade}
-                    onChange={(e) => setEditDataValidade(e.target.value)}
-                    className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              {/* Apelidos / Palavras-chave */}
-              <div>
-                <label className="block text-wa-textSecondary mb-1 font-medium flex items-center gap-1">
-                  <Tag className="w-3.5 h-3.5 text-wa-green" />
-                  Apelidos / Sinônimos de Busca (separados por vírgula)
-                </label>
-                <input
-                  type="text"
-                  value={editApelidos}
-                  onChange={(e) => setEditApelidos(e.target.value)}
-                  placeholder="Ex: contrato, estatuto, minuta societária"
-                  className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none"
-                />
-              </div>
-
-              {/* Descrição */}
-              <div>
-                <label className="block text-wa-textSecondary mb-1 font-medium">
-                  Descrição ou Finalidade
-                </label>
-                <textarea
-                  rows={2}
-                  value={editDescricao}
-                  onChange={(e) => setEditDescricao(e.target.value)}
-                  className="w-full px-3 py-2 bg-wa-bg border border-wa-border rounded-lg text-wa-textPrimary focus:border-wa-green focus:outline-none resize-none"
-                />
-              </div>
-
-              {/* Opção Não Alertar Mais (Silenciar alertas) */}
-              <div className="p-3 bg-wa-bg rounded-xl border border-wa-border flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 flex-shrink-0">
-                    <BellOff className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="check-silenciar-alertas"
-                      className="text-xs font-semibold text-wa-textPrimary cursor-pointer block"
-                    >
-                      Não alertar mais sobre este documento
-                    </label>
-                    <span className="text-[11px] text-wa-textMuted block">
-                      Silencia alertas de vencimento no painel. Se o documento for substituído, os alertas voltam a funcionar.
-                    </span>
-                  </div>
-                </div>
-                <input
-                  id="check-silenciar-alertas"
-                  type="checkbox"
-                  checked={editSilenciarAlertas}
-                  onChange={(e) => setEditSilenciarAlertas(e.target.checked)}
-                  className="w-4 h-4 accent-wa-green cursor-pointer rounded"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2 border-t border-wa-border">
-                <button
-                  type="button"
-                  onClick={() => setDocEditando(null)}
-                  className="px-3.5 py-1.5 bg-wa-panelHover text-wa-textSecondary hover:text-wa-textPrimary rounded-lg font-medium"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={salvandoEdicao || !editTitulo.trim()}
-                  className="px-4 py-1.5 bg-wa-green hover:bg-wa-greenHover text-slate-950 rounded-lg font-semibold flex items-center gap-1.5 disabled:opacity-50 shadow"
-                >
-                  <Save className="w-3.5 h-3.5" />
-                  <span>{salvandoEdicao ? 'Salvando...' : 'Salvar Alterações'}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

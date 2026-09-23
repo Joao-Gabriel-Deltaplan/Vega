@@ -4,11 +4,9 @@ import {
   Paperclip,
   Mic,
   MicOff,
-  Circle,
   X,
   FileText,
   Image as ImageIcon,
-  FolderOpen,
 } from 'lucide-react';
 import { Conversa, Anexo } from '../types/chat.js';
 import { MessageBubble } from './MessageBubble.js';
@@ -16,6 +14,8 @@ import { useSpeechRecognition } from '../hooks/useSpeechRecognition.js';
 import { useSpeechSynthesis } from '../hooks/useSpeechSynthesis.js';
 import { ASSISTENTE } from '../config/assistente.js';
 import { renderizarTextoWhatsApp } from '../utils/formatadorWhatsApp.js';
+import { obterPaletaAvatar, obterIniciais } from '../utils/avatarUtils.js';
+import { deveExibirSeparadorData, formatarRotuloData } from '../utils/dataSeparadorUtils.js';
 
 interface ChatThreadProps {
   conversa: Conversa;
@@ -26,20 +26,12 @@ interface ChatThreadProps {
   onNavegarParaDocumentos?: () => void;
 }
 
-function getIniciais(nome: string): string {
-  if (!nome) return '??';
-  const partes = nome.trim().split(/\s+/);
-  if (partes.length === 1) return partes[0].substring(0, 2).toUpperCase();
-  return (partes[0][0] + partes[partes.length - 1][0]).toUpperCase();
-}
-
 export const ChatThread: React.FC<ChatThreadProps> = ({
   conversa,
   emStreaming,
   textoStreaming,
   onEnviarMensagem,
   onSelecionarOpcaoDocumento,
-  onNavegarParaDocumentos,
 }) => {
   const [textoInput, setTextoInput] = useState('');
   const [anexosPendentes, setAnexosPendentes] = useState<Anexo[]>([]);
@@ -168,106 +160,134 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
   };
 
   const nivelAcesso = conversa.contato.nivelAcesso || conversa.contato.ficha?.nivelAcesso || 'geral';
-  const cargo = conversa.contato.cargo || conversa.contato.ficha?.cargo || 'Colaborador';
+  const isAdmin = nivelAcesso === 'diretoria';
+  const paletaAvatar = obterPaletaAvatar(conversa.contato.nome);
 
   return (
-    <main className="flex-1 h-full flex flex-col bg-wa-chat relative">
-      {/* Header da Conversa */}
-      <header className="h-[60px] px-4 bg-wa-panel border-b border-wa-border flex items-center justify-between z-10">
+    <main className="flex-1 h-full flex flex-col bg-[#0b0f14] relative">
+      {/* Header Limpo da Conversa */}
+      <header className="h-[60px] px-5 bg-[#121820] border-b border-[#1e2633] flex items-center justify-between z-10">
         <div className="flex items-center gap-3">
+          {/* Avatar com cor suave */}
           <div
-            className="w-10 h-10 rounded-full flex items-center justify-center font-semibold text-sm text-white flex-shrink-0 shadow"
-            style={{ backgroundColor: conversa.contato.avatarCor || '#00a884' }}
+            className="w-10 h-10 rounded-full flex items-center justify-center font-semibold text-xs flex-shrink-0 shadow-inner"
+            style={{
+              backgroundColor: paletaAvatar.bg,
+              color: paletaAvatar.text,
+              border: `1px solid ${paletaAvatar.border}`,
+            }}
           >
-            {getIniciais(conversa.contato.nome)}
+            {obterIniciais(conversa.contato.nome)}
           </div>
+
+          {/* Nome, Telefone e Único Selo de Perfil */}
           <div className="min-w-0">
-            <h2 className="font-semibold text-sm text-wa-textPrimary truncate flex items-center gap-2">
-              <span>{conversa.contato.nome}</span>
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-wa-bg text-wa-greenLight border border-wa-border font-medium">
-                {cargo}
+            <div className="flex items-center gap-2">
+              <h2 className="font-semibold text-sm text-slate-100 truncate">
+                {conversa.contato.nome}
+              </h2>
+
+              {/* Único selo de perfil: [Admin] ou [Comum] */}
+              <span
+                className={`text-[10px] px-2 py-0.5 rounded font-medium uppercase tracking-wider ${
+                  isAdmin
+                    ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
+                    : 'bg-slate-800 text-slate-400 border border-slate-700/50'
+                }`}
+              >
+                {isAdmin ? 'Admin' : 'Comum'}
               </span>
-              <span className={`text-[9px] px-1.5 py-0.5 rounded uppercase font-bold ${
-                nivelAcesso === 'diretoria'
-                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                  : 'bg-wa-border text-wa-textMuted'
-              }`}>
-                {nivelAcesso}
-              </span>
-            </h2>
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-wa-textSecondary">{conversa.contato.telefone}</span>
-              <span className="text-wa-border">•</span>
-              {emStreaming ? (
-                <span className="text-wa-greenLight font-medium flex items-center gap-1 text-[11px] animate-pulse">
-                  <span>{ASSISTENTE.nome} está processando</span>
-                  <span className="flex gap-0.5">
-                    <span className="animate-dot-1">•</span>
-                    <span className="animate-dot-2">•</span>
-                    <span className="animate-dot-3">•</span>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5">
+              <span className="font-mono text-[11px]">{conversa.contato.telefone}</span>
+              {emStreaming && (
+                <>
+                  <span className="text-slate-600">•</span>
+                  <span className="text-emerald-400 font-medium flex items-center gap-1 text-[11px] animate-pulse">
+                    <span>{ASSISTENTE.nome} está digitando</span>
+                    <span className="flex gap-0.5">
+                      <span className="animate-dot-1">•</span>
+                      <span className="animate-dot-2">•</span>
+                      <span className="animate-dot-3">•</span>
+                    </span>
                   </span>
-                </span>
-              ) : (
-                <span className="text-wa-green font-medium flex items-center gap-1 text-[11px]">
-                  <Circle className="w-2 h-2 fill-wa-green text-wa-green" />
-                  <span>pronta para busca</span>
-                </span>
+                </>
               )}
             </div>
           </div>
         </div>
 
-        {/* Tag Delta Plan */}
-        <div className="hidden sm:flex items-center gap-2 bg-wa-bg/60 px-3 py-1 rounded-full border border-wa-border">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          <span className="text-xs text-wa-textSecondary font-medium">
-            Cofre Delta Plan • VEGA Ativa
+        {/* Badge Discreto de Conexão */}
+        <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-[#18202b] border border-[#202937]">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+          <span className="text-[11px] text-slate-400 font-medium">
+            WhatsApp Integrado
           </span>
         </div>
       </header>
 
-      {/* Área de Mensagens com Fundo WhatsApp */}
-      <div className="flex-1 overflow-y-auto p-4 wa-chat-pattern">
+      {/* Área de Mensagens com Textura Corporativa Suave */}
+      <div className="flex-1 overflow-y-auto p-4 md:p-6 wa-chat-pattern">
         <div className="max-w-4xl mx-auto flex flex-col justify-end min-h-full">
-          {/* Mensagens históricas */}
-          {conversa.mensagens.map((msg) => (
-            <MessageBubble
-              key={msg.id}
-              mensagem={msg}
-              activeSpeechId={activeMessageId}
-              isPlayingSpeech={isPlayingSpeech}
-              isPausedSpeech={isPausedSpeech}
-              speechProgress={speechProgress}
-              onPlaySpeech={playSpeech}
-              onPauseSpeech={pauseSpeech}
-              onResumeSpeech={resumeSpeech}
-              onStopSpeech={stopSpeech}
-              onSelecionarOpcao={onSelecionarOpcaoDocumento}
-            />
-          ))}
-
-          {/* Mensagem em streaming do assistente */}
-          {emStreaming && (() => {
-            const textoStreamingLimpo = (textoStreaming || '')
-              .replace(/```nao_encontrado[\s\S]*?```/gi, '')
-              .replace(/```documento[\s\S]*?```/gi, '')
-              .replace(/```(nao_encontrado|documento)[\s\S]*$/gi, '')
-              .trim();
+          {/* Mensagens com Separadores de Data */}
+          {conversa.mensagens.map((msg, idx) => {
+            const msgAnterior = idx > 0 ? conversa.mensagens[idx - 1] : undefined;
+            const exibirSeparador = deveExibirSeparadorData(msg, msgAnterior);
+            const rotuloData = exibirSeparador
+              ? formatarRotuloData(msg.timestamp || msg.horario)
+              : '';
 
             return (
-              <div className="flex flex-col mb-3.5 max-w-[85%] md:max-w-[75%] ml-auto items-end animate-fadeIn">
-                <div className="relative px-3.5 py-2 rounded-2xl shadow-md text-sm bg-wa-bubbleAssistant text-wa-textPrimary rounded-tr-none">
-                  <div className="flex items-center justify-between gap-3 mb-1 text-[11px] font-medium opacity-75">
-                    <span className="text-emerald-300">{ASSISTENTE.nomeExibicao}</span>
-                    <span className="text-emerald-200 text-[10px] animate-pulse">buscando no cofre...</span>
+              <React.Fragment key={msg.id}>
+                {exibirSeparador && rotuloData && (
+                  <div className="flex items-center justify-center my-4 select-none">
+                    <span className="px-3 py-1 rounded-md bg-[#121820] border border-[#202937] text-[11px] font-medium text-slate-400 shadow-sm">
+                      {rotuloData}
+                    </span>
                   </div>
-                  <div className="leading-relaxed break-words text-sm">
-                    {textoStreamingLimpo ? renderizarTextoWhatsApp(textoStreamingLimpo) : '...'}
-                  </div>
+                )}
+
+                <MessageBubble
+                  mensagem={msg}
+                  activeSpeechId={activeMessageId}
+                  isPlayingSpeech={isPlayingSpeech}
+                  isPausedSpeech={isPausedSpeech}
+                  speechProgress={speechProgress}
+                  onPlaySpeech={playSpeech}
+                  onPauseSpeech={pauseSpeech}
+                  onResumeSpeech={resumeSpeech}
+                  onStopSpeech={stopSpeech}
+                  onSelecionarOpcao={onSelecionarOpcaoDocumento}
+                />
+              </React.Fragment>
+            );
+          })}
+
+          {/* Mensagem em streaming do assistente */}
+          {emStreaming && (
+            <div className="flex flex-col mb-3.5 max-w-[72%] ml-auto items-end">
+              <div className="relative px-4 py-2.5 rounded-2xl rounded-tr-sm bg-[#1a2536] border border-[#233348] text-slate-100 shadow-md text-sm">
+                <div className="flex items-center justify-between gap-3 mb-1 text-[11px] font-medium text-emerald-400">
+                  <span>{ASSISTENTE.nome}</span>
+                  <span className="flex items-center gap-1 text-slate-400 text-[10px]">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    respondendo...
+                  </span>
+                </div>
+
+                <div className="leading-relaxed break-words whitespace-pre-wrap">
+                  {textoStreaming ? (
+                    renderizarTextoWhatsApp(textoStreaming)
+                  ) : (
+                    <span className="flex items-center gap-1 text-slate-400 text-xs py-1">
+                      Consultando o Cofre Delta Plan...
+                    </span>
+                  )}
                 </div>
               </div>
-            );
-          })()}
+            </div>
+          )}
 
           <div ref={mensagensEndRef} />
         </div>
@@ -275,116 +295,91 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
 
       {/* Prévia de Anexos Pendentes */}
       {anexosPendentes.length > 0 && (
-        <div className="px-4 py-2 bg-wa-panel border-t border-wa-border flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            {anexosPendentes.map((anexo, idx) => (
-              <div
-                key={idx}
-                className="flex items-center gap-2 px-3 py-1.5 bg-wa-bg rounded-lg border border-wa-border text-xs text-wa-textPrimary"
-              >
-                {anexo.tipo === 'pdf' ? (
-                  <FileText className="w-4 h-4 text-rose-400" />
-                ) : (
-                  <ImageIcon className="w-4 h-4 text-sky-400" />
-                )}
-                <span className="truncate max-w-[160px] font-medium">{anexo.titulo || anexo.nome}</span>
-                <span className="text-[10px] text-wa-textSecondary">({anexo.tamanho})</span>
-                <button
-                  onClick={() => removerAnexo(idx)}
-                  className="p-0.5 rounded hover:bg-white/10 text-wa-textSecondary hover:text-rose-400 transition-colors"
-                  title="Remover anexo"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            ))}
-          </div>
-
-          {onNavegarParaDocumentos && (
-            <div className="text-[11px] text-wa-textMuted flex items-center gap-1.5 self-end sm:self-center">
-              <span>Quer salvar no cofre definitivo?</span>
+        <div className="px-4 py-2 bg-[#121820] border-t border-[#1e2633] flex items-center gap-2 overflow-x-auto">
+          {anexosPendentes.map((anexo, idx) => (
+            <div
+              key={idx}
+              className="flex items-center gap-2 bg-[#18202b] border border-[#202937] px-3 py-1.5 rounded-lg text-xs text-slate-200"
+            >
+              {anexo.tipo === 'pdf' ? (
+                <FileText className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+              ) : anexo.tipo === 'imagem' ? (
+                <ImageIcon className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+              ) : (
+                <Paperclip className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              )}
+              <span className="max-w-[140px] truncate">{anexo.nome}</span>
               <button
-                type="button"
-                onClick={onNavegarParaDocumentos}
-                className="text-wa-greenLight hover:underline font-semibold flex items-center gap-1 cursor-pointer"
+                onClick={() => removerAnexo(idx)}
+                className="text-slate-400 hover:text-rose-400 transition-colors ml-1"
               >
-                <FolderOpen className="w-3 h-3 text-wa-green" />
-                <span>Base da VEGA &gt; Documentos</span>
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
-          )}
+          ))}
         </div>
       )}
 
-      {/* Barra de Status do Microfone se estiver gravando */}
-      {isListening && (
-        <div className="px-4 py-1.5 bg-rose-500/20 border-t border-rose-500/30 flex items-center justify-between text-xs text-rose-300 animate-pulse">
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
-            <span>Microfone ativo (pt-BR). Dite sua solicitação para a VEGA...</span>
-          </div>
-          <button
-            onClick={stopListening}
-            className="text-[11px] px-2 py-0.5 bg-rose-600 text-white rounded font-medium hover:bg-rose-700"
-          >
-            Finalizar fala
-          </button>
-        </div>
-      )}
-
-      {/* Rodapé / Input de Mensagem */}
-      <footer className="p-3 bg-wa-panel border-t border-wa-border flex items-end gap-2">
+      {/* Barra de Entrada de Mensagem */}
+      <footer className="p-3 bg-[#121820] border-t border-[#1e2633] flex items-end gap-2 z-10">
         <input
-          type="file"
           ref={fileInputRef}
+          type="file"
+          accept=".pdf,image/*"
           onChange={handleSelecionarArquivo}
-          accept="application/pdf,image/*"
           className="hidden"
         />
 
-        {/* Botão de Anexo (Clipe) */}
+        {/* Botão de Anexo */}
         <button
+          type="button"
           onClick={() => fileInputRef.current?.click()}
-          title="Anexar arquivo para a VEGA analisar nesta conversa"
-          className="p-2.5 rounded-full text-wa-textSecondary hover:text-wa-textPrimary hover:bg-wa-panelHover transition-colors flex-shrink-0"
+          title="Anexar documento ou imagem"
+          className="p-2.5 rounded-xl text-slate-400 hover:text-slate-100 hover:bg-[#18202b] transition-colors shrink-0 cursor-pointer"
         >
           <Paperclip className="w-5 h-5" />
         </button>
 
-        {/* Textarea multilinhas */}
-        <div className="flex-1 bg-wa-bg rounded-xl border border-transparent focus-within:border-wa-green/60 transition-colors px-3 py-1.5 flex items-center">
+        {/* Campo de Texto */}
+        <div className="flex-1 min-w-0 bg-[#0b0f14] border border-[#202937] rounded-xl px-3 py-2 focus-within:border-emerald-500 transition-colors">
           <textarea
             ref={textareaRef}
             rows={1}
             value={textoInput}
             onChange={(e) => setTextoInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Consulte um documento ou arquivo da Delta Plan..."
-            className="w-full bg-transparent text-sm text-wa-textPrimary placeholder:text-wa-textMuted focus:outline-none resize-none max-h-32 py-1 leading-relaxed"
+            placeholder={
+              isListening
+                ? 'Ouvindo microfone... Fale agora...'
+                : 'Digite uma mensagem para o contato...'
+            }
+            className="w-full bg-transparent text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none resize-none max-h-32"
           />
         </div>
 
-        {/* Botão de Microfone */}
+        {/* Botão de Microfone (STT) */}
         {micSuportado && (
           <button
+            type="button"
             onClick={toggleMic}
-            title={isListening ? 'Parar gravação de voz' : 'Falar solicitação'}
-            className={`p-2.5 rounded-full transition-all flex-shrink-0 ${
+            title={isListening ? 'Parar gravação' : 'Gravar por voz'}
+            className={`p-2.5 rounded-xl transition-colors shrink-0 cursor-pointer ${
               isListening
-                ? 'bg-rose-600 text-white shadow-lg animate-pulse'
-                : 'text-wa-textSecondary hover:text-wa-textPrimary hover:bg-wa-panelHover'
+                ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse'
+                : 'text-slate-400 hover:text-slate-100 hover:bg-[#18202b]'
             }`}
           >
             {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
           </button>
         )}
 
-        {/* Botão de Envio */}
+        {/* Botão de Enviar */}
         <button
+          type="button"
           onClick={handleEnviar}
           disabled={(!textoInput.trim() && anexosPendentes.length === 0) || emStreaming}
-          className="p-2.5 rounded-full bg-wa-green hover:bg-wa-greenHover text-slate-950 transition-all active:scale-95 disabled:opacity-40 disabled:pointer-events-none flex-shrink-0 shadow"
           title="Enviar mensagem"
+          className="p-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 disabled:opacity-30 disabled:hover:bg-emerald-500 text-slate-950 transition-colors shrink-0 shadow-sm cursor-pointer"
         >
           <Send className="w-5 h-5" />
         </button>

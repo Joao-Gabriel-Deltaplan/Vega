@@ -435,7 +435,7 @@ Retorne ESTRITAMENTE um objeto JSON com as chaves (todas opcionais, preencha ape
 }
 
 /**
- * Atualiza data/titulares.json com os campos sugeridos sem sobrescrever dados conferidos
+ * Atualiza a tabela titulares no Supabase com os campos sugeridos sem sobrescrever dados conferidos
  */
 export async function salvarCamposSugeridosNoTitular(
   titularNome: string,

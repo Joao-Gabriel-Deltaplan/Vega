@@ -379,11 +379,67 @@ function calcularCustoEstimado(modelo: string, tokensPrompt: number, tokensCompl
  * Formata ou resume o conteúdo de um item de conhecimento citando o título
  */
 async function formatarOuResumirConhecimento(
-  titulo: string,
-  conteudo: string,
+  item: ItemConhecimento,
   openai: OpenAI
 ): Promise<ResultadoTextoIA> {
   const inicio = Date.now();
+
+  // 1. Resposta Determinística Exata para Chave PIX
+  if (item.tipo === 'pix') {
+    const d = (item.dadosEstruturados as any) || {};
+    const titular = d.titular || 'Delta Plan';
+    const tipoChave = d.tipoChave || 'Chave';
+    const chave = d.chave || item.conteudo;
+    const bancoLinha = d.banco ? `\n*Banco:* ${d.banco}` : '';
+    const titularLinha = `\n*Titular:* ${titular}`;
+
+    return {
+      texto: `Aqui está a chave PIX de *${titular}*:\n\n*Chave:* \`${chave}\` (${tipoChave})${bancoLinha}${titularLinha}`,
+      tempoMs: Date.now() - inicio,
+      tokensPrompt: 0,
+      tokensCompletion: 0,
+      tokensTotal: 0,
+    };
+  }
+
+  // 2. Resposta Determinística Exata para Links de Sistemas
+  if (item.tipo === 'link') {
+    const d = (item.dadosEstruturados as any) || {};
+    const sistema = d.nomeSistema || item.titulo;
+    const link = d.link || item.conteudo;
+    const finalidadeLinha = d.finalidade ? `\n_(${d.finalidade})_` : '';
+
+    return {
+      texto: `Aqui está o link do *${sistema}*:\n\n🔗 ${link}${finalidadeLinha}`,
+      tempoMs: Date.now() - inicio,
+      tokensPrompt: 0,
+      tokensCompletion: 0,
+      tokensTotal: 0,
+    };
+  }
+
+  // 3. Resposta Determinística Exata para Contatos
+  if (item.tipo === 'contato') {
+    const d = (item.dadosEstruturados as any) || {};
+    const nome = d.nome || item.titulo;
+    const partes: string[] = [`*${nome}*`];
+    if (d.funcao) partes.push(`*Cargo/Função:* ${d.funcao}`);
+    if (d.telefone) partes.push(`*Telefone:* ${d.telefone}`);
+    if (d.email) partes.push(`*E-mail:* ${d.email}`);
+
+    return {
+      texto: `Aqui estão os dados de contato de *${nome}*:\n\n${partes.join('\n')}`,
+      tempoMs: Date.now() - inicio,
+      tokensPrompt: 0,
+      tokensCompletion: 0,
+      tokensTotal: 0,
+    };
+  }
+
+  // 4. Regras e textos livres
+  const titulo = item.titulo;
+  const conteudo = item.conteudo;
+
   if (conteudo.length <= 350) {
     return {
       texto: `De acordo com a instrução *${titulo}*:\n${conteudo}`,
@@ -460,6 +516,69 @@ export async function buscarConhecimentoPorNome(
 
   const termoNorm = normalizarParaBusca(termo);
   if (!termoNorm) return null;
+
+  // 0. BUSCA EXATA ESTRUTURADA (PIX, Link, Contato)
+  // A) Consulta de Chave PIX
+  if (termoNorm.includes('pix')) {
+    const itensPix = conhecimentos.filter(
+      (c) => c.tipo === 'pix' || c.titulo.toLowerCase().includes('pix')
+    );
+    if (itensPix.length > 0) {
+      for (const p of itensPix) {
+        const dados = (p.dadosEstruturados as any) || {};
+        const titular = dados.titular ? normalizarParaBusca(dados.titular) : '';
+        const titItem = normalizarParaBusca(p.titulo);
+        if (
+          (titular && termoNorm.includes(titular)) ||
+          (titItem && termoNorm.includes(titItem))
+        ) {
+          return { item: p, score: 100 };
+        }
+      }
+      // Se não especificou titular mas só existe 1 chave cadastrada
+      if (itensPix.length === 1) {
+        return { item: itensPix[0], score: 100 };
+      }
+    }
+  }
+
+  // B) Consulta de Links de Sistemas
+  if (/\b(link|url|site|sistema|portal|acesso)\b/.test(termoNorm)) {
+    const itensLink = conhecimentos.filter(
+      (c) => c.tipo === 'link' || c.categoria?.toLowerCase() === 'sistemas'
+    );
+    for (const l of itensLink) {
+      const dados = (l.dadosEstruturados as any) || {};
+      const nomeSis = dados.nomeSistema ? normalizarParaBusca(dados.nomeSistema) : '';
+      const titItem = normalizarParaBusca(l.titulo);
+      if (
+        (nomeSis && (termoNorm.includes(nomeSis) || nomeSis.includes(termoNorm))) ||
+        (titItem && (termoNorm.includes(titItem) || titItem.includes(termoNorm)))
+      ) {
+        return { item: l, score: 100 };
+      }
+    }
+  }
+
+  // C) Consulta de Contatos
+  if (/\b(contato|telefone|celular|whatsapp|email|e-mail|ramal|falar com)\b/.test(termoNorm)) {
+    const itensContato = conhecimentos.filter(
+      (c) => c.tipo === 'contato' || c.categoria?.toLowerCase() === 'contatos'
+    );
+    for (const ct of itensContato) {
+      const dados = (ct.dadosEstruturados as any) || {};
+      const nome = dados.nome ? normalizarParaBusca(dados.nome) : '';
+      const funcao = dados.funcao ? normalizarParaBusca(dados.funcao) : '';
+      const titItem = normalizarParaBusca(ct.titulo);
+      if (
+        (nome && (termoNorm.includes(nome) || nome.includes(termoNorm))) ||
+        (funcao && (termoNorm.includes(funcao) || funcao.includes(termoNorm))) ||
+        (titItem && (termoNorm.includes(titItem) || titItem.includes(termoNorm)))
+      ) {
+        return { item: ct, score: 100 };
+      }
+    }
+  }
 
   // 1. Correspondência exata do título
   for (const c of conhecimentos) {
@@ -1194,7 +1313,7 @@ export async function processarMensagemChat(dados: {
       };
     }
 
-    // Aplica e salva a correção na ficha em data/titulares.json
+    // Aplica e salva a correção na ficha na tabela titulares do Supabase
     const titular = await obterTitularPorNome(correcaoPendente.titularNome);
     if (titular && correcaoPendente.campoId !== 'silenciar_alerta') {
       const campoKey = correcaoPendente.campoId as CampoTitularId;
@@ -1823,7 +1942,7 @@ export async function processarMensagemChat(dados: {
 
     if (matchConhecimento) {
       const { item, score } = matchConhecimento;
-      const resK = await formatarOuResumirConhecimento(item.titulo, item.conteudo, openai);
+      const resK = await formatarOuResumirConhecimento(item, openai);
       tokensPromptTotal += resK.tokensPrompt;
       tokensCompletionTotal += resK.tokensCompletion;
       tokensGeraisTotal += resK.tokensTotal;
@@ -2668,7 +2787,7 @@ export async function processarMensagemChat(dados: {
     const tempoBuscaK = Date.now() - inicioBuscaK;
 
     if (matchExatoTitulo) {
-      const resK = await formatarOuResumirConhecimento(matchExatoTitulo.titulo, matchExatoTitulo.conteudo, openai);
+      const resK = await formatarOuResumirConhecimento(matchExatoTitulo, openai);
       tokensPromptTotal += resK.tokensPrompt;
       tokensCompletionTotal += resK.tokensCompletion;
       tokensGeraisTotal += resK.tokensTotal;
@@ -2795,7 +2914,7 @@ export async function processarMensagemChat(dados: {
 
     if (matchConhecimentoFallback) {
       const { item, score } = matchConhecimentoFallback;
-      const resK = await formatarOuResumirConhecimento(item.titulo, item.conteudo, openai);
+      const resK = await formatarOuResumirConhecimento(item, openai);
       tokensPromptTotal += resK.tokensPrompt;
       tokensCompletionTotal += resK.tokensCompletion;
       tokensGeraisTotal += resK.tokensTotal;

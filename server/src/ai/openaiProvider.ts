@@ -166,7 +166,7 @@ export async function verificarLimitesCota(): Promise<ResultadoChecagemCota> {
 
 /**
  * Interpreta a intenção do usuário utilizando OpenAI (modelo configurado em OPENAI_CHAT_MODEL),
- * com controle de cota (RPM, RPD, teto mensal), backoff e registro em data/uso_ia.json.
+ * com controle de cota (RPM, RPD, teto mensal), backoff e registro na tabela uso_ia do Supabase.
  */
 export async function interpretarComIA(dados: {
   mensagemUsuario: string;

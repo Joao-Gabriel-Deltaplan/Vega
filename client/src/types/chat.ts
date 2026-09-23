@@ -82,7 +82,7 @@ export interface DocumentoRegistro {
   visibilidade: VisibilidadeDoc;
   tamanho?: string;
   dataCadastro?: string;
-  statusIndexacao?: 'indexado' | 'pendente' | 'erro';
+  statusIndexacao?: 'processando' | 'indexado' | 'pendente' | 'erro' | 'substituido';
   erroIndexacao?: string;
   dataValidade?: string | null;
   origemValidade?: 'extraído automaticamente' | 'corrigido pelo chat' | 'manual';
@@ -163,6 +163,8 @@ export interface AnaliseDocumentoResponse {
   tituloSugerido: string;
   tipoSugerido: string;
   titularSugerido: string;
+  nomeNoDocumento?: string | null;
+  novoTitularSugerido?: boolean;
   apelidosSugeridos: string[];
   visibilidadeSugerida: VisibilidadeDoc;
   descricaoSugerida: string;
@@ -187,11 +189,35 @@ export interface BuscaSemResultadoRegistro {
   equivalenteOferecido?: string;
 }
 
+export type TipoConhecimento = 'pix' | 'link' | 'contato' | 'regra';
+
+export interface DadosPix {
+  titular: string;
+  tipoChave: 'CNPJ' | 'CPF' | 'Celular' | 'E-mail' | 'Aleatória';
+  chave: string;
+  banco?: string;
+}
+
+export interface DadosLink {
+  nomeSistema: string;
+  link: string;
+  finalidade?: string;
+}
+
+export interface DadosContato {
+  nome: string;
+  funcao?: string;
+  telefone?: string;
+  email?: string;
+}
+
 export interface ItemConhecimento {
   id: string;
   titulo: string;
   categoria: string;
   conteudo: string;
+  tipo?: TipoConhecimento;
+  dadosEstruturados?: DadosPix | DadosLink | DadosContato | Record<string, any>;
   dataAtualizacao: string;
 }
 

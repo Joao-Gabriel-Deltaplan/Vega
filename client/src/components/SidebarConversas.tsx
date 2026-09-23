@@ -1,20 +1,14 @@
 import React, { useState, useMemo } from 'react';
-import { Search, MessageSquare, Mic, Paperclip } from 'lucide-react';
+import { Search, MessageSquare, Mic, Paperclip, Loader2 } from 'lucide-react';
 import { Conversa } from '../types/chat.js';
 import { formatarHorario } from '../utils/dataHoraUtils.js';
+import { obterPaletaAvatar, obterIniciais } from '../utils/avatarUtils.js';
 
 interface SidebarConversasProps {
   conversas: Conversa[];
   conversaAtivaId: string | null;
   onSelecionarConversa: (id: string) => void;
-}
-
-// Extrai as iniciais do nome
-function getIniciais(nome: string): string {
-  if (!nome) return '??';
-  const partes = nome.trim().split(/\s+/);
-  if (partes.length === 1) return partes[0].substring(0, 2).toUpperCase();
-  return (partes[0][0] + partes[partes.length - 1][0]).toUpperCase();
+  carregando?: boolean;
 }
 
 // Formatação do telefone para exibição amigável
@@ -34,6 +28,7 @@ export const SidebarConversas: React.FC<SidebarConversasProps> = ({
   conversas,
   conversaAtivaId,
   onSelecionarConversa,
+  carregando = false,
 }) => {
   const [busca, setBusca] = useState('');
 
@@ -51,49 +46,69 @@ export const SidebarConversas: React.FC<SidebarConversasProps> = ({
   }, [conversas, busca]);
 
   return (
-    <aside className="w-[320px] min-w-[320px] h-full flex flex-col bg-wa-bg border-r border-wa-border">
-      {/* Topo / Header do WhatsApp */}
-      <div className="p-3.5 bg-wa-panel flex flex-col gap-2.5 border-b border-wa-border">
+    <aside className="w-[320px] min-w-[320px] h-full flex flex-col bg-[#0f141c] border-r border-[#1e2633]">
+      {/* Topo / Header da Lista */}
+      <div className="p-3.5 bg-[#121820] flex flex-col gap-2.5 border-b border-[#1e2633]">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-wa-green/20 text-wa-green flex items-center justify-center">
-              <MessageSquare className="w-4 h-4" />
+            <div className="w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center">
+              <MessageSquare className="w-3.5 h-3.5" />
             </div>
             <div>
-              <h1 className="font-bold text-sm text-wa-textPrimary">
-                WhatsApp Real
+              <h1 className="font-semibold text-xs text-slate-100 uppercase tracking-wider">
+                Conversas WhatsApp
               </h1>
-              <span className="text-[11px] text-wa-textSecondary">
-                {conversas.length} {conversas.length === 1 ? 'conversa ativa' : 'conversas ativas'}
+              <span className="text-[11px] text-slate-400 flex items-center gap-1">
+                {carregando ? (
+                  <span className="flex items-center gap-1 text-slate-500">
+                    <Loader2 className="w-3 h-3 animate-spin text-emerald-400" />
+                    Carregando...
+                  </span>
+                ) : (
+                  `${conversas.length} ${conversas.length === 1 ? 'conversa' : 'conversas'}`
+                )}
               </span>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] text-emerald-400 font-semibold">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-[10px] text-emerald-400 font-medium">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
             <span>Ao vivo</span>
           </div>
         </div>
 
         {/* Campo de Busca */}
         <div className="relative">
-          <Search className="w-4 h-4 text-wa-textSecondary absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             type="text"
-            placeholder="Pesquisar conversa ou telefone..."
+            placeholder="Buscar por contato ou mensagem..."
             value={busca}
             onChange={(e) => setBusca(e.target.value)}
-            className="w-full pl-9 pr-3 py-1.5 bg-wa-bg rounded-lg text-xs text-wa-textPrimary placeholder:text-wa-textMuted border border-transparent focus:border-wa-green focus:outline-none transition-colors"
+            disabled={carregando}
+            className="w-full pl-8 pr-3 py-1.5 bg-[#0b0f14] rounded-lg text-xs text-slate-200 placeholder:text-slate-500 border border-[#202937] focus:border-emerald-500 focus:outline-none transition-colors disabled:opacity-50"
           />
         </div>
       </div>
 
-      {/* Lista de Conversas do WhatsApp */}
-      <div className="flex-1 overflow-y-auto divide-y divide-wa-border/30">
-        {conversasFiltradas.length === 0 ? (
-          <div className="p-6 text-center text-wa-textSecondary text-xs">
+      {/* Lista de Conversas */}
+      <div className="flex-1 overflow-y-auto divide-y divide-[#1e2633]/60">
+        {carregando ? (
+          <div className="p-4 space-y-3">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="flex items-center gap-3 p-2 rounded-xl animate-pulse">
+                <div className="w-10 h-10 rounded-full bg-[#18202b] flex-shrink-0" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-3 bg-[#18202b] rounded w-28" />
+                  <div className="h-2 bg-[#18202b]/60 rounded w-40" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : conversasFiltradas.length === 0 ? (
+          <div className="p-8 text-center text-slate-500 text-xs">
             {busca
               ? 'Nenhuma conversa encontrada para esta busca.'
-              : 'Nenhuma conversa do WhatsApp recebida ainda.'}
+              : 'Nenhuma conversa do WhatsApp registrada ainda.'}
           </div>
         ) : (
           conversasFiltradas.map((conversa) => {
@@ -106,6 +121,7 @@ export const SidebarConversas: React.FC<SidebarConversasProps> = ({
 
             const nivel =
               conversa.contato.nivelAcesso || conversa.contato.ficha?.nivelAcesso || 'geral';
+            const paletaAvatar = obterPaletaAvatar(conversa.contato.nome);
 
             return (
               <div
@@ -113,20 +129,24 @@ export const SidebarConversas: React.FC<SidebarConversasProps> = ({
                 onClick={() => onSelecionarConversa(conversa.id)}
                 className={`flex items-center gap-3 p-3.5 cursor-pointer transition-colors relative ${
                   isAtiva
-                    ? 'bg-wa-panel border-l-4 border-wa-green'
-                    : 'hover:bg-wa-panel/60'
+                    ? 'bg-[#18202b] border-l-2 border-emerald-400'
+                    : 'hover:bg-[#131922]'
                 }`}
               >
-                {/* Avatar do Contato */}
+                {/* Avatar do Contato com Cor Suave Derivada do Nome */}
                 <div
-                  className="w-11 h-11 rounded-full flex items-center justify-center font-bold text-sm text-slate-950 flex-shrink-0 shadow-inner relative"
-                  style={{ backgroundColor: conversa.contato.avatarCor || '#25D366' }}
+                  className="w-10 h-10 rounded-full flex items-center justify-center font-semibold text-xs flex-shrink-0 shadow-inner relative"
+                  style={{
+                    backgroundColor: paletaAvatar.bg,
+                    color: paletaAvatar.text,
+                    border: `1px solid ${paletaAvatar.border}`,
+                  }}
                 >
-                  {getIniciais(conversa.contato.nome)}
+                  {obterIniciais(conversa.contato.nome)}
                   {nivel === 'diretoria' && (
                     <span
-                      title="Administrador / Diretoria"
-                      className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-amber-400 text-slate-950 flex items-center justify-center text-[9px] font-black border border-wa-bg"
+                      title="Administrador"
+                      className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-amber-400 text-slate-950 flex items-center justify-center text-[8px] font-black border border-[#0b0f14]"
                     >
                       ★
                     </span>
@@ -136,43 +156,43 @@ export const SidebarConversas: React.FC<SidebarConversasProps> = ({
                 {/* Informações da Conversa */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-1 mb-0.5">
-                    <span className="font-semibold text-xs text-wa-textPrimary truncate">
+                    <span className="font-medium text-xs text-slate-100 truncate">
                       {conversa.contato.nome}
                     </span>
-                    <span className="text-[10px] text-wa-textMuted flex-shrink-0">
+                    <span className="text-[10px] text-slate-500 flex-shrink-0">
                       {formatarHorario(ultimaMensagem?.timestamp || ultimaMensagem?.horario)}
                     </span>
                   </div>
 
                   {/* Número de Telefone e Perfil */}
                   <div className="flex items-center gap-1.5 mb-1 text-[11px]">
-                    <span className="font-mono text-wa-textSecondary truncate">
+                    <span className="text-slate-400 font-mono text-[10px] truncate">
                       {formatarTelefone(conversa.contato.telefone)}
                     </span>
                     <span
-                      className={`text-[9px] px-1 py-0.2 rounded font-semibold uppercase tracking-wider ${
+                      className={`text-[9px] px-1.5 py-0.2 rounded font-medium ${
                         nivel === 'diretoria'
-                          ? 'bg-amber-500/20 text-amber-300'
-                          : 'bg-wa-border/60 text-wa-textMuted'
+                          ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
+                          : 'bg-slate-800 text-slate-400'
                       }`}
                     >
-                      {nivel === 'diretoria' ? 'Admin' : 'Geral'}
+                      {nivel === 'diretoria' ? 'Admin' : 'Comum'}
                     </span>
                   </div>
 
-                  {/* Prévia da Última Mensagem com Selo de Áudio/Anexo */}
+                  {/* Prévia da Última Mensagem */}
                   <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1 text-[11px] text-wa-textSecondary truncate">
+                    <div className="flex items-center gap-1 text-[11px] text-slate-400 truncate">
                       {isAudio && (
                         <span className="inline-flex items-center gap-0.5 text-emerald-400 font-medium flex-shrink-0">
-                          <Mic className="w-3 h-3 text-emerald-400" />
+                          <Mic className="w-3 h-3" />
                           <span>Áudio:</span>
                         </span>
                       )}
 
                       {!isAudio && temAnexo && (
-                        <span className="inline-flex items-center gap-0.5 text-indigo-400 font-medium flex-shrink-0">
-                          <Paperclip className="w-3 h-3 text-indigo-400" />
+                        <span className="inline-flex items-center gap-0.5 text-sky-400 font-medium flex-shrink-0">
+                          <Paperclip className="w-3 h-3" />
                           <span>[Anexo]</span>
                         </span>
                       )}
@@ -182,9 +202,9 @@ export const SidebarConversas: React.FC<SidebarConversasProps> = ({
                       </span>
                     </div>
 
-                    {/* Contador de Mensagens Não Lidas */}
+                    {/* Contador de Mensagens Não Lidas Discreto */}
                     {conversa.naoLidas > 0 && (
-                      <span className="bg-wa-green text-slate-950 font-bold text-[10px] min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center flex-shrink-0 shadow-sm animate-pulse">
+                      <span className="bg-emerald-500 text-slate-950 font-bold text-[10px] min-w-[17px] h-[17px] px-1 rounded-full flex items-center justify-center flex-shrink-0 shadow-sm">
                         {conversa.naoLidas}
                       </span>
                     )}

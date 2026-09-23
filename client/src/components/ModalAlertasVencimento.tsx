@@ -58,27 +58,27 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
   });
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
-      <div className="bg-wa-panel border border-wa-border rounded-2xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-[#121820] border border-[#202937] rounded-2xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
         {/* Cabeçalho */}
-        <div className="p-4 sm:p-5 border-b border-wa-border flex items-center justify-between bg-wa-panelHover/50">
+        <div className="p-4 sm:p-5 border-b border-[#1e2633] flex items-center justify-between bg-[#18202b]">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+            <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
               <Bell className="w-5 h-5" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-base font-bold text-wa-textPrimary">
+                <h2 className="text-sm font-semibold text-slate-100">
                   Alertas de Vencimento de Documentos
                 </h2>
                 {totalNaoLidos > 0 && (
-                  <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-rose-500 text-white">
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
                     {totalNaoLidos} novo(s)
                   </span>
                 )}
               </div>
-              <p className="text-xs text-wa-textMuted">
-                Monitoramento diário de prazos de validade do Cofre Corporativo
+              <p className="text-xs text-slate-400">
+                Monitoramento contínuo de prazos de validade do Cofre Delta Plan
               </p>
             </div>
           </div>
@@ -88,15 +88,15 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
               type="button"
               onClick={handleRecarregar}
               disabled={atualizando}
-              className="p-2 rounded-lg bg-wa-bg hover:bg-wa-panelHover text-wa-textSecondary hover:text-wa-textPrimary border border-wa-border transition-colors cursor-pointer disabled:opacity-50"
+              className="p-2 rounded-xl bg-[#121820] hover:bg-[#202937] text-slate-400 hover:text-slate-100 border border-[#263345] transition-colors cursor-pointer disabled:opacity-50"
               title="Verificar validades agora"
             >
-              <RefreshCw className={`w-4 h-4 ${atualizando ? 'animate-spin text-wa-green' : ''}`} />
+              <RefreshCw className={`w-4 h-4 ${atualizando ? 'animate-spin text-emerald-400' : ''}`} />
             </button>
             <button
               type="button"
               onClick={onFechar}
-              className="p-2 rounded-lg bg-wa-bg hover:bg-wa-panelHover text-wa-textSecondary hover:text-wa-textPrimary border border-wa-border transition-colors cursor-pointer"
+              className="p-2 rounded-xl bg-[#121820] hover:bg-[#202937] text-slate-400 hover:text-slate-100 border border-[#263345] transition-colors cursor-pointer"
               title="Fechar"
             >
               <X className="w-4 h-4" />
@@ -105,15 +105,15 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
         </div>
 
         {/* Barra de Filtros e Ações em Lote */}
-        <div className="px-4 py-2.5 bg-wa-bg border-b border-wa-border flex flex-wrap items-center justify-between gap-2 text-xs">
-          <div className="flex items-center gap-1">
+        <div className="px-4 py-2.5 bg-[#0f141c] border-b border-[#1e2633] flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-1.5">
             <button
               type="button"
               onClick={() => setFiltro('todos')}
-              className={`px-2.5 py-1 rounded-lg font-medium transition-all ${
+              className={`px-3 py-1 rounded-lg font-medium transition-all cursor-pointer ${
                 filtro === 'todos'
-                  ? 'bg-wa-green text-slate-950 font-semibold shadow-sm'
-                  : 'text-wa-textSecondary hover:text-wa-textPrimary bg-wa-panel'
+                  ? 'bg-emerald-500 text-slate-950 font-semibold shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 bg-[#18202b]'
               }`}
             >
               Todos ({alertas.length})
@@ -121,10 +121,10 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
             <button
               type="button"
               onClick={() => setFiltro('nao_lidos')}
-              className={`px-2.5 py-1 rounded-lg font-medium transition-all ${
+              className={`px-3 py-1 rounded-lg font-medium transition-all cursor-pointer ${
                 filtro === 'nao_lidos'
-                  ? 'bg-wa-green text-slate-950 font-semibold shadow-sm'
-                  : 'text-wa-textSecondary hover:text-wa-textPrimary bg-wa-panel'
+                  ? 'bg-emerald-500 text-slate-950 font-semibold shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 bg-[#18202b]'
               }`}
             >
               Não lidos ({totalNaoLidos})
@@ -132,10 +132,10 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
             <button
               type="button"
               onClick={() => setFiltro('vencidos')}
-              className={`px-2.5 py-1 rounded-lg font-medium transition-all ${
+              className={`px-3 py-1 rounded-lg font-medium transition-all cursor-pointer ${
                 filtro === 'vencidos'
                   ? 'bg-rose-500 text-white font-semibold shadow-sm'
-                  : 'text-wa-textSecondary hover:text-rose-400 bg-wa-panel'
+                  : 'text-slate-400 hover:text-rose-300 bg-[#18202b]'
               }`}
             >
               Vencidos ({alertas.filter((a) => a.status === 'vencido').length})
@@ -143,10 +143,10 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
             <button
               type="button"
               onClick={() => setFiltro('a_vencer')}
-              className={`px-2.5 py-1 rounded-lg font-medium transition-all ${
+              className={`px-3 py-1 rounded-lg font-medium transition-all cursor-pointer ${
                 filtro === 'a_vencer'
                   ? 'bg-amber-500 text-slate-950 font-semibold shadow-sm'
-                  : 'text-wa-textSecondary hover:text-amber-400 bg-wa-panel'
+                  : 'text-slate-400 hover:text-amber-300 bg-[#18202b]'
               }`}
             >
               A vencer ({alertas.filter((a) => a.status === 'a_vencer' || a.status === 'vence_hoje').length})
@@ -157,7 +157,7 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
             <button
               type="button"
               onClick={onMarcarTodosLidos}
-              className="flex items-center gap-1 text-[11px] font-semibold text-wa-green hover:underline cursor-pointer ml-auto"
+              className="flex items-center gap-1 text-[11px] font-medium text-emerald-400 hover:underline cursor-pointer ml-auto"
             >
               <CheckCheck className="w-3.5 h-3.5" />
               <span>Marcar todos como lidos</span>
@@ -166,17 +166,17 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
         </div>
 
         {/* Lista de Alertas */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
           {alertasFiltrados.length === 0 ? (
-            <div className="p-10 text-center space-y-3 bg-wa-bg/40 rounded-xl border border-dashed border-wa-border">
-              <div className="w-12 h-12 rounded-full bg-emerald-500/10 text-emerald-400 mx-auto flex items-center justify-center">
-                <CheckCircle2 className="w-6 h-6" />
+            <div className="p-10 text-center space-y-3 bg-[#0f141c] rounded-xl border border-dashed border-[#202937]">
+              <div className="w-10 h-10 rounded-full bg-emerald-500/10 text-emerald-400 mx-auto flex items-center justify-center">
+                <CheckCircle2 className="w-5 h-5" />
               </div>
               <div>
-                <h4 className="text-sm font-semibold text-wa-textPrimary">
+                <h4 className="text-sm font-semibold text-slate-200">
                   Nenhum alerta nesta visualização
                 </h4>
-                <p className="text-xs text-wa-textMuted max-w-sm mx-auto mt-1">
+                <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1">
                   Os documentos monitorados estão em conformidade com as regras de vencimento da Delta Plan.
                 </p>
               </div>
@@ -186,30 +186,30 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
               const ehVencido = alerta.status === 'vencido';
               const ehVenceHoje = alerta.status === 'vence_hoje';
 
-              let corBorda = 'border-wa-border';
-              let corFundo = alerta.lido ? 'bg-wa-panel/60' : 'bg-wa-panel';
+              let corBorda = 'border-[#202937]';
+              let corFundo = alerta.lido ? 'bg-[#121820]/60' : 'bg-[#121820]';
               let badgeStatus = (
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
-                  <Clock className="w-3 h-3" />
+                <span className="px-2 py-0.5 rounded text-[10px] font-medium tracking-wider uppercase bg-amber-500/10 text-amber-300 border border-amber-500/20 flex items-center gap-1">
+                  <Clock className="w-3 h-3 text-amber-400" />
                   <span>A VENCER EM {alerta.diasRestantes} DIAS</span>
                 </span>
               );
 
               if (ehVencido) {
-                corBorda = alerta.lido ? 'border-rose-500/30' : 'border-rose-500/60';
-                corFundo = alerta.lido ? 'bg-rose-950/20' : 'bg-rose-950/40';
+                corBorda = alerta.lido ? 'border-rose-500/20' : 'border-rose-500/40';
+                corFundo = alerta.lido ? 'bg-rose-950/10' : 'bg-rose-950/20';
                 const diasPos = Math.abs(alerta.diasRestantes);
                 badgeStatus = (
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-rose-500/20 text-rose-300 border border-rose-500/50 flex items-center gap-1">
-                    <AlertTriangle className="w-3 h-3" />
+                  <span className="px-2 py-0.5 rounded text-[10px] font-medium tracking-wider uppercase bg-rose-500/15 text-rose-300 border border-rose-500/30 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3 text-rose-400" />
                     <span>VENCIDO HÁ {diasPos} DIA(S)</span>
                   </span>
                 );
               } else if (ehVenceHoje) {
-                corBorda = 'border-rose-500/60';
-                corFundo = 'bg-rose-950/30';
+                corBorda = 'border-rose-500/40';
+                corFundo = 'bg-rose-950/20';
                 badgeStatus = (
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-rose-500 text-white flex items-center gap-1">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-semibold tracking-wider uppercase bg-rose-500 text-white flex items-center gap-1">
                     <AlertTriangle className="w-3 h-3" />
                     <span>VENCE HOJE!</span>
                   </span>
@@ -219,46 +219,46 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
               return (
                 <div
                   key={alerta.id}
-                  className={`p-3.5 rounded-xl border ${corBorda} ${corFundo} flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all shadow-sm`}
+                  className={`p-3.5 rounded-xl border ${corBorda} ${corFundo} flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all`}
                 >
                   <div className="space-y-1.5 flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <div className="flex items-center gap-1.5 min-w-0">
-                        <FileText className="w-4 h-4 text-wa-green flex-shrink-0" />
-                        <h4 className="font-semibold text-xs sm:text-sm text-wa-textPrimary truncate">
+                        <FileText className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <h4 className="font-semibold text-xs text-slate-100 truncate">
                           {alerta.documentoTitulo}
                         </h4>
                       </div>
                       {badgeStatus}
                       {!alerta.lido && (
-                        <span className="w-2 h-2 rounded-full bg-wa-green" title="Não lido" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Novo alerta" />
                       )}
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-3 text-xs text-wa-textSecondary">
-                      <span className="flex items-center gap-1 text-wa-textMuted">
-                        <Building2 className="w-3.5 h-3.5 text-wa-green" />
-                        <span>Titular: <strong>{alerta.titular || 'Delta Plan'}</strong></span>
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                      <span className="flex items-center gap-1 text-slate-500">
+                        <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                        <span>Titular: <strong className="text-slate-300">{alerta.titular || 'Delta Plan'}</strong></span>
                       </span>
 
-                      <span className="flex items-center gap-1 text-wa-textMuted">
+                      <span className="flex items-center gap-1 text-slate-500">
                         <Calendar className="w-3.5 h-3.5 text-amber-400" />
-                        <span>Validade: <strong className="text-wa-textPrimary">{alerta.dataValidade}</strong></span>
+                        <span>Validade: <strong className="text-slate-200">{alerta.dataValidade}</strong></span>
                       </span>
 
-                      <span className="text-[11px] text-wa-textMuted">
+                      <span className="text-[11px] text-slate-500">
                         Gerado em: {new Date(alerta.dataGeracao).toLocaleDateString('pt-BR')}
                       </span>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 self-end sm:self-auto flex-shrink-0">
+                  <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
                     <button
                       type="button"
                       onClick={async () => {
                         if (
                           window.confirm(
-                            `Deseja parar de alertar sobre o documento "${alerta.documentoTitulo}"? Se o documento for substituído, os alertas voltarão a funcionar.`
+                            `Deseja silenciar alertas do documento "${alerta.documentoTitulo}"?`
                           )
                         ) {
                           if (onSilenciarDocumento) {
@@ -273,26 +273,26 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
                           }
                         }
                       }}
-                      className="px-2.5 py-1 bg-wa-bg hover:bg-rose-500/10 text-wa-textMuted hover:text-rose-400 rounded-lg text-xs font-medium border border-wa-border hover:border-rose-500/30 flex items-center gap-1 transition-colors cursor-pointer"
-                      title="Não alertar mais sobre este documento"
+                      className="px-2.5 py-1 bg-[#18202b] hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 rounded-lg text-xs font-medium border border-[#263345] hover:border-rose-500/30 flex items-center gap-1 transition-colors cursor-pointer"
+                      title="Silenciar alertas deste documento"
                     >
                       <BellOff className="w-3.5 h-3.5 text-rose-400" />
-                      <span className="hidden sm:inline">Não alertar mais</span>
+                      <span className="hidden sm:inline">Silenciar</span>
                     </button>
 
                     {!alerta.lido ? (
                       <button
                         type="button"
                         onClick={() => onMarcarLido(alerta.id)}
-                        className="px-2.5 py-1 bg-wa-bg hover:bg-wa-panelHover text-wa-textSecondary hover:text-wa-green rounded-lg text-xs font-medium border border-wa-border flex items-center gap-1 transition-colors cursor-pointer"
+                        className="px-2.5 py-1 bg-[#18202b] hover:bg-[#202937] text-slate-300 hover:text-emerald-400 rounded-lg text-xs font-medium border border-[#263345] flex items-center gap-1 transition-colors cursor-pointer"
                         title="Marcar este alerta como lido"
                       >
                         <Check className="w-3.5 h-3.5" />
                         <span>Marcar lido</span>
                       </button>
                     ) : (
-                      <span className="text-[11px] text-wa-textMuted flex items-center gap-1 px-2 py-0.5">
-                        <CheckCheck className="w-3.5 h-3.5 text-wa-green" />
+                      <span className="text-[11px] text-slate-500 flex items-center gap-1 px-2 py-0.5">
+                        <CheckCheck className="w-3.5 h-3.5 text-emerald-400" />
                         <span>Lido</span>
                       </span>
                     )}
@@ -304,9 +304,9 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
         </div>
 
         {/* Rodapé Informativo */}
-        <div className="p-3 bg-wa-panelHover/40 border-t border-wa-border text-[11px] text-wa-textMuted flex items-center justify-between">
-          <span>Regras: Alertas a 60, 30, 7 dias, no dia e lembrete semanal para vencidos.</span>
-          <span className="font-mono">VEGA • Delta Plan</span>
+        <div className="p-3 bg-[#18202b] border-t border-[#1e2633] text-[11px] text-slate-500 flex items-center justify-between">
+          <span>Alertas automáticos: 60, 30 e 7 dias antes do vencimento.</span>
+          <span className="font-mono text-[10px]">Delta Plan • VEGA</span>
         </div>
       </div>
     </div>

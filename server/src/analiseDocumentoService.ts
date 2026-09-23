@@ -1,14 +1,97 @@
+import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import OpenAI from 'openai';
 import { extractText } from 'unpdf';
 import { AnaliseDocumentoResponse, VisibilidadeDoc } from './types.js';
 import { extrairCamposTitularDeDocumento } from './extracaoTitularService.js';
 import { extrairTextoImagemComVisao } from './indexador/indexadorService.js';
+import { obterTodosTitulares } from './storage.js';
+
+const TEMP_DIR = path.resolve(process.cwd(), 'temp_ocr');
+
+function assegurarTempDir() {
+  if (!fs.existsSync(TEMP_DIR)) {
+    fs.mkdirSync(TEMP_DIR, { recursive: true });
+  }
+}
 
 /**
- * Analisa o arquivo enviado (pelo nome e conteúdo do PDF ou imagem quando disponível).
- * Para PDFs com texto vetorial, extrai diretamente. Para imagens ou PDFs escaneados,
- * utiliza visão quando apropriado para sugerir metadados cadastrais com máxima precisão.
+ * Converte a primeira página de um PDF em imagem PNG usando pdftoppm e extrai o texto com gpt-5.4-mini (visão)
+ */
+async function extrairTextoPdfEscaneadoComVisao(
+  bufferPdf: Buffer,
+  openai: OpenAI
+): Promise<string> {
+  assegurarTempDir();
+  const idTemp = `pdf_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const caminhoPdfTemp = path.join(TEMP_DIR, `${idTemp}.pdf`);
+  const prefixoSaida = path.join(TEMP_DIR, `${idTemp}_p1`);
+
+  try {
+    fs.writeFileSync(caminhoPdfTemp, bufferPdf);
+    // Extrai página 1 em PNG com 150 DPI
+    execSync(`pdftoppm -png -r 150 -f 1 -l 1 "${caminhoPdfTemp}" "${prefixoSaida}"`, {
+      stdio: 'pipe',
+    });
+
+    const arquivosGerados = fs
+      .readdirSync(TEMP_DIR)
+      .filter((f) => f.startsWith(path.basename(prefixoSaida)) && f.endsWith('.png'));
+
+    if (arquivosGerados.length === 0) {
+      return '';
+    }
+
+    const caminhoImg = path.join(TEMP_DIR, arquivosGerados[0]);
+    const imgBuffer = fs.readFileSync(caminhoImg);
+    const base64Img = imgBuffer.toString('base64');
+
+    try {
+      fs.unlinkSync(caminhoImg);
+    } catch {}
+
+    const chatModel = process.env.OPENAI_CHAT_MODEL?.trim() || 'gpt-5.4-mini';
+    const response = await openai.chat.completions.create({
+      model: chatModel,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: 'Transcreva todo o texto contido nesta imagem de documento com máxima fidelidade. Preserve nomes completos, títulos, órgãos emissores, datas, números de documentos, nacionalidade e filiação.',
+            },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:image/png;base64,${base64Img}`,
+                detail: 'high',
+              },
+            },
+          ],
+        },
+      ],
+      max_completion_tokens: 2500,
+      temperature: 0.1,
+    });
+
+    return response.choices[0]?.message?.content?.trim() || '';
+  } catch (err) {
+    console.error('[analiseDocumentoService ⚠️] Erro ao processar OCR em PDF escaneado:', err);
+    return '';
+  } finally {
+    try {
+      if (fs.existsSync(caminhoPdfTemp)) fs.unlinkSync(caminhoPdfTemp);
+    } catch {}
+  }
+}
+
+/**
+ * Analisa o documento enviado (PDF ou imagens JPG/PNG/WEBP).
+ * Utiliza IA (gpt-5.4-mini) com reconhecimento dinâmico de tipos (sem listas engessadas)
+ * e conferência estrita de titulares contra os cadastrados no Supabase.
+ * NUNCA utiliza titulares ou tipos padrão (como 'Delta Plan' ou 'Outros') quando não identificados.
  */
 export async function analisarDocumentoParaCofre(dados: {
   nomeArquivo: string;
@@ -18,11 +101,7 @@ export async function analisarDocumentoParaCofre(dados: {
 }): Promise<AnaliseDocumentoResponse> {
   const { nomeArquivo, base64 } = dados;
 
-  // Fallback inicial: título baseado no nome do arquivo sem extensão
   const nomeLimpo = nomeArquivo.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ').trim();
-  const nomeLower = nomeLimpo.toLowerCase();
-
-  // Título sugerido formatado (Title Case)
   const tituloBase = nomeLimpo
     .split(' ')
     .map((palavra) => {
@@ -32,21 +111,18 @@ export async function analisarDocumentoParaCofre(dados: {
     })
     .join(' ');
 
-  let tituloSugerido = tituloBase;
-  let tipoSugerido = 'Outros';
-  let titularSugerido = 'Delta Plan';
-  let visibilidadeSugerida: VisibilidadeDoc = 'diretoria';
-  let descricaoSugerida = `Documento ${nomeLimpo} armazenado no cofre corporativo.`;
-  const apelidosSet = new Set<string>();
+  // Busca lista de titulares já cadastrados no Supabase para comparação estrita
+  let listaTitularesCadastrados: string[] = [];
+  try {
+    const titulares = await obterTodosTitulares();
+    listaTitularesCadastrados = titulares.map((t) => t.nome).filter(Boolean);
+  } catch (err) {
+    console.error('[analiseDocumentoService] Falha ao obter titulares do Supabase:', err);
+  }
 
-  // Adiciona termos do próprio nome aos apelidos
-  nomeLower
-    .split(/\s+/)
-    .map((p) => p.replace(/[.,;:!?]/g, ''))
-    .filter((p) => p.length >= 3 && !['pdf', 'png', 'jpg', 'jpeg', 'webp', 'doc', 'docx', 'para', 'com'].includes(p))
-    .forEach((p) => apelidosSet.add(p));
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  const openai = apiKey ? new OpenAI({ apiKey }) : null;
 
-  // Extração de texto em memória caso seja PDF ou Imagem com base64
   let textoExtraido = '';
   const isPdf = dados.mimeType === 'application/pdf' || nomeArquivo.toLowerCase().endsWith('.pdf');
   const isImagem = dados.mimeType?.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(nomeArquivo);
@@ -56,273 +132,148 @@ export async function analisarDocumentoParaCofre(dados: {
       const base64Limpo = base64.replace(/^data:.*?;base64,/, '');
       const buffer = Buffer.from(base64Limpo, 'base64');
       const { text } = await extractText(new Uint8Array(buffer), { mergePages: true });
-      textoExtraido = (text || '').toUpperCase();
-    } catch (err) {
-      textoExtraido = '';
-    }
-  } else if (base64 && isImagem) {
-    try {
-      const apiKey = process.env.OPENAI_API_KEY?.trim();
-      if (apiKey) {
-        const openai = new OpenAI({ apiKey });
-        const base64Limpo = base64.replace(/^data:.*?;base64,/, '');
-        const buffer = Buffer.from(base64Limpo, 'base64');
-        const ext = path.extname(nomeArquivo).toLowerCase();
-        let mime = dados.mimeType || 'image/jpeg';
-        if (ext === '.png') mime = 'image/png';
-        else if (ext === '.webp') mime = 'image/webp';
-        else if (ext === '.jpg' || ext === '.jpeg') mime = 'image/jpeg';
-        const txt = await extrairTextoImagemComVisao(buffer, mime, openai);
-        textoExtraido = (txt || '').toUpperCase();
+      const textoLimpo = (text || '').trim();
+
+      // Se o PDF tiver texto vetorial legível (> 60 caracteres úteis), usa o texto
+      const charsUteis = textoLimpo.replace(/[^a-zA-Z0-9]/g, '').length;
+      if (charsUteis >= 60) {
+        textoExtraido = textoLimpo;
+      } else if (openai) {
+        // PDF escaneado / foto salva como PDF: executa OCR com visão na página 1
+        console.log(`[analiseDocumentoService 📄] PDF "${nomeArquivo}" possui pouco texto vetorial (${charsUteis} chars). Aplicando visão OCR com gpt-5.4-mini...`);
+        textoExtraido = await extrairTextoPdfEscaneadoComVisao(buffer, openai);
       }
     } catch (err) {
-      textoExtraido = '';
+      console.error('[analiseDocumentoService] Erro ao extrair texto do PDF:', err);
+    }
+  } else if (base64 && isImagem && openai) {
+    try {
+      const base64Limpo = base64.replace(/^data:.*?;base64,/, '');
+      const buffer = Buffer.from(base64Limpo, 'base64');
+      const ext = path.extname(nomeArquivo).toLowerCase();
+      let mime = dados.mimeType || 'image/jpeg';
+      if (ext === '.png') mime = 'image/png';
+      else if (ext === '.webp') mime = 'image/webp';
+      else if (ext === '.jpg' || ext === '.jpeg') mime = 'image/jpeg';
+
+      textoExtraido = await extrairTextoImagemComVisao(buffer, mime, openai);
+    } catch (err) {
+      console.error('[analiseDocumentoService] Erro ao extrair texto de imagem com visão:', err);
     }
   }
 
-  // Texto consolidado para regras (em maiúsculas)
-  const textoParaAnalise = (textoExtraido + ' ' + nomeLimpo.toUpperCase()).trim();
+  // Se tiver OpenAI e texto extraído ou nome de arquivo, faz análise com IA
+  if (openai && (textoExtraido || nomeLimpo)) {
+    try {
+      const chatModel = process.env.OPENAI_CHAT_MODEL?.trim() || 'gpt-5.4-mini';
+      const promptSistema = `Você é o analisador oficial de documentos do Cofre da Delta Plan (Assistente VEGA).
+Sua missão é extrair com precisão os metadados do documento analisado.
 
-  // 1. CARTEIRA NACIONAL DE HABILITACAO -> tipo "CNH", apelido "cnh"
-  if (
-    textoParaAnalise.includes('CARTEIRA NACIONAL DE HABILITACAO') ||
-    nomeLower.includes('cnh') ||
-    textoParaAnalise.includes('DETRAN')
-  ) {
-    tipoSugerido = 'CNH';
-    visibilidadeSugerida = 'diretoria';
-    apelidosSet.add('cnh');
-    apelidosSet.add('habilitacao');
-    apelidosSet.add('documento pessoal');
-    descricaoSugerida = 'Carteira Nacional de Habilitação (CNH).';
+TITULARES CADASTRADOS NO SISTEMA:
+${listaTitularesCadastrados.length > 0 ? listaTitularesCadastrados.map((t) => `- ${t}`).join('\n') : '(Nenhum titular cadastrado ainda)'}
 
-    // Extrai titular se tiver nome no arquivo
-    const partesNome = nomeLimpo
-      .replace(/\b(cnh|digital|carteira|habilitacao|doc|documento|de|da|do)\b/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (partesNome.length > 2) {
-      titularSugerido = partesNome
-        .split(' ')
-        .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
-        .join(' ');
-      apelidosSet.add(partesNome.toLowerCase());
-      tituloSugerido = `CNH ${titularSugerido}`;
-    }
-  }
-  // 2. CERTIDÃO DE REGISTRO TÉCNICO (CRT) / CONSELHO REGIONAL DOS TÉCNICOS (CFT/CRT)
-  else if (
-    /\bcrt\b/i.test(nomeLimpo) ||
-    textoParaAnalise.includes('CERTIDAO DE REGISTRO') ||
-    textoParaAnalise.includes('REGISTRO TECNICO') ||
-    textoParaAnalise.includes('CONSELHO REGIONAL DOS TECNICOS') ||
-    textoParaAnalise.includes('CONSELHO FEDERAL DOS TECNICOS') ||
-    /\bCFT\b/.test(textoParaAnalise)
-  ) {
-    tipoSugerido = 'CRT';
-    visibilidadeSugerida = 'diretoria';
-    apelidosSet.add('crt');
-    apelidosSet.add('registro tecnico');
-    apelidosSet.add('certidao tecnica');
-    descricaoSugerida = 'Certidão de Registro Técnico (CRT).';
+REGRAS DE CLASSIFICAÇÃO:
+1. TIPO DE DOCUMENTO (tipoDocumento):
+   - NÃO é uma lista fixa. Nomeie pelo que o documento realmente é em linguagem natural em português.
+   - Exemplos: "Passaporte", "CNH", "RG", "Título de Eleitor", "Certidão de Nascimento", "Certidão de Casamento", "Certificado de Reservista", "Alvará de Funcionamento", "Contrato Social", "Contrato de Prestação de Serviços", "Procuração", "Nota Fiscal", "Anotação de Responsabilidade Técnica (ART)", "Certidão de Registro Técnico (CRT)", "Comprovante de Endereço", "Cartão CNPJ", "DRE", etc.
+   - NUNCA retorne "Outros" se for possível classificar. Se não for possível identificar com segurança, retorne null.
 
-    const partesNome = nomeLimpo
-      .replace(/\b(crt|certidao|registro|tecnico|doc|documento|de|da|do)\b/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (partesNome.length > 2) {
-      titularSugerido = partesNome
-        .split(' ')
-        .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
-        .join(' ');
-      apelidosSet.add(partesNome.toLowerCase());
-      tituloSugerido = `CRT ${titularSugerido}`;
-    } else {
-      tituloSugerido = `CRT ${titularSugerido}`;
-    }
-  }
-  // 3. ANOTAÇÃO DE RESPONSABILIDADE TÉCNICA (ART) / CREA
-  else if (
-    /\bart\b/i.test(nomeLimpo) ||
-    textoParaAnalise.includes('ANOTACAO DE RESPONSABILIDADE TECNICA') ||
-    textoParaAnalise.includes('ANOTAÇÃO DE RESPONSABILIDADE TÉCNICA') ||
-    /\bCREA\b/.test(textoParaAnalise)
-  ) {
-    tipoSugerido = 'ART';
-    visibilidadeSugerida = 'diretoria';
-    apelidosSet.add('art');
-    apelidosSet.add('anotacao tecnica');
-    apelidosSet.add('crea');
-    descricaoSugerida = 'Anotação de Responsabilidade Técnica (ART).';
+2. NOME NO DOCUMENTO (nomeNoDocumento):
+   - Extraia o nome completo da pessoa física ou a razão social da empresa que consta expressamente no documento como titular, outorgante, requerente ou titular do documento.
+   - Se for documento de identificação pessoal (Passaporte, RG, CNH, Certidões), extraia o nome completo impresso no documento.
+   - Se não constar nenhum nome de pessoa ou empresa, retorne null.
 
-    const partesNome = nomeLimpo
-      .replace(/\b(art|anotacao|responsabilidade|tecnica|doc|documento|de|da|do)\b/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (partesNome.length > 2) {
-      titularSugerido = partesNome
-        .split(' ')
-        .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
-        .join(' ');
-      apelidosSet.add(partesNome.toLowerCase());
-      tituloSugerido = `ART ${titularSugerido}`;
-    } else {
-      tituloSugerido = `ART ${titularSugerido}`;
-    }
-  }
-  // 4. Padrão CPF -> apenas se for especificamente um comprovante/cartão de CPF
-  else if (
-    /\bcpf\b/i.test(nomeLimpo) ||
-    textoParaAnalise.includes('CADASTRO DE PESSOAS FISICAS') ||
-    textoParaAnalise.includes('CADASTRO DE PESSOA FISICA') ||
-    textoParaAnalise.includes('COMPROVANTE DE INSCRICAO NO CPF') ||
-    textoParaAnalise.includes('COMPROVANTE DE SITUACAO CADASTRAL NO CPF')
-  ) {
-    tipoSugerido = 'CPF';
-    visibilidadeSugerida = 'diretoria';
-    apelidosSet.add('cpf');
-    apelidosSet.add('documento pessoal');
-    descricaoSugerida = 'Cadastro de Pessoas Físicas (CPF).';
+3. RECONHECIMENTO DE TITULAR (titularIdentificado):
+   - Se o "nomeNoDocumento" pertencer claramente a um titular cadastrado (ex: "THOMAZ LUSTRI FABRE" ou "Thomaz Fabre" corresponde ao titular cadastrado "Thomaz" ou "Thomaz Lustri Fabre"), retorne exatamente o nome do titular cadastrado.
+   - Se o documento for comprovadamente da própria empresa (ex: Contrato Social da Delta Plan, Alvará da Delta Plan), retorne "Delta Plan".
+   - Se o documento for pessoal ou de outra empresa e o nome NÃO bater com nenhum titular cadastrado, retorne null e marque "novoTitularSugerido": true.
+   - NUNCA assuma "Delta Plan" como padrão para documentos de pessoas físicas ou quando o titular for desconhecido! Campo não identificado deve ser null.
 
-    const partesNome = nomeLimpo
-      .replace(/\b(cpf|doc|documento|de|da|do)\b/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (partesNome.length > 2) {
-      titularSugerido = partesNome
-        .split(' ')
-        .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
-        .join(' ');
-      apelidosSet.add(partesNome.toLowerCase());
-      tituloSugerido = `CPF ${titularSugerido}`;
-    }
-  }
-  // 3. Padrão CNPJ (00.000.000/0000-00) -> tipo "CNPJ"
-  else if (
-    /\b\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}\b/.test(textoParaAnalise) ||
-    nomeLower.includes('cnpj')
-  ) {
-    tipoSugerido = 'CNPJ';
-    titularSugerido = 'Delta Plan';
-    visibilidadeSugerida = 'diretoria';
-    apelidosSet.add('cnpj');
-    apelidosSet.add('cartao cnpj');
-    apelidosSet.add('inscricao');
-    descricaoSugerida = 'Comprovante de Inscrição e de Situação Cadastral no CNPJ.';
-    tituloSugerido = 'Cartão CNPJ Delta Plan';
-  }
-  // 4. CONTRATO SOCIAL -> tipo "Societário"
-  else if (
-    textoParaAnalise.includes('CONTRATO SOCIAL') ||
-    nomeLower.includes('contrato social') ||
-    textoParaAnalise.includes('ESTATUTO SOCIAL') ||
-    nomeLower.includes('societario') ||
-    nomeLower.includes('societário')
-  ) {
-    tipoSugerido = 'Societário';
-    titularSugerido = 'Delta Plan';
-    visibilidadeSugerida = 'diretoria';
-    apelidosSet.add('contrato');
-    apelidosSet.add('social');
-    apelidosSet.add('estatuto');
-    apelidosSet.add('societario');
-    apelidosSet.add('delta plan');
-    descricaoSugerida = 'Contrato Social consolidado e atos societários da Delta Plan.';
-    tituloSugerido = 'Contrato Social Delta Plan';
-  }
-  // 5. DEMONSTRACAO DO RESULTADO / DRE -> tipo "Financeiro"
-  else if (
-    textoParaAnalise.includes('DEMONSTRACAO DO RESULTADO') ||
-    textoParaAnalise.includes('DEMONSTRAÇÃO DO RESULTADO') ||
-    /\bDRE\b/.test(textoParaAnalise) ||
-    nomeLower.includes('dre') ||
-    nomeLower.includes('balanco') ||
-    nomeLower.includes('balanço') ||
-    nomeLower.includes('faturamento')
-  ) {
-    tipoSugerido = 'Financeiro';
-    titularSugerido = 'Delta Plan';
-    visibilidadeSugerida = 'diretoria';
-    apelidosSet.add('dre');
-    apelidosSet.add('balanco');
-    apelidosSet.add('balanço');
-    apelidosSet.add('financeiro');
-    apelidosSet.add('demonstrativo');
-    descricaoSugerida = 'Demonstração do Resultado do Exercício (DRE) / Registros Contábeis.';
-    tituloSugerido = 'DRE Delta Plan';
-  }
-  // 6. Normas e Regimentos (Gerais)
-  else if (
-    textoParaAnalise.includes('REGIMENTO INTERNO') ||
-    textoParaAnalise.includes('CODIGO DE CONDUTA') ||
-    nomeLower.includes('regimento') ||
-    nomeLower.includes('conduta') ||
-    nomeLower.includes('politica') ||
-    nomeLower.includes('política') ||
-    nomeLower.includes('manual')
-  ) {
-    tipoSugerido = 'Normativo';
-    titularSugerido = 'Delta Plan';
-    visibilidadeSugerida = 'geral';
-    apelidosSet.add('regimento');
-    apelidosSet.add('conduta');
-    apelidosSet.add('manual');
-    apelidosSet.add('politica');
-    descricaoSugerida = 'Regulamento interno e código de conduta da Delta Plan.';
-    tituloSugerido = 'Regimento Interno e Código de Conduta';
-  }
-  // 7. Proposta Comercial
-  else if (
-    textoParaAnalise.includes('PROPOSTA COMERCIAL') ||
-    textoParaAnalise.includes('PROPOSTA TECNICA') ||
-    nomeLower.includes('proposta')
-  ) {
-    tipoSugerido = 'Proposta';
-    titularSugerido = 'Delta Plan';
-    visibilidadeSugerida = 'diretoria';
-    apelidosSet.add('proposta');
-    apelidosSet.add('comercial');
-    apelidosSet.add('minuta');
-    descricaoSugerida = 'Proposta técnica e comercial Delta Plan.';
-    tituloSugerido = 'Proposta Comercial Delta Plan';
-  }
+4. DADOS COMPLEMENTARES:
+   - "titulo": Título limpo e claro (ex: "Passaporte Thomaz Lustri Fabre", "CNH Thomaz", "Contrato Social Delta Plan").
+   - "descricao": Resumo informativo factual em 1 frase.
+   - "visibilidade": "diretoria" para documentos pessoais, societários ou financeiros; "geral" para normas ou regimentos.
+   - "apelidos": 2 a 4 termos/sinônimos úteis para busca (ex: ["passaporte", "passaporte thomaz"]).
+   - "dataValidade": Data de validade/expiração no formato DD/MM/AAAA, ou null se não tiver validade.
+   - "camposTitular": { "cpf": string|null, "rg": string|null, "orgaoEmissor": string|null, "dataNascimento": string|null, "validadeCnh": string|null }
 
-  // Extração estruturada de dados de titular (se aplicável ao tipo/conteúdo)
-  const camposSugeridosTitular = extrairCamposTitularDeDocumento({
-    tipo: tipoSugerido,
-    texto: textoParaAnalise,
-    nomeArquivo,
-    titular: titularSugerido,
-  });
+RETORNE ESTRITAMENTE UM JSON no formato:
+{
+  "tipoDocumento": string | null,
+  "nomeNoDocumento": string | null,
+  "titularIdentificado": string | null,
+  "novoTitularSugerido": boolean,
+  "titulo": string,
+  "descricao": string,
+  "visibilidade": "diretoria" | "geral",
+  "apelidos": string[],
+  "dataValidade": string | null,
+  "camposTitular": { ... }
+}`;
 
-  // Extração de validade do documento
-  let dataValidadeSugerida: string | null = null;
-  if (camposSugeridosTitular?.validadeCnh) {
-    dataValidadeSugerida = camposSugeridosTitular.validadeCnh;
-  } else if (
-    !['CERTIDÃO', 'CASAMENTO', 'VACINA', 'DIPLOMA', 'CTPS', 'TRABALHO'].some((termo) =>
-      textoParaAnalise.includes(termo)
-    )
-  ) {
-    const matchValidade = textoParaAnalise.match(
-      /\b(?:VALIDADE|VENCIMENTO|VIGENCIA|VÁLIDO\s*ATÉ|VALIDO\s*ATE|EXPIRA\s*EM)[\s:.]*(\d{2}\/\d{2}\/\d{4})\b/i
-    );
-    if (matchValidade) {
-      dataValidadeSugerida = matchValidade[1];
+      const respostaIA = await openai.chat.completions.create({
+        model: chatModel,
+        messages: [
+          { role: 'system', content: promptSistema },
+          {
+            role: 'user',
+            content: `Nome do arquivo: "${nomeArquivo}"\n\nConteúdo extraído do documento:\n${(textoExtraido || '').slice(0, 4000)}`,
+          },
+        ],
+        temperature: 0.1,
+        response_format: { type: 'json_object' },
+      });
+
+      const conteudoResposta = respostaIA.choices[0]?.message?.content?.trim();
+      if (conteudoResposta) {
+        const parsed = JSON.parse(conteudoResposta);
+
+        const tipoFinal = (parsed.tipoDocumento || '').trim();
+        const titularFinal = (parsed.titularIdentificado || '').trim();
+        const nomeNoDoc = (parsed.nomeNoDocumento || '').trim() || null;
+        const novoTitularSugerido = !!parsed.novoTitularSugerido;
+
+        const camposSugeridosTitular = extrairCamposTitularDeDocumento({
+          tipo: tipoFinal,
+          texto: textoExtraido + ' ' + nomeLimpo,
+          nomeArquivo,
+          titular: titularFinal || nomeNoDoc || '',
+        });
+
+        // Mescla campos retornados pela IA com campos regex
+        if (parsed.camposTitular) {
+          Object.assign(camposSugeridosTitular, parsed.camposTitular);
+        }
+
+        return {
+          tituloSugerido: (parsed.titulo || tituloBase).trim(),
+          tipoSugerido: tipoFinal, // Vazio se a IA não identificou! NUNCA 'Outros' arbitrário
+          titularSugerido: titularFinal, // Vazio se a IA não identificou! NUNCA 'Delta Plan' arbitrário
+          nomeNoDocumento: nomeNoDoc,
+          novoTitularSugerido,
+          apelidosSugeridos: Array.isArray(parsed.apelidos) ? parsed.apelidos : [nomeLimpo.toLowerCase()],
+          visibilidadeSugerida: (parsed.visibilidade as VisibilidadeDoc) || 'diretoria',
+          descricaoSugerida: parsed.descricao || `Documento ${nomeLimpo} armazenado no cofre corporativo.`,
+          camposSugeridosTitular,
+          dataValidadeSugerida: parsed.dataValidade || null,
+        };
+      }
+    } catch (errIa) {
+      console.error('[analiseDocumentoService ⚠️] Erro na análise via IA:', errIa);
     }
   }
 
-  // Descarta qualquer conteúdo lido da memória
-  textoExtraido = '';
-
+  // Fallback seguro se não houver IA: NÃO assume titular nem tipo padrão!
   return {
-    tituloSugerido,
-    tipoSugerido,
-    titularSugerido,
-    apelidosSugeridos: Array.from(apelidosSet),
-    visibilidadeSugerida,
-    descricaoSugerida,
-    camposSugeridosTitular,
-    dataValidadeSugerida,
+    tituloSugerido: tituloBase,
+    tipoSugerido: '', // Fica vazio para perguntar ao usuário
+    titularSugerido: '', // Fica vazio para perguntar ao usuário
+    nomeNoDocumento: null,
+    novoTitularSugerido: false,
+    apelidosSugeridos: [nomeLimpo.toLowerCase()],
+    visibilidadeSugerida: 'diretoria',
+    descricaoSugerida: `Documento ${nomeLimpo} armazenado no cofre corporativo.`,
+    camposSugeridosTitular: {},
+    dataValidadeSugerida: null,
   };
 }

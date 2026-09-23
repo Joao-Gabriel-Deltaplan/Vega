@@ -75,3 +75,15 @@ Nenhum outro modelo ou alias obsoleto (ex: gpt-4o, gpt-3.5-turbo, whisper-1) dev
   - Se existirem **vários documentos daquele tipo pertencentes a titulares diferentes**: perguntar ao usuário listando as opções numeradas (ex.: *"Encontrei certidões de: 1) Thomaz, 2) [Titular 2]. Qual delas?"*).
   - Se **nenhum documento** daquele tipo existir no Cofre: responder obrigatoriamente *"Não encontrei esse documento no Cofre."*.
 
+---
+
+## 7. Classificação e Titularidade de Documentos no Cofre
+
+- **Nunca preencher titular ou tipo com valor padrão quando a IA não identificar; perguntar ao usuário:**
+  Ao processar uploads de documentos no Cofre, a IA jamais deve atribuir valores padrão (como "Delta Plan" ou "Outros") caso não haja identificação inequívoca no documento. Campos não identificados devem permanecer vazios e o sistema deve obrigatoriamente solicitar o preenchimento ao usuário.
+- **Tipos de documento dinâmicos:**
+  O tipo de documento não deve ser restrito a listas fixas. A IA deve classificar pelo nome real do documento (Passaporte, Título de Eleitor, Contrato, Alvará, Nota Fiscal, Procuração, etc.). "Outros" só deve ser usado caso seja impossível classificar, gerando pergunta de confirmação.
+- **Titularidade de documentos de identificação:**
+  Para documentos pessoais/identificação (passaporte, RG, CNH, certidões), o titular deve ser extraído do nome que consta no próprio documento. Se esse nome não corresponder a nenhum titular previamente cadastrado, o sistema deve perguntar ao usuário se deseja cadastrar um novo titular.
+
+
