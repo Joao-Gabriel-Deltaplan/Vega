@@ -129,3 +129,14 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
 - **Busca em documentos do Cofre:** Nesses casos, deve ser feita busca nos documentos do Cofre pelo nome citado. Se o nome aparecer em algum documento (como certidões, contratos, etc.), responder com base no que consta ali, citando o documento e deixando explícito de quem é o dado (ex.: *"A mãe da Nilceia, conforme a Certidão de Casamento, é..."*).
 - **Pessoa inexistente no Cofre:** Se o nome não aparecer em nenhum documento do Cofre, responder que não encontrou informações sobre essa pessoa no Cofre. Nunca responder dados sobre outra pessoa.
 
+---
+
+## 17. Correspondência Estrita de Campo e Proibição de Entrega Divergente
+- **Regra Absoluta:** A VEGA só pode responder estritamente o campo ou a informação que foi perguntada pelo usuário. NUNCA responder outro campo ou dado presente no documento ou na ficha, mesmo que seja o único disponível ou o mais parecido.
+- **Resposta obrigatória de campo inexistente:** Se o campo pedido não existir na ficha cadastral nem nos documentos do titular, a resposta obrigatória é rigorosamente: `"Não encontrei [artigo] [campo] d[prep] [titular] nos documentos."` (ex.: `"Não encontrei o título de eleitor do Thomaz nos documentos."`, `"Não encontrei o PIS do Thomaz nos documentos."`, `"Não encontrei a carteira de reservista do Thomaz nos documentos."`).
+- **Validade para todas as camadas:**
+  - *Ficha cadastral:* Proibição absoluta de fallbacks defaulted (como forçar filiação ou qualquer outro campo quando o campo não for reconhecido).
+  - *Busca vetorial e trechos:* Na ausência inequívoca do dado solicitado no trecho, a IA deve responder estritamente que não encontrou o dado solicitado nos documentos, sem jamais substituir por filiação, CPF, RG, datas de outros fatos ou dados de terceiros.
+  - *Guardrail e Verificação Final:* Toda resposta gerada passa por verificação antes do envio. Se a resposta contiver um campo divergente do que foi expressamente perguntado (ex.: usuário perguntou título eleitoral e a resposta contém filiação ou CPF), a mensagem é interceptada e substituída pela resposta padrão de não encontrado nos documentos.
+
+

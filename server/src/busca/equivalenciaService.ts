@@ -38,7 +38,9 @@ export function obterPreposicaoTitular(titular: string): 'do' | 'da' {
     t.includes('delta') ||
     t.includes('reng') ||
     t.includes('ltda') ||
-    t.includes('eletroloc')
+    t.includes('eletroloc') ||
+    t.endsWith('a') ||
+    t.endsWith('eia')
   ) {
     return 'da';
   }

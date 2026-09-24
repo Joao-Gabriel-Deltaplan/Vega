@@ -1,0 +1,142 @@
+import dotenv from 'dotenv';
+import path from 'path';
+dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
+dotenv.config();
+
+import { processarMensagemChat } from '../chat/chatOrquestrador.js';
+import { Contato } from '../types.js';
+
+const contatoTeste: Contato = {
+  id: 'contato_teste_campos',
+  telefone: '5514999999999',
+  nome: 'Diretoria',
+  pushname: 'Diretoria',
+  criadoEm: new Date().toISOString(),
+  atualizadoEm: new Date().toISOString(),
+  conversaAtiva: true,
+};
+
+async function rodarTestes() {
+  console.log('\n================================================================');
+  console.log('🧪 BATERIA DE TESTES: CORRESPONDÊNCIA ESTRITA DE CAMPOS (REGRA 17)');
+  console.log('================================================================\n');
+
+  const casos = [
+    {
+      id: 1,
+      titulo: 'Título de Eleitor do Thomaz (campo inexistente na ficha/docs)',
+      pergunta: 'qual número do título eleitoral do thomaz',
+      verificacao: (resp: string) => {
+        const rLower = resp.toLowerCase();
+        const naoEncontrou = rLower.includes('não encontrei') && (rLower.includes('título') || rLower.includes('titulo'));
+        const naoTemFiliacao = !rLower.includes('moises') && !rLower.includes('lidia') && !rLower.includes('filiação');
+        const naoTemCpf = !rLower.includes('333.599');
+        return naoEncontrou && naoTemFiliacao && naoTemCpf;
+      },
+      esperado: 'Não encontrou título de eleitor e NÃO citou filiação nem CPF nem outro campo',
+    },
+    {
+      id: 2,
+      titulo: 'PIS do Thomaz (campo inexistente)',
+      pergunta: 'qual o PIS do thomaz?',
+      verificacao: (resp: string) => {
+        const rLower = resp.toLowerCase();
+        const naoEncontrou = rLower.includes('não encontrei') && rLower.includes('pis');
+        const naoTemFiliacao = !rLower.includes('moises') && !rLower.includes('lidia');
+        const naoTemCpf = !rLower.includes('333.599');
+        return naoEncontrou && naoTemFiliacao && naoTemCpf;
+      },
+      esperado: 'Não encontrou PIS e NÃO citou filiação nem outro campo',
+    },
+    {
+      id: 3,
+      titulo: 'Carteira de Reservista do Thomaz (inexistente; tem apenas Dispensa)',
+      pergunta: 'qual a carteira de reservista do thomaz?',
+      verificacao: (resp: string) => {
+        const rLower = resp.toLowerCase();
+        const naoEncontrou = rLower.includes('não encontrei');
+        const naoTemNascimento = !rLower.includes('06/10/1984') && !rLower.includes('nascimento');
+        const naoTemFiliacao = !rLower.includes('moises') && !rLower.includes('lidia');
+        return naoEncontrou && naoTemNascimento && naoTemFiliacao;
+      },
+      esperado: 'Não encontrou reservista e NÃO respondeu data de nascimento nem filiação',
+    },
+    {
+      id: 4,
+      titulo: 'Certidão de Nascimento do Thomaz (inexistente; tem apenas Casamento)',
+      pergunta: 'qual a certidão de nascimento do thomaz?',
+      verificacao: (resp: string) => {
+        const rLower = resp.toLowerCase();
+        const naoEncontrou = rLower.includes('não encontrei');
+        const naoConfundiuComCasamento = !rLower.includes('casamento') || rLower.includes('anotei na lista');
+        return naoEncontrou && naoConfundiuComCasamento;
+      },
+      esperado: 'Não encontrou certidão de nascimento e NÃO entregou certidão de casamento',
+    },
+    {
+      id: 5,
+      titulo: 'Passaporte de outra pessoa (Nilceia - inexistente no cofre)',
+      pergunta: 'qual o número do passaporte da Nilceia?',
+      verificacao: (resp: string) => {
+        const rLower = resp.toLowerCase();
+        const naoEncontrou = rLower.includes('não encontrei');
+        const naoFalouThomaz = !rLower.includes('thomaz') && !rLower.includes('333.599');
+        return naoEncontrou && naoFalouThomaz;
+      },
+      esperado: 'Não encontrou passaporte da Nilceia e NUNCA falou sobre Thomaz',
+    },
+    {
+      id: 6,
+      titulo: 'Passaporte do Thomaz (campo inexistente)',
+      pergunta: 'qual o passaporte do thomaz?',
+      verificacao: (resp: string) => {
+        const rLower = resp.toLowerCase();
+        const naoEncontrou = rLower.includes('não encontrei') && rLower.includes('passaporte');
+        const naoEntregouCnh = !rLower.includes('03127781771');
+        return naoEncontrou && naoEntregouCnh;
+      },
+      esperado: 'Não encontrou passaporte e NÃO respondeu CNH nem outro campo',
+    },
+  ];
+
+  let aprovados = 0;
+
+  for (const caso of casos) {
+    console.log(`--- Teste ${caso.id}: ${caso.titulo} ---`);
+    console.log(`Pergunta: "${caso.pergunta}"`);
+    try {
+      const res = await processarMensagemChat({
+        mensagemUsuario: caso.pergunta,
+        historicoRecente: [],
+        contato: contatoTeste,
+      });
+
+      console.log(`Resposta VEGA: "${res.textoResposta}"`);
+      console.log(`Intenção detectada: ${res.intencaoDetectada}`);
+      if (res.buscaUsada) console.log(`Busca usada: ${res.buscaUsada}`);
+
+      const passou = caso.verificacao(res.textoResposta);
+      if (passou) {
+        console.log(`✅ APROVADO: Respondeu rigorosamente que não encontrou o campo solicitado.`);
+        aprovados++;
+      } else {
+        console.error(`❌ FALHOU! Esperado: ${caso.esperado}`);
+      }
+    } catch (err) {
+      console.error(`❌ ERRO na execução:`, err);
+    }
+    console.log('');
+  }
+
+  console.log('================================================================');
+  console.log(`Resultado Final: ${aprovados}/${casos.length} aprovados.`);
+  console.log('================================================================\n');
+
+  if (aprovados === casos.length) {
+    process.exit(0);
+  } else {
+    process.exit(1);
+  }
+}
+
+rodarTestes();

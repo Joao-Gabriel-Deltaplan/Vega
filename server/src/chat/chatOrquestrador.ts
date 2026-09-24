@@ -1026,7 +1026,7 @@ Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
 {
   "intencao": "saudacao_ou_vago" | "pedir_arquivo" | "listar_documentos" | "dado_pessoal" | "pergunta_conteudo" | "corrigir_dado" | "consultar_vencimentos" | "silenciar_alerta" | "fora_de_escopo",
   "pessoa": "nome do titular ou pessoa citada na mensagem (ex: Fulano, Nilceia) ou vazio",
-  "campos": ["lista de campos cadastrais solicitados ou vazio (valores padronizados: endereco, estadoCivil, rg, profissao, cpf, filiacao, dataNascimento, cnh, validadeCnh, categoriaCnh, orgaoEmissor)"],
+  "campos": ["lista de campos ou dados específicos solicitados (ex.: cpf, rg, filiacao, mae, pai, dataNascimento, endereco, estadoCivil, profissao, cnh, validadeCnh, categoriaCnh, orgaoEmissor, titulo_eleitor, pis, carteira_reservista, certidao_nascimento, passaporte ou qualquer outro campo/dado perguntado) ou vazio"],
   "campo_corrigir": "nome do campo a ser corrigido (ex: profissao, cpf, rg, etc.) ou vazio",
   "valor_novo": "novo valor correto informado pelo usuário ou vazio",
   "documento_citado": "nome do documento físico citado explicitamente ou vazio",
@@ -1045,7 +1045,7 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
    - ATENÇÃO CRÍTICA: Só é "pedir_arquivo" quando a pessoa pede o DOCUMENTO EM SI para envio ("me manda", "me envia", "preciso do arquivo", "quero o PDF", "solta esse arquivo").
    - Pedidos de RESUMO, EXPLICAÇÃO, INTERPRETAÇÃO ou PERGUNTAS sobre o que está escrito ("resuma esse documento", "o que esse documento fala sobre X?", "explique o documento", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?") são SEMPRE "pergunta_conteudo", NUNCA "pedir_arquivo"!
 3. "listar_documentos": Quando o usuário solicitar listar, ver ou consultar quais documentos existem no Cofre ou de uma pessoa ("quais documentos você tem?", "o que tem no cofre?", "quais documentos do Fulano você tem?", "o que você tem do Fulano?", "preciso de mais alguns documentos do Fulano", "me mostra os documentos"). Preencha "pessoa" se citada.
-4. "dado_pessoal": Perguntas sobre dados cadastrais básicos de pessoas (RG, CPF, filiação/mãe/pai, profissão, estado civil, validade da CNH etc.).
+4. "dado_pessoal": Perguntas sobre dados cadastrais e informações pontuais de pessoas (RG, CPF, filiação/mãe/pai, profissão, estado civil, validade da CNH, título de eleitor, PIS, carteira de reservista, etc.).
 5. "pergunta_conteudo": Perguntas sobre o conteúdo de documentos ("resuma esse documento em 10 linhas", "o que esse documento fala sobre águas fluviais?", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?", "quais dias eu tomei as vacinas da covid?", "quais vacinas ele tomou?", "qual o endereço do Fulano?", "o que diz na página 2?").
    - REGRA MANDATÓRIA: Perguntas sobre o conteúdo de documentos arquivados no Cofre (como vacinas tomadas, datas de vacinação/doses de covid, cláusulas contratuais, valores, datas de registro de certidões, alvarás) são SEMPRE "pergunta_conteudo", NUNCA "fora_de_escopo"!
    - Se o usuário perguntar sem citar titular (ex: "quais dias eu tomei as vacinas da covid?"), devolva "intencao": "pergunta_conteudo", "pessoa": "", "termo_busca": "vacina covid". O sistema perguntará de quem é. NUNCA classifique como fora_de_escopo!
@@ -1062,6 +1062,8 @@ REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - O CONTEXTO SÓ DEVE SER USADO quando a mensagem atual NÃO tem sujeito nenhum (ex.: perguntas com pronomes como "ele", "dele", ou elípticas como "e a validade?", "e o CPF dele?", "e o RG dele?", "e o endereço dele?"). Nesses casos, herde o titular mencionado anteriormente no histórico.
 
 EXEMPLOS OBRIGATÓRIOS:
+- "qual número do título eleitoral do thomaz?" -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["titulo_eleitor"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o número do título de eleitor do Thomaz?", "termo_busca": "titulo eleitor Thomaz"}
+- "qual o PIS do fulano?" -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["pis"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o PIS do Fulano?", "termo_busca": "pis Fulano"}
 - "show, agora me envie o pdf" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
 - "contrato de locação" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "contrato de locação", "documentos_citados": ["contrato de locação"], "pergunta_completa": "Enviar documento contrato de locação", "termo_busca": "contrato de locação"}
 - "me envia o crea e a certidão de casamento do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CREA, Certidão de Casamento", "documentos_citados": ["CREA", "Certidão de Casamento"], "pergunta_completa": "Enviar documentos CREA e Certidão de Casamento do Fulano", "termo_busca": "CREA, Certidão de Casamento"}
@@ -1165,7 +1167,7 @@ EXEMPLOS OBRIGATÓRIOS:
 
     const ehPedidoCertidao = /\bcertid[aã]o\b/i.test(msgNorm);
 
-    // Mapeamento e detecção de segurança para campos cadastrais
+    // Mapeamento e detecção de segurança para campos cadastrais e dados específicos
     const padroesCampos: { campo: string; regex: RegExp }[] = [
       { campo: 'endereco', regex: /\b(endere[cç]o|mora|resid[eê]ncia)\b/i },
       { campo: 'estadoCivil', regex: /\b(estado\s*civil|casad[oa]|solteir[oa]|divorciad[oa])\b/i },
@@ -1177,10 +1179,16 @@ EXEMPLOS OBRIGATÓRIOS:
       { campo: 'validadeCnh', regex: /\b(validade(\s*da\s*cnh)?|vencimento)\b/i },
       { campo: 'categoriaCnh', regex: /\b(categoria(\s*da\s*cnh)?)\b/i },
       { campo: 'cnh', regex: /\b(n[uú]mero\s*da\s*cnh|numero\s*da\s*cnh)\b/i },
+      { campo: 'orgaoEmissor', regex: /\b([oó]rg[aã]o(\s*emissor)?)\b/i },
+      { campo: 'titulo_eleitor', regex: /\b(t[ií]tulo(\s*de)?\s*eleitor(al)?|n[uú]mero\s*do\s*t[ií]tulo)\b/i },
+      { campo: 'pis', regex: /\b(pis|pasep|nis)\b/i },
+      { campo: 'carteira_reservista', regex: /\b(reservista|certificado\s*de\s*reservista|carteira\s*de\s*reservista)\b/i },
+      { campo: 'certidao_nascimento', regex: /\b(certid[aã]o\s*de\s*nascimento)\b/i },
+      { campo: 'passaporte', regex: /\b(passaporte|n[uú]mero\s*do\s*passaporte)\b/i },
     ];
 
     const camposDetectadosRegex: string[] = [];
-    if (!ehPedidoCertidao) {
+    if (!ehPedidoCertidao || msgNorm.includes('certidao de nascimento')) {
       for (const p of padroesCampos) {
         if (p.regex.test(msgNorm)) {
           camposDetectadosRegex.push(p.campo);
@@ -1605,7 +1613,10 @@ REGRAS OBRIGATÓRIAS:
    - NUNCA use tabelas (|).
    - NUNCA use links em markdown ([texto](url)).
    - Negrito só quando ajudar a leitura (nomes de documentos, valores, datas ou prazos-chave).
-8. ATENÇÃO MÁXIMA AO DADO EXATO PERGUNTADO:
+8. ATENÇÃO MÁXIMA AO DADO EXATO PERGUNTADO (REGRA 17):
+   - REGRA ABSOLUTA DE DADO ESPECÍFICO: A VEGA só pode responder estritamente o campo ou informação solicitada na pergunta.
+   - Se a pergunta for sobre um campo ou dado específico (ex: título de eleitor, PIS, carteira de reservista, certidão de nascimento, passaporte, etc.) e esse dado NÃO constar de forma inequívoca nos trechos para a pessoa em questão, responda OBRIGATORIAMENTE que não encontrou o dado nos documentos (ex: "Não encontrei o título de eleitor do Thomaz nos documentos.").
+   - NUNCA responda com outro campo ou dado presente no documento (como filiação, CPF, RG ou nascimento) como substituto!
    - Se a pergunta for sobre data de DISPENSA DO SERVIÇO MILITAR, responda rigorosamente a data em que foi dispensado do serviço militar (ex.: 23 de agosto de 2005), e NUNCA a data de nascimento!
    - Se a pergunta for sobre data do REGISTRO DO CASAMENTO, responda rigorosamente a data do registro do casamento (ex.: 12 de abril de 2010), e NUNCA a data de nascimento!
    - Se a pergunta for sobre VACINAS ou DOSES TOMADAS, responda listando com clareza o nome da vacina, a dose e a data exata em que foi aplicada conforme constar no documento.
@@ -3578,21 +3589,27 @@ async function executarProcessamentoMensagemChatInterno(dados: {
       ? [...classificacao.campos]
       : [];
 
+    const padroesCampos: { campo: string; regex: RegExp }[] = [
+      { campo: 'endereco', regex: /\b(endere[cç]o|mora|resid[eê]ncia)\b/i },
+      { campo: 'estadoCivil', regex: /\b(estado\s*civil|casad[oa]|solteir[oa]|divorciad[oa])\b/i },
+      { campo: 'rg', regex: /\b(rg|identidade)\b/i },
+      { campo: 'profissao', regex: /\b(profiss[aã]o|cargo|ocupa[cç][aã]o)\b/i },
+      { campo: 'cpf', regex: /\b(cpf)\b/i },
+      { campo: 'filiacao', regex: /\b(m[aã]e|pai|pais|filia[cç][aã]o)\b/i },
+      { campo: 'dataNascimento', regex: /\b(nascimento|data\s*(de\s*)?nascimento|idade)\b/i },
+      { campo: 'validadeCnh', regex: /\b(validade(\s*da\s*cnh)?|vencimento)\b/i },
+      { campo: 'categoriaCnh', regex: /\b(categoria(\s*da\s*cnh)?)\b/i },
+      { campo: 'cnh', regex: /\b(n[uú]mero\s*da\s*cnh|numero\s*da\s*cnh|cnh)\b/i },
+      { campo: 'orgaoEmissor', regex: /\b(orgao\s*emissor|[oó]rg[aã]o)\b/i },
+      { campo: 'titulo_eleitor', regex: /\b(t[ií]tulo(\s*de)?\s*eleitor(al)?|n[uú]mero\s*do\s*t[ií]tulo)\b/i },
+      { campo: 'pis', regex: /\b(pis|pasep|nis)\b/i },
+      { campo: 'carteira_reservista', regex: /\b(reservista|certificado\s*de\s*reservista|carteira\s*de\s*reservista)\b/i },
+      { campo: 'certidao_nascimento', regex: /\b(certid[aã]o\s*de\s*nascimento)\b/i },
+      { campo: 'passaporte', regex: /\b(passaporte|n[uú]mero\s*do\s*passaporte)\b/i },
+    ];
+
     if (camposIdentificados.length === 0) {
       const msgNorm = normalizarParaBusca(mensagemUsuario);
-      const padroesCampos: { campo: string; regex: RegExp }[] = [
-        { campo: 'endereco', regex: /\b(endere[cç]o|mora|resid[eê]ncia)\b/i },
-        { campo: 'estadoCivil', regex: /\b(estado\s*civil|casad[oa]|solteir[oa]|divorciad[oa])\b/i },
-        { campo: 'rg', regex: /\b(rg|identidade)\b/i },
-        { campo: 'profissao', regex: /\b(profiss[aã]o|cargo|ocupa[cç][aã]o)\b/i },
-        { campo: 'cpf', regex: /\b(cpf)\b/i },
-        { campo: 'filiacao', regex: /\b(m[aã]e|pai|pais|filia[cç][aã]o)\b/i },
-        { campo: 'dataNascimento', regex: /\b(nascimento|data\s*de\s*nascimento|idade)\b/i },
-        { campo: 'validadeCnh', regex: /\b(validade(\s*da\s*cnh)?|vencimento)\b/i },
-        { campo: 'categoriaCnh', regex: /\b(categoria(\s*da\s*cnh)?)\b/i },
-        { campo: 'cnh', regex: /\b(n[uú]mero\s*da\s*cnh|numero\s*da\s*cnh|cnh)\b/i },
-        { campo: 'orgaoEmissor', regex: /\b(orgao\s*emissor|[oó]rg[aã]o)\b/i },
-      ];
       for (const p of padroesCampos) {
         if (p.regex.test(msgNorm)) {
           camposIdentificados.push(p.campo);
@@ -3603,15 +3620,29 @@ async function executarProcessamentoMensagemChatInterno(dados: {
     if (camposIdentificados.length === 0 && campo) {
       camposIdentificados.push(campo);
     }
+
+    // Se nenhum campo conhecido foi identificado, tenta extrair a expressão solicitada (ex: "qual o X do fulano")
     if (camposIdentificados.length === 0) {
-      camposIdentificados.push('filiacao');
+      const matchExpressaoCampo = mensagemUsuario.match(/(?:qual|quais|qual\s+o|qual\s+a|número\s+d[eoa]|numero\s+d[eoa])\s+([a-záéíóúâêôãõç\s]{3,35})\s+d[eoa]\b/i);
+      if (matchExpressaoCampo && matchExpressaoCampo[1]) {
+        const termoLimpo = matchExpressaoCampo[1].trim();
+        if (termoLimpo.length > 2 && !/\b(documento|arquivo|pdf)\b/i.test(termoLimpo)) {
+          camposIdentificados.push(termoLimpo);
+        }
+      }
+    }
+
+    // REGRA 17: NUNCA forçar camposIdentificados.push('filiacao')!
+    // Se ainda assim estiver vazio, usa um identificador genérico sem assumir nenhum campo prévio
+    if (camposIdentificados.length === 0) {
+      camposIdentificados.push('informação solicitada');
     }
 
     // Remove eventuais duplicidades mantendo a ordem
     camposIdentificados = Array.from(new Set(camposIdentificados));
 
     interface InfoCampoProcessado {
-      campoId: CampoTitularId;
+      campoId: CampoTitularId | null;
       label: string;
       valorFormatado: string;
       valorMascaradoRastro: string;
@@ -3625,8 +3656,8 @@ async function executarProcessamentoMensagemChatInterno(dados: {
 
     for (const cNome of camposIdentificados) {
       const cNorm = cNome.toLowerCase().replace(/[\s_-]/g, '');
-      let campoId: CampoTitularId = 'filiacao';
-      let label = 'Filiação';
+      let campoId: CampoTitularId | null = null;
+      let label = cNome;
 
       if (cNorm.includes('endereco')) {
         campoId = 'endereco';
@@ -3674,10 +3705,25 @@ async function executarProcessamentoMensagemChatInterno(dados: {
       } else if (cNorm.includes('orgao')) {
         campoId = 'orgaoEmissor';
         label = 'Órgão emissor';
+      } else if (cNorm.includes('titulo') || cNorm.includes('eleitor')) {
+        campoId = null;
+        label = 'Título de eleitor';
+      } else if (cNorm.includes('pis') || cNorm.includes('pasep') || cNorm.includes('nis')) {
+        campoId = null;
+        label = 'PIS';
+      } else if (cNorm.includes('reservista')) {
+        campoId = null;
+        label = 'Carteira de reservista';
+      } else if (cNorm.includes('passaporte')) {
+        campoId = null;
+        label = 'Passaporte';
+      } else if (cNorm.includes('certidaonascimento')) {
+        campoId = null;
+        label = 'Certidão de nascimento';
       }
 
-      // Consulta o campo na ficha do titular
-      if (titular && titular.campos[campoId]) {
+      // Consulta o campo na ficha do titular (apenas se for campo estruturado existente)
+      if (campoId && titular && titular.campos[campoId]) {
         const reg = titular.campos[campoId]!;
         let valorBruto = reg.valor;
 
@@ -3730,8 +3776,11 @@ async function executarProcessamentoMensagemChatInterno(dados: {
 ${topTrecho.conteudo}
 """
 Extraia APENAS o valor correspondente ao campo "${label}".
-Exemplo: Se o campo for "Endereço", extraia a rua, número, bairro, cidade, estado e CEP se houver.
-Se não encontrar esse dado com clareza no trecho, responda apenas: NÃO_ENCONTRADO.
+REGRA ABSOLUTA DE DADO ESPECÍFICO (REGRA 17):
+- Extraia o valor SOMENTE se o trecho contiver EXATAMENTE a informação solicitada para "${label}".
+- Se o trecho contiver outros dados (como CPF, RG, filiação, data de nascimento, etc.) mas NÃO contiver o campo "${label}", responda APENAS: NÃO_ENCONTRADO.
+- NUNCA retorne outro campo como substituto!
+Se não encontrar esse dado com total clareza no trecho, responda apenas: NÃO_ENCONTRADO.
 NÃO inclua explicações nem frases antes ou depois, apenas o valor exato.`;
 
             try {
@@ -3747,8 +3796,8 @@ NÃO inclua explicações nem frases antes ou depois, apenas o valor exato.`;
                   (d) => d.id === topTrecho.documento_id || d.titulo === topTrecho.titulo_documento
                 );
 
-                // Salva na ficha do titular para persistir
-                if (titular) {
+                // Salva na ficha do titular para persistir apenas se for campo válido da ficha
+                if (campoId && titular) {
                   titular.campos[campoId] = {
                     valor: val,
                     origem: docOrigemVetorial?.titulo || topTrecho.titulo_documento || 'Documento do Cofre',
@@ -3771,8 +3820,8 @@ NÃO inclua explicações nem frases antes ou depois, apenas o valor exato.`;
           camposProcessados.push({
             campoId,
             label,
-            valorFormatado: formatarValorParaUsuario(campoId, valorAchadoVetorial),
-            valorMascaradoRastro: mascararValorCampo(campoId, valorAchadoVetorial),
+            valorFormatado: formatarValorParaUsuario(campoId || '', valorAchadoVetorial),
+            valorMascaradoRastro: mascararValorCampo(campoId || ('' as any), valorAchadoVetorial),
             origemNome: docOrigemVetorial?.titulo || 'Documentos do Cofre',
             docOrigem: docOrigemVetorial,
             conferido: false,
@@ -3797,6 +3846,9 @@ NÃO inclua explicações nem frases antes ou depois, apenas o valor exato.`;
     const tempoFicha = Date.now() - inicioFicha;
     modeloUsado = 'Motor Interno';
 
+    const prepTitular = (primeiroNomeTitular.toLowerCase().endsWith('a') || primeiroNomeTitular.toLowerCase().endsWith('eia')) ? 'da' : 'do';
+    const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+
     // Determina se deve responder em formato de lista (múltiplos campos ou mensagem em lista)
     const ehListaMultipla =
       camposProcessados.length > 1 ||
@@ -3812,27 +3864,27 @@ NÃO inclua explicações nem frases antes ou depois, apenas o valor exato.`;
         }
         return `*${cp.label}:* ${cp.valorFormatado}`;
       });
-      textoResposta = linhas.join('\n');
+      textoResposta = `${prefixoSaudacao}${linhas.join('\n')}`;
     } else {
       const cp = camposProcessados[0];
-      const ehFeminino = ['Validade da CNH', 'Categoria da CNH', 'Data de nascimento', 'Filiação', 'Profissão'].includes(cp.label);
+      const ehFeminino = ['Validade da CNH', 'Categoria da CNH', 'Data de nascimento', 'Filiação', 'Profissão', 'Carteira de reservista', 'Certidão de nascimento'].includes(cp.label);
       const artigo = ehFeminino ? 'a' : 'o';
 
       if (cp.encontrado) {
         if (cp.label === 'Mãe') {
-          textoResposta = `A mãe do ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
+          textoResposta = `${prefixoSaudacao}A mãe ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
         } else if (cp.label === 'Pai') {
-          textoResposta = `O pai do ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
+          textoResposta = `${prefixoSaudacao}O pai ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
         } else if (cp.label === 'CPF') {
-          textoResposta = `O CPF do ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
+          textoResposta = `${prefixoSaudacao}O CPF ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
         } else if (cp.label === 'RG') {
-          textoResposta = `O RG do ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
+          textoResposta = `${prefixoSaudacao}O RG ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
         } else {
           const artCap = ehFeminino ? 'A' : 'O';
-          textoResposta = `${artCap} ${cp.label.toLowerCase()} do ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
+          textoResposta = `${prefixoSaudacao}${artCap} ${cp.label.toLowerCase()} ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
         }
       } else {
-        textoResposta = `Não encontrei ${artigo} ${cp.label.toLowerCase()} do ${primeiroNomeTitular} nos documentos.`;
+        textoResposta = `${prefixoSaudacao}Não encontrei ${artigo} ${cp.label.toLowerCase()} ${prepTitular} *${primeiroNomeTitular}* nos documentos.`;
       }
     }
 
@@ -4431,6 +4483,129 @@ DIRETRIZES OBRIGATÓRIAS:
 }
 
 /**
+ * GUARDRAIL FINAL DE CORRESPONDÊNCIA DE CAMPO (REGRA 17)
+ * Valida rigorosamente se a resposta gerada corresponde ao campo ou informação solicitada pelo usuário.
+ * Se o usuário solicitou um dado específico (ex: título de eleitor, PIS, reservista, etc.) e a resposta
+ * entregou outro campo divergente (ex: filiação, CPF, RG, data de nascimento), intercepta e bloqueia,
+ * substituindo pela resposta oficial de não encontrado nos documentos.
+ */
+export function validarCorrespondenciaCampoResposta(
+  mensagemUsuario: string,
+  textoResposta: string
+): { textoValidado: string; interceptado: boolean; motivo?: string } {
+  const msgNorm = normalizarParaBusca(mensagemUsuario);
+  const respNorm = normalizarParaBusca(textoResposta);
+
+  // Se a própria resposta já afirma que não encontrou, está em total conformidade
+  if (/\bn[aã]o\s+encontrei\b/i.test(respNorm) || /\bfora\s+do\s+meu\s+escopo\b/i.test(respNorm)) {
+    return { textoValidado: textoResposta, interceptado: false };
+  }
+
+  // Extrai nome de pessoa citada na pergunta se houver
+  const titularExplicito = extrairTitularExplicito(msgNorm);
+  const matchPessoa = mensagemUsuario.match(/\bd[eoa]\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+)/);
+  const nomePessoa = titularExplicito || (matchPessoa ? matchPessoa[1] : '');
+  const prep = (nomePessoa.toLowerCase().endsWith('a') || nomePessoa.toLowerCase().endsWith('eia')) ? 'da' : 'do';
+  const pessoaFormatada = nomePessoa ? ` ${prep} *${nomePessoa}*` : '';
+
+  // 1. TÍTULO DE ELEITOR / TÍTULO ELEITORAL
+  const pedeTituloEleitor = /\b(t[ií]tulo(\s*de)?\s*eleitor(al)?|n[uú]mero\s*do\s*t[ií]tulo)\b/i.test(msgNorm);
+  if (pedeTituloEleitor) {
+    const mencionaTitulo = /\bt[ií]tulo\b/i.test(respNorm);
+    const falaDeFiliacaoOuOutro = /\b(m[aã]e|pai|pais|filia[cç][aã]o|cpf|rg|nascid|nascimento)\b/i.test(respNorm);
+    if (!mencionaTitulo && falaDeFiliacaoOuOutro) {
+      return {
+        textoValidado: `Não encontrei o título de eleitor${pessoaFormatada} nos documentos.`,
+        interceptado: true,
+        motivo: 'Usuário perguntou título de eleitor, mas a resposta continha outro campo cadastral divergente.',
+      };
+    }
+  }
+
+  // 2. PIS / PASEP / NIS
+  const pedePis = /\b(pis|pasep|nis)\b/i.test(msgNorm);
+  if (pedePis) {
+    const mencionaPis = /\b(pis|pasep|nis)\b/i.test(respNorm);
+    const falaDeOutro = /\b(m[aã]e|pai|pais|filia[cç][aã]o|cpf|rg|nascid|nascimento|cnh)\b/i.test(respNorm);
+    if (!mencionaPis && falaDeOutro) {
+      return {
+        textoValidado: `Não encontrei o PIS${pessoaFormatada} nos documentos.`,
+        interceptado: true,
+        motivo: 'Usuário perguntou PIS, mas a resposta continha outro campo cadastral divergente.',
+      };
+    }
+  }
+
+  // 3. CARTEIRA DE RESERVISTA
+  const pedeReservista = /\b(reservista|carteira\s*de\s*reservista|certificado\s*de\s*reservista)\b/i.test(msgNorm);
+  if (pedeReservista) {
+    const mencionaReservista = /\breservista\b/i.test(respNorm);
+    const falaDeNascimentoOuFiliacao = /\b(nascimento|nascid|m[aã]e|pai|pais|filia[cç][aã]o)\b/i.test(respNorm);
+    if (!mencionaReservista && falaDeNascimentoOuFiliacao) {
+      return {
+        textoValidado: `Não encontrei a carteira de reservista${pessoaFormatada} nos documentos.`,
+        interceptado: true,
+        motivo: 'Usuário perguntou carteira de reservista, mas a resposta continha dados de nascimento/filiação.',
+      };
+    }
+  }
+
+  // 4. CERTIDÃO DE NASCIMENTO
+  const pedeCertidaoNascimento = /\bcertid[aã]o\s*de\s*nascimento\b/i.test(msgNorm);
+  if (pedeCertidaoNascimento) {
+    const mencionaNascimento = /\bcertid[aã]o\s*de\s*nascimento\b/i.test(respNorm);
+    const falaDeCasamento = /\bcasamento\b/i.test(respNorm);
+    if (!mencionaNascimento && falaDeCasamento) {
+      return {
+        textoValidado: `Não encontrei a certidão de nascimento${pessoaFormatada} no Cofre.`,
+        interceptado: true,
+        motivo: 'Usuário perguntou certidão de nascimento, mas a resposta entregou certidão de casamento.',
+      };
+    }
+  }
+
+  // 5. PASSAPORTE
+  const pedePassaporte = /\bpassaporte\b/i.test(msgNorm);
+  if (pedePassaporte) {
+    const mencionaPassaporte = /\bpassaporte\b/i.test(respNorm);
+    if (!mencionaPassaporte) {
+      return {
+        textoValidado: `Não encontrei o passaporte${pessoaFormatada} nos documentos.`,
+        interceptado: true,
+        motivo: 'Usuário perguntou passaporte, mas a resposta continha outro documento ou campo.',
+      };
+    }
+  }
+
+  // 6. DISPENSA MILITAR VS DATA DE NASCIMENTO
+  const pedeDispensa = /\b(dispensad[oa]|servi[cç]o\s*militar)\b/i.test(msgNorm);
+  if (pedeDispensa) {
+    const mencionaDispensa = /\b(dispens|incorpor|militar)\b/i.test(respNorm);
+    const afirmaNascimento = /\b(data\s*de\s*nascimento|nasceu\s*em)\b/i.test(respNorm);
+    if (!mencionaDispensa && afirmaNascimento) {
+      return {
+        textoValidado: `Não encontrei a data de dispensa do serviço militar${pessoaFormatada} nos documentos.`,
+        interceptado: true,
+        motivo: 'Usuário perguntou data de dispensa militar, mas a resposta entregou data de nascimento.',
+      };
+    }
+  }
+
+  // 7. PESSOA ESPECÍFICA CITADA VS TITULAR DO CONTEXTO (ex: Nilceia vs Thomaz)
+  if (msgNorm.includes('nilceia') && !msgNorm.includes('thomaz')) {
+    if (/\b(m[aã]e\s+do\s+thomaz|pai\s+do\s+thomaz|cpf\s+do\s+thomaz)\b/i.test(respNorm)) {
+      return {
+        textoValidado: `Não encontrei essas informações sobre a Nilceia nos documentos do Cofre.`,
+        interceptado: true,
+        motivo: 'Usuário perguntou sobre Nilceia, mas a resposta continha dados do Thomaz.',
+      };
+    }
+  }
+
+  return { textoValidado: textoResposta, interceptado: false };
+}
+
+/**
  * 4. ORQUESTRADOR PRINCIPAL DO CHAT COM RASTRO DE RACIOCÍNIO E SANITIZAÇÃO RIGOROSA
  */
 export async function processarMensagemChat(dados: {
@@ -4442,6 +4617,23 @@ export async function processarMensagemChat(dados: {
 }): Promise<ResultadoChatOrquestrador> {
   const resultado = await executarProcessamentoMensagemChatInterno(dados);
 
+  // GUARDRAIL FINAL (REGRA 17): Validação estrita de correspondência de campo
+  const checagemCampo = validarCorrespondenciaCampoResposta(dados.mensagemUsuario, resultado.textoResposta);
+  if (checagemCampo.interceptado) {
+    console.warn(`[VEGA Guardrail] Resposta interceptada pela Regra 17: ${checagemCampo.motivo}`);
+    resultado.textoResposta = checagemCampo.textoValidado;
+    if (resultado.rastro) {
+      resultado.rastro.respostaFinal = checagemCampo.textoValidado;
+      resultado.rastro.etapas.push({
+        ordem: resultado.rastro.etapas.length + 1,
+        nome: 'Guardrail de Correspondência de Campo (Regra 17)',
+        descricao: `Resposta interceptada e corrigida: ${checagemCampo.motivo}`,
+        tempoMs: 1,
+        detalhes: { motivo: checagemCampo.motivo },
+      });
+    }
+  }
+
   // SANITIZAÇÃO DUPLA: Garante que NENHUM bloco de código, JSON ou resíduo técnico
   // jamais chegue à interface do usuário ou seja enviado para o WhatsApp.
   resultado.textoResposta = sanitizarRespostaTextoFinal(resultado.textoResposta);
@@ -4451,4 +4643,5 @@ export async function processarMensagemChat(dados: {
 
   return resultado;
 }
+
 

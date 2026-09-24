@@ -27,25 +27,30 @@ export function validarTipoDocumentoReconhecivel(tipo?: string | null): boolean 
   const limpo = normalizar(tipo);
   if (!limpo || limpo.length < 2) return false;
 
+  // Limpa eventuais prefixos interrogativos comuns (ex: "qual a", "qual o", "numero do")
+  const semPrefixo = limpo
+    .replace(/^(?:qual|quais|qual\s+o|qual\s+a|numero\s+do|numero\s+da|data\s+do|data\s+da)\s+/i, '')
+    .trim();
+
   // 1. Rejeita se tiver mais de 5 palavras (frases ou orações)
-  const palavras = limpo.split(/\s+/).filter(Boolean);
+  const palavras = semPrefixo.split(/\s+/).filter(Boolean);
   if (palavras.length > 5) return false;
 
   // 2. Rejeita comandos de conversa, cortesias e verbos de envio
   const REGEX_COMANDOS_OU_FRASES =
-    /\b(perfeito|perfeita|otimo|otima|obrigado|obrigada|valeu|por favor|por gentileza|agora|entao|envie|envia|manda|mandar|enviar|quero|preciso|gostaria|pode|favor|passa|encaminha|baixa|baixar|qual|como|onde|quando|porque|por que|anotei|tem|existe|salvo|cofre)\b/i;
-  if (REGEX_COMANDOS_OU_FRASES.test(limpo)) return false;
+    /\b(perfeito|perfeita|otimo|otima|obrigado|obrigada|valeu|por favor|por gentileza|agora|entao|envie|envia|manda|mandar|enviar|quero|preciso|gostaria|pode|favor|passa|encaminha|baixa|baixar|como|onde|quando|porque|por que|anotei|tem|existe|salvo|cofre)\b/i;
+  if (REGEX_COMANDOS_OU_FRASES.test(semPrefixo)) return false;
 
   // 3. Rejeita termos genéricos vazios que não são tipos
   const REGEX_GENERICOS =
     /^(pdf|o pdf|um pdf|arquivo|o arquivo|documento|o documento|anexo|o anexo|outros|desconhecido|indefinido|nenhum|texto)$/i;
-  if (REGEX_GENERICOS.test(limpo)) return false;
+  if (REGEX_GENERICOS.test(semPrefixo)) return false;
 
   // 4. Exige que contenha uma raiz ou sigla de tipo documental reconhecível
   const REGEX_TIPO_VALIDO =
-    /\b(certidao|contrato|alvara|cnh|carteira|habilitacao|rg|identidade|cpf|passaporte|crea|crt|cau|oab|ctps|art|rrt|diploma|certificado|historico|comprovante|procuracao|termo|recibo|declaracao|estatuto|licenca|apolice|seguro|escritura|habite|cartao|vacinas?|vacinacao|imunizacao|covid|atestado|laudo|exame|nota\s*fiscal|nf|dre|balanco|proposta|orcamento|holerite|contracheque|requerimento)\b/i;
+    /\b(certidao|contrato|alvara|cnh|carteira|habilitacao|rg|identidade|cpf|passaporte|crea|crt|cau|oab|ctps|art|rrt|diploma|certificado|historico|comprovante|procuracao|termo|recibo|declaracao|estatuto|licenca|apolice|seguro|escritura|habite|cartao|vacinas?|vacinacao|imunizacao|covid|atestado|laudo|exame|nota\s*fiscal|nf|dre|balanco|proposta|orcamento|holerite|contracheque|requerimento|reservista|titulo)\b/i;
 
-  return REGEX_TIPO_VALIDO.test(limpo);
+  return REGEX_TIPO_VALIDO.test(semPrefixo);
 }
 
 /**

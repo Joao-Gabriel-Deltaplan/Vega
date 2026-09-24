@@ -261,6 +261,10 @@ export function identificarTipoPedido(textoOriginal: string): string | null {
   if (/\b(nascimento|certid[aã]o de nascimento)\b/i.test(norm)) return 'Certidão de Nascimento';
   if (/\b(obito|[oó]bito|certid[aã]o de [oó]bito)\b/i.test(norm)) return 'Certidão de Óbito';
   if (/\b(certid[aã]o|certid[oõ]es)\b/i.test(norm)) return 'Certidão';
+  if (/\b(passaporte)\b/i.test(norm)) return 'Passaporte';
+  if (/\b(reservista|carteira de reservista|certificado de reservista)\b/i.test(norm)) return 'Carteira de Reservista';
+  if (/\b(titulo de eleitor|titulo eleitoral)\b/i.test(norm)) return 'Título de Eleitor';
+  if (/\b(pis|pasep|nis)\b/i.test(norm)) return 'PIS';
   if (/\b(art|anota[cç][aã]o de responsabilidade t[eé]cnica)\b/i.test(norm)) return 'ART';
   if (/\b(rrt|registro de responsabilidade t[eé]cnica)\b/i.test(norm)) return 'RRT';
   if (/\b(crea)\b/i.test(norm)) return 'CREA';
