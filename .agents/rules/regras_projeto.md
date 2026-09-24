@@ -112,8 +112,12 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
 
 ---
 
-## 15. Validade Temporal do Contexto de Titular e Documentos (TTL 60 minutos)
-- **Janela máxima de 60 minutos:** O titular ou documento identificado no histórico da conversa só é válido se a última mensagem sobre ele tiver ocorrido há menos de 60 minutos.
-- **Expiração do contexto:** Passados 60 minutos desde a última menção ao titular ou documento, o histórico recente sobre esse assunto é considerado expirado e a mensagem atual é tratada como sem titular no contexto ativo.
-- **Aplicação para dados pessoais:** Solicitações de dados pessoais após 60 minutos sem novo titular citado na mensagem atual devem obrigatoriamente perguntar `"De quem você precisa do [campo]?"`.
-- **Aplicação para documentos:** Solicitações de documentos após 60 minutos sem titular citado devem perguntar de qual titular é o documento (quando houver mais de um documento daquele tipo no Cofre) ou perguntar qual documento deseja (para comandos genéricos de envio).
+## 15. Janela de Contexto de Conversa (Últimas 30 Mensagens)
+- **Janela de 30 mensagens no contexto geral:** O contexto da conversa para recuperação de titulares, documentos discutidos ou oferecidos e referências é delimitado estritamente pelas últimas 30 mensagens trocadas, independentemente do tempo transcorrido entre elas.
+- **Janela do classificador (12 mensagens):** Para o classificador LLM (`gpt-5.4-mini`), o histórico enviado é de até 12 mensagens, equilibrando contexto real de conversa e baixo consumo de tokens.
+- **Prevalência da mensagem atual:** Titular citado expressamente na mensagem atual sempre substitui qualquer titular do contexto.
+- **Sem titular no contexto ativo:** Se não houver titular citado na mensagem atual e nenhuma menção a titular dentro das últimas 30 mensagens, o assunto é considerado sem titular no contexto:
+  - Para dados pessoais: a VEGA pergunta obrigatoriamente `"De quem você precisa do [campo]?"`.
+  - Para documentos: pergunta de qual titular é o documento (se houver ambiguidade) ou qual documento deseja (para comandos genéricos de envio).
+- **Expiração além de 30 mensagens:** Menções a titulares ou documentos ocorridas além da janela das últimas 30 mensagens deixam de surtir efeito automaticamente, tratando novas solicitações como início de novo contexto.
+
