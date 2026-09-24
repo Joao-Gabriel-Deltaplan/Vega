@@ -3,14 +3,11 @@ import {
   Sliders,
   Sparkles,
   Bot,
-  Brain,
-  Mic,
   RotateCcw,
   Save,
   Clock,
   User,
   History,
-  ShieldCheck,
   AlertCircle,
   CheckCircle2,
   Lock,
@@ -19,9 +16,7 @@ import {
   Eye,
   X,
   RefreshCw,
-  Thermometer,
-  Target,
-  FileSearch,
+  Cpu,
 } from 'lucide-react';
 
 interface ConfiguracaoVega {
@@ -87,9 +82,10 @@ export const ConfiguracoesVegaView: React.FC = () => {
   const [restaurandoVersaoId, setRestaurandoVersaoId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ tipo: 'sucesso' | 'erro'; texto: string } | null>(null);
 
-  // Modal para conferir texto de uma versão antiga
+  // Blocos recolhidos por padrão
   const [versaoPreview, setVersaoPreview] = useState<VersaoHistoricoVega | null>(null);
-  const [historicoExpandido, setHistoricoExpandido] = useState(true);
+  const [historicoExpandido, setHistoricoExpandido] = useState(false);
+  const [tecnicaExpandida, setTecnicaExpandida] = useState(false);
 
   // Carrega configurações, modelos e histórico
   const carregarDados = async () => {
@@ -147,8 +143,8 @@ export const ConfiguracoesVegaView: React.FC = () => {
   };
 
   // Salvar alterações
-  const handleSalvar = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSalvar = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!promptEditado.trim()) {
       exibirFeedbackTemporario('erro', 'O prompt da persona não pode ficar em branco.');
       return;
@@ -269,15 +265,18 @@ export const ConfiguracoesVegaView: React.FC = () => {
     );
   }
 
-  // Descrição simples da temperatura
+  // Descrição curta da temperatura (efeito do valor escolhido)
   const obterDescricaoTemperatura = (temp: number) => {
-    if (temp <= 0.2) {
-      return 'Respostas mais diretas, técnicas e previsíveis (Ideal para assertividade operacional no Cofre).';
+    if (temp <= 0.15) {
+      return 'Respostas mais diretas, técnicas e previsíveis (recomendado para a VEGA).';
     }
-    if (temp <= 0.6) {
-      return 'Respostas equilibradas, com vocabulário natural e moderada flexibilidade na linguagem.';
+    if (temp <= 0.45) {
+      return 'Respostas diretas com vocabulário mais natural.';
     }
-    return 'Respostas mais criativas, variadas e expansivas (Pode produzir variações no fraseado).';
+    if (temp <= 0.75) {
+      return 'Respostas equilibradas com fraseado mais variado.';
+    }
+    return 'Respostas mais criativas e variadas.';
   };
 
   const houveAlteracao =
@@ -338,296 +337,201 @@ export const ConfiguracoesVegaView: React.FC = () => {
         )}
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-8">
+      <div className="space-y-6 mb-8">
         {/* ============================================================== */}
-        {/* CARD 1: Modelos de IA em Uso (Apenas Leitura - Regra 2 Oficial) */}
+        {/* DESTAQUE 1: Editor do Prompt da Persona */}
         {/* ============================================================== */}
-        <div className="xl:col-span-3 bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl relative overflow-hidden">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="w-5 h-5 text-emerald-400" />
-              <h2 className="text-sm md:text-base font-semibold text-slate-100">
-                Modelos de Inteligência Artificial Homologados
-              </h2>
-            </div>
-            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[11px] text-emerald-400 font-medium">
-              <Lock className="w-3 h-3" />
-              Apenas Leitura • Regra Oficial 2
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Chat & Raciocínio */}
-            <div className="p-4 rounded-xl bg-[#0b0f14] border border-[#1e2633] flex flex-col justify-between">
-              <div className="flex items-center gap-2.5 text-slate-300 mb-2">
-                <Bot className="w-4 h-4 text-blue-400" />
-                <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                  Chat & Raciocínio
-                </span>
-              </div>
-              <div className="flex items-baseline justify-between">
-                <span className="text-lg font-mono font-bold text-slate-100">
-                  {modelos?.chat || 'gpt-5.4-mini'}
-                </span>
-                <span className="text-[10px] bg-blue-500/10 text-blue-300 px-2 py-0.5 rounded border border-blue-500/20">
-                  Visão & Persona
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 mt-2">
-                Responsável pelo diálogo com a diretoria, OCR de fotos e respostas corporativas.
-              </p>
-            </div>
-
-            {/* Embeddings / Busca Vetorial */}
-            <div className="p-4 rounded-xl bg-[#0b0f14] border border-[#1e2633] flex flex-col justify-between">
-              <div className="flex items-center gap-2.5 text-slate-300 mb-2">
-                <Brain className="w-4 h-4 text-purple-400" />
-                <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                  Embeddings Vetoriais
-                </span>
-              </div>
-              <div className="flex items-baseline justify-between">
-                <span className="text-lg font-mono font-bold text-slate-100">
-                  {modelos?.embeddings || 'text-embedding-3-small'}
-                </span>
-                <span className="text-[10px] bg-purple-500/10 text-purple-300 px-2 py-0.5 rounded border border-purple-500/20">
-                  Semântica
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 mt-2">
-                Vetorização de documentos do Cofre para busca exata de trechos e normas.
-              </p>
-            </div>
-
-            {/* Transcrição de Áudio */}
-            <div className="p-4 rounded-xl bg-[#0b0f14] border border-[#1e2633] flex flex-col justify-between">
-              <div className="flex items-center gap-2.5 text-slate-300 mb-2">
-                <Mic className="w-4 h-4 text-emerald-400" />
-                <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                  Transcrição de Áudios
-                </span>
-              </div>
-              <div className="flex items-baseline justify-between">
-                <span className="text-lg font-mono font-bold text-slate-100">
-                  {modelos?.transcricao || 'gpt-transcribe'}
-                </span>
-                <span className="text-[10px] bg-emerald-500/10 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/20">
-                  WhatsApp
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 mt-2">
-                Transcrição em tempo real de mensagens de voz recebidas pelo WhatsApp.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* ============================================================== */}
-        {/* CARD 2: Temperaturas Fixas do Sistema (Apenas Leitura - Estabilidade Rígida) */}
-        {/* ============================================================== */}
-        <div className="xl:col-span-3 bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl relative overflow-hidden">
-          <div className="flex flex-col md:flex-row md:items-center justify-between mb-2 gap-2">
-            <div className="flex items-center gap-2">
-              <Thermometer className="w-5 h-5 text-emerald-400" />
-              <h2 className="text-sm md:text-base font-semibold text-slate-100">
-                Temperaturas Fixas do Sistema
-              </h2>
-            </div>
-            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[11px] text-emerald-400 font-medium self-start md:self-auto">
-              <Lock className="w-3 h-3" />
-              Apenas Leitura • Estabilidade do Sistema
-            </span>
-          </div>
-
-          <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-            Essas etapas decidem o que a VEGA vai buscar e quais dados extrair dos documentos. Ficam com temperatura baixa e fixa para garantir respostas estáveis: a mesma pergunta sempre segue o mesmo caminho.
-          </p>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Classificação de Intenção */}
-            <div className="p-4 rounded-xl bg-[#0b0f14] border border-[#1e2633] flex flex-col justify-between">
-              <div className="flex items-center gap-2.5 text-slate-300 mb-2">
-                <Target className="w-4 h-4 text-blue-400" />
-                <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                  Classificação de Intenção
-                </span>
-              </div>
-              <div className="flex items-baseline justify-between">
-                <span className="text-xl font-mono font-bold text-slate-100">
-                  0.1
-                </span>
-                <span className="text-[10px] bg-blue-500/10 text-blue-300 px-2 py-0.5 rounded border border-blue-500/20 font-medium">
-                  Fixa
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 mt-2">
-                Identifica se o pedido é envio de arquivo, consulta de conteúdo ou dados de titular, garantindo rotas previsíveis.
-              </p>
-            </div>
-
-            {/* Extração de Dados de Documentos e Fichas */}
-            <div className="p-4 rounded-xl bg-[#0b0f14] border border-[#1e2633] flex flex-col justify-between">
-              <div className="flex items-center gap-2.5 text-slate-300 mb-2">
-                <FileSearch className="w-4 h-4 text-emerald-400" />
-                <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                  Extração de Dados de Documentos e Fichas
-                </span>
-              </div>
-              <div className="flex items-baseline justify-between">
-                <span className="text-xl font-mono font-bold text-slate-100">
-                  0.0
-                </span>
-                <span className="text-[10px] bg-emerald-500/10 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/20 font-medium">
-                  Fixa
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 mt-2">
-                Extração estrita e determinística de datas jurídicas, metadados e termos cadastrais a partir dos arquivos do Cofre.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* ============================================================== */}
-        {/* CARD 3: Ajuste de Temperatura da Resposta Final */}
-        {/* ============================================================== */}
-        <div className="xl:col-span-3 bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl">
-          <div className="flex flex-col md:flex-row md:items-center justify-between mb-4 gap-2">
+        <div className="bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl">
+          <div className="flex flex-col md:flex-row md:items-center justify-between mb-4 gap-3">
             <div>
               <h2 className="text-sm md:text-base font-semibold text-slate-100 flex items-center gap-2">
-                <Sparkles className="w-5 h-5 text-amber-400" />
-                Temperatura da Resposta Final
+                <Bot className="w-5 h-5 text-emerald-400" />
+                Prompt da Persona (Instruções Base da VEGA)
               </h2>
-              <p className="text-xs text-slate-400">
-                Ajuste como a VEGA redige a resposta final: valores mais baixos geram redação mais direta e previsível; valores mais altos geram respostas mais variadas.
+              <p className="text-xs text-slate-400 mt-0.5">
+                Define a personalidade, vocabulário, regras de tom e diretrizes seguidas pela assistente.
               </p>
             </div>
+
             <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-400 font-medium">Valor selecionado:</span>
-              <span className="px-3 py-1 rounded-lg bg-[#0b0f14] border border-amber-500/30 text-amber-300 font-mono font-bold text-sm">
-                {temperaturaEditada.toFixed(2)}
+              <button
+                type="button"
+                onClick={handleRestaurarPadrao}
+                disabled={restaurandoPadrao || salvando}
+                className="px-3.5 py-2 rounded-xl bg-[#18202b] hover:bg-[#202937] text-slate-300 hover:text-slate-100 text-xs font-semibold border border-[#263345] transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                title="Restaura o prompt oficial gravado no Supabase e temperatura 0.1"
+              >
+                <RotateCcw className={`w-3.5 h-3.5 ${restaurandoPadrao ? 'animate-spin' : ''}`} />
+                <span>Restaurar Padrão</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSalvar()}
+                disabled={salvando || restaurandoPadrao || !houveAlteracao}
+                className={`px-5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 shadow-lg cursor-pointer ${
+                  houveAlteracao
+                    ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20'
+                    : 'bg-[#18202b] text-slate-500 border border-[#263345] cursor-not-allowed'
+                }`}
+              >
+                <Save className={`w-4 h-4 ${salvando ? 'animate-spin' : ''}`} />
+                <span>{salvando ? 'Salvando...' : 'Salvar Alterações'}</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="relative rounded-xl border border-[#1e2633] focus-within:border-emerald-500/60 transition-all bg-[#0b0f14]">
+            <textarea
+              value={promptEditado}
+              onChange={(e) => setPromptEditado(e.target.value)}
+              rows={15}
+              placeholder="Insira as diretrizes da persona da VEGA aqui..."
+              className="w-full bg-transparent text-slate-200 text-xs md:text-sm font-mono leading-relaxed p-4 rounded-xl focus:outline-none resize-y min-h-[340px]"
+              spellCheck={false}
+            />
+
+            <div className="flex items-center justify-between px-4 py-2 border-t border-[#1e2633] bg-[#0d131a] text-[11px] text-slate-400 rounded-b-xl">
+              <span>
+                {promptEditado.length.toLocaleString('pt-BR')} caracteres •{' '}
+                {promptEditado.split(/\s+/).filter(Boolean).length.toLocaleString('pt-BR')} palavras
+              </span>
+              <span className="flex items-center gap-1.5 text-slate-500">
+                <Lock className="w-3 h-3" />
+                Salvo no Supabase
               </span>
             </div>
           </div>
+        </div>
 
-          <div className="bg-[#0b0f14] p-5 rounded-xl border border-[#1e2633]">
-            <div className="flex justify-between text-xs text-slate-400 mb-2 font-medium">
-              <span>0.00 (Mais Direta e Previsível)</span>
-              <span>0.50 (Equilibrada)</span>
-              <span>1.00 (Mais Variada)</span>
-            </div>
-
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={temperaturaEditada}
-              onChange={(e) => setTemperaturaEditada(parseFloat(e.target.value))}
-              className="w-full h-2.5 bg-[#18202b] rounded-lg appearance-none cursor-pointer accent-amber-400"
-            />
-
-            <div className="mt-4 p-3 rounded-lg bg-[#121820] border border-[#263345] flex items-start gap-2.5">
-              <div className="w-2 h-2 rounded-full bg-amber-400 mt-1.5 flex-shrink-0"></div>
-              <p className="text-xs text-slate-300 leading-relaxed">
-                <strong className="text-amber-300">Efeito em vigor:</strong>{' '}
-                {obterDescricaoTemperatura(temperaturaEditada)}
-              </p>
-            </div>
+        {/* ============================================================== */}
+        {/* DESTAQUE 2: Controle de Temperatura da Resposta Final */}
+        {/* ============================================================== */}
+        <div className="bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm md:text-base font-semibold text-slate-100 flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-amber-400" />
+              Temperatura da Resposta Final
+            </h2>
+            <span className="px-3 py-1 rounded-lg bg-[#0b0f14] border border-amber-500/30 text-amber-300 font-mono font-bold text-xs">
+              {temperaturaEditada.toFixed(2)}
+            </span>
           </div>
+
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={temperaturaEditada}
+            onChange={(e) => setTemperaturaEditada(parseFloat(e.target.value))}
+            className="w-full h-2.5 bg-[#18202b] rounded-lg appearance-none cursor-pointer accent-amber-400"
+          />
+
+          <p className="text-xs text-slate-400 mt-2.5">
+            <span className="text-slate-300 font-medium">Efeito: </span>
+            <span className="text-amber-300">{obterDescricaoTemperatura(temperaturaEditada)}</span>
+          </p>
         </div>
 
         {/* ============================================================== */}
-        {/* CARD 3: Editor do Prompt da Persona (Texto Grande) */}
+        {/* BLOCO RECOLHIDO 1: Configuração técnica (somente leitura) */}
         {/* ============================================================== */}
-        <div className="xl:col-span-3 bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl">
-          <form onSubmit={handleSalvar}>
-            <div className="flex flex-col md:flex-row md:items-center justify-between mb-4 gap-4">
-              <div>
-                <h2 className="text-sm md:text-base font-semibold text-slate-100 flex items-center gap-2">
-                  <Bot className="w-5 h-5 text-emerald-400" />
-                  Prompt da Persona (Instruções Base da VEGA)
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Define a personalidade, vocabulário, regras de tom e diretrizes gerais seguidas pela assistente.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleRestaurarPadrao}
-                  disabled={restaurandoPadrao || salvando}
-                  className="px-3.5 py-2 rounded-xl bg-[#18202b] hover:bg-[#202937] text-slate-300 hover:text-slate-100 text-xs font-semibold border border-[#263345] transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
-                  title="Restaura o prompt original de prompts/assistente.md e temperatura 0.1"
-                >
-                  <RotateCcw className={`w-3.5 h-3.5 ${restaurandoPadrao ? 'animate-spin' : ''}`} />
-                  <span>Restaurar Padrão</span>
-                </button>
-
-                <button
-                  type="submit"
-                  disabled={salvando || restaurandoPadrao || !houveAlteracao}
-                  className={`px-5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 shadow-lg cursor-pointer ${
-                    houveAlteracao
-                      ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20'
-                      : 'bg-[#18202b] text-slate-500 border border-[#263345] cursor-not-allowed'
-                  }`}
-                >
-                  <Save className={`w-4 h-4 ${salvando ? 'animate-spin' : ''}`} />
-                  <span>{salvando ? 'Salvando...' : 'Salvar Alterações'}</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Área de Texto Ampla para o Prompt */}
-            <div className="relative rounded-xl border border-[#1e2633] focus-within:border-emerald-500/60 transition-all bg-[#0b0f14]">
-              <textarea
-                value={promptEditado}
-                onChange={(e) => setPromptEditado(e.target.value)}
-                rows={16}
-                placeholder="Insira as diretrizes da persona da VEGA aqui..."
-                className="w-full bg-transparent text-slate-200 text-xs md:text-sm font-mono leading-relaxed p-4 rounded-xl focus:outline-none resize-y min-h-[360px]"
-                spellCheck={false}
-              />
-
-              <div className="flex items-center justify-between px-4 py-2 border-t border-[#1e2633] bg-[#0d131a] text-[11px] text-slate-400 rounded-b-xl">
-                <span>
-                  {promptEditado.length.toLocaleString('pt-BR')} caracteres •{' '}
-                  {promptEditado.split(/\s+/).filter(Boolean).length.toLocaleString('pt-BR')} palavras
-                </span>
-                <span className="flex items-center gap-1.5 text-slate-500">
-                  <Lock className="w-3 h-3" />
-                  Salvo no PostgreSQL do Supabase
-                </span>
-              </div>
-            </div>
-          </form>
-        </div>
-
-        {/* ============================================================== */}
-        {/* CARD 4: Histórico de Versões e Rollback (Auditoria) */}
-        {/* ============================================================== */}
-        <div className="xl:col-span-3 bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl">
+        <div className="bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl transition-all">
           <div
             className="flex items-center justify-between cursor-pointer select-none"
-            onClick={() => setHistoricoExpandido(!historicoExpandido)}
+            onClick={() => setTecnicaExpandida(!tecnicaExpandida)}
           >
-            <div className="flex items-center gap-2.5">
-              <History className="w-5 h-5 text-emerald-400" />
-              <div>
-                <h2 className="text-sm md:text-base font-semibold text-slate-100">
-                  Histórico de Versões e Rollback
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Registro de todas as alterações salvas com data, responsável e opção de restauração rápida.
-                </p>
-              </div>
+            <div>
+              <h2 className="text-sm md:text-base font-semibold text-slate-100 flex items-center gap-2">
+                <Cpu className="w-4 h-4 text-slate-400" />
+                Configuração técnica (somente leitura)
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Modelos de inteligência artificial e temperaturas fixas de estabilidade.
+              </p>
             </div>
 
             <button
               type="button"
-              className="p-1.5 rounded-lg bg-[#18202b] text-slate-400 hover:text-slate-200"
+              className="p-1.5 rounded-lg bg-[#18202b] text-slate-400 hover:text-slate-200 transition-colors"
+            >
+              {tecnicaExpandida ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            </button>
+          </div>
+
+          {tecnicaExpandida && (
+            <div className="mt-5 pt-5 border-t border-[#1e2633] space-y-4 text-xs">
+              {/* Modelos de IA */}
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">
+                  Modelos de IA
+                </p>
+                <div className="space-y-1.5 text-slate-300">
+                  <div className="flex flex-wrap items-baseline gap-1.5">
+                    <span className="text-slate-400">Chat e raciocínio:</span>
+                    <strong className="text-slate-100 font-mono">{modelos?.chat || 'gpt-5.4-mini'}</strong>
+                    <span className="text-slate-500">— Diálogo com a diretoria, OCR de fotos e respostas da assistente</span>
+                  </div>
+                  <div className="flex flex-wrap items-baseline gap-1.5">
+                    <span className="text-slate-400">Embeddings vetoriais:</span>
+                    <strong className="text-slate-100 font-mono">{modelos?.embeddings || 'text-embedding-3-small'}</strong>
+                    <span className="text-slate-500">— Busca semântica nos trechos e documentos do Cofre</span>
+                  </div>
+                  <div className="flex flex-wrap items-baseline gap-1.5">
+                    <span className="text-slate-400">Transcrição de áudio:</span>
+                    <strong className="text-slate-100 font-mono">{modelos?.transcricao || 'gpt-transcribe'}</strong>
+                    <span className="text-slate-500">— Transcrição de mensagens de voz recebidas no WhatsApp</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Temperaturas Fixas */}
+              <div className="pt-4 border-t border-[#1e2633]">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">
+                  Temperaturas Fixas
+                </p>
+                <div className="space-y-1.5 text-slate-300">
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400">Classificação de intenção:</span>
+                    <strong className="text-slate-100 font-mono">0.1</strong>
+                    <span className="text-slate-500">(fixa)</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400">Extração de dados de documentos e fichas:</span>
+                    <strong className="text-slate-100 font-mono">0.0</strong>
+                    <span className="text-slate-500">(fixa)</span>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400 mt-2.5 leading-relaxed">
+                  Essas etapas decidem o que a VEGA vai buscar e quais dados extrair dos documentos. Ficam com temperatura baixa e fixa para garantir respostas estáveis: a mesma pergunta sempre segue o mesmo caminho.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ============================================================== */}
+        {/* BLOCO RECOLHIDO 2: Histórico de Versões e Rollback */}
+        {/* ============================================================== */}
+        <div className="bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl transition-all">
+          <div
+            className="flex items-center justify-between cursor-pointer select-none"
+            onClick={() => setHistoricoExpandido(!historicoExpandido)}
+          >
+            <div>
+              <h2 className="text-sm md:text-base font-semibold text-slate-100 flex items-center gap-2">
+                <History className="w-5 h-5 text-emerald-400" />
+                Histórico de Versões e Rollback
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Registro de todas as alterações salvas com data, responsável e opção de restauração rápida.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              className="p-1.5 rounded-lg bg-[#18202b] text-slate-400 hover:text-slate-200 transition-colors"
             >
               {historicoExpandido ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
             </button>
