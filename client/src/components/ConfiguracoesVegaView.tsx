@@ -19,6 +19,9 @@ import {
   Eye,
   X,
   RefreshCw,
+  Thermometer,
+  Target,
+  FileSearch,
 } from 'lucide-react';
 
 interface ConfiguracaoVega {
@@ -420,7 +423,73 @@ export const ConfiguracoesVegaView: React.FC = () => {
         </div>
 
         {/* ============================================================== */}
-        {/* CARD 2: Ajuste de Temperatura da Resposta Final */}
+        {/* CARD 2: Temperaturas Fixas do Sistema (Apenas Leitura - Estabilidade Rígida) */}
+        {/* ============================================================== */}
+        <div className="xl:col-span-3 bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl relative overflow-hidden">
+          <div className="flex flex-col md:flex-row md:items-center justify-between mb-2 gap-2">
+            <div className="flex items-center gap-2">
+              <Thermometer className="w-5 h-5 text-emerald-400" />
+              <h2 className="text-sm md:text-base font-semibold text-slate-100">
+                Temperaturas Fixas do Sistema
+              </h2>
+            </div>
+            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[11px] text-emerald-400 font-medium self-start md:self-auto">
+              <Lock className="w-3 h-3" />
+              Apenas Leitura • Estabilidade do Sistema
+            </span>
+          </div>
+
+          <p className="text-xs text-slate-400 mb-4 leading-relaxed">
+            Essas etapas decidem o que a VEGA vai buscar e quais dados extrair dos documentos. Ficam com temperatura baixa e fixa para garantir respostas estáveis: a mesma pergunta sempre segue o mesmo caminho.
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Classificação de Intenção */}
+            <div className="p-4 rounded-xl bg-[#0b0f14] border border-[#1e2633] flex flex-col justify-between">
+              <div className="flex items-center gap-2.5 text-slate-300 mb-2">
+                <Target className="w-4 h-4 text-blue-400" />
+                <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
+                  Classificação de Intenção
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span className="text-xl font-mono font-bold text-slate-100">
+                  0.1
+                </span>
+                <span className="text-[10px] bg-blue-500/10 text-blue-300 px-2 py-0.5 rounded border border-blue-500/20 font-medium">
+                  Fixa
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-2">
+                Identifica se o pedido é envio de arquivo, consulta de conteúdo ou dados de titular, garantindo rotas previsíveis.
+              </p>
+            </div>
+
+            {/* Extração de Dados de Documentos e Fichas */}
+            <div className="p-4 rounded-xl bg-[#0b0f14] border border-[#1e2633] flex flex-col justify-between">
+              <div className="flex items-center gap-2.5 text-slate-300 mb-2">
+                <FileSearch className="w-4 h-4 text-emerald-400" />
+                <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
+                  Extração de Dados de Documentos e Fichas
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span className="text-xl font-mono font-bold text-slate-100">
+                  0.0
+                </span>
+                <span className="text-[10px] bg-emerald-500/10 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/20 font-medium">
+                  Fixa
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-2">
+                Extração estrita e determinística de datas jurídicas, metadados e termos cadastrais a partir dos arquivos do Cofre.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* ============================================================== */}
+        {/* CARD 3: Ajuste de Temperatura da Resposta Final */}
         {/* ============================================================== */}
         <div className="xl:col-span-3 bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl">
           <div className="flex flex-col md:flex-row md:items-center justify-between mb-4 gap-2">
@@ -430,7 +499,7 @@ export const ConfiguracoesVegaView: React.FC = () => {
                 Temperatura da Resposta Final
               </h2>
               <p className="text-xs text-slate-400">
-                Determina o equilíbrio entre rigor e variedade no tom das respostas aos usuários.
+                Ajuste como a VEGA redige a resposta final: valores mais baixos geram redação mais direta e previsível; valores mais altos geram respostas mais variadas.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -441,45 +510,28 @@ export const ConfiguracoesVegaView: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
-            {/* Slider de Temperatura */}
-            <div className="lg:col-span-7 bg-[#0b0f14] p-5 rounded-xl border border-[#1e2633]">
-              <div className="flex justify-between text-xs text-slate-400 mb-2 font-medium">
-                <span>0.00 (Mais Direta)</span>
-                <span>0.50 (Equilibrada)</span>
-                <span>1.00 (Mais Variada)</span>
-              </div>
-
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={temperaturaEditada}
-                onChange={(e) => setTemperaturaEditada(parseFloat(e.target.value))}
-                className="w-full h-2.5 bg-[#18202b] rounded-lg appearance-none cursor-pointer accent-amber-400"
-              />
-
-              <div className="mt-4 p-3 rounded-lg bg-[#121820] border border-[#263345] flex items-start gap-2.5">
-                <div className="w-2 h-2 rounded-full bg-amber-400 mt-1.5 flex-shrink-0"></div>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  <strong className="text-amber-300">Efeito atual:</strong>{' '}
-                  {obterDescricaoTemperatura(temperaturaEditada)}
-                </p>
-              </div>
+          <div className="bg-[#0b0f14] p-5 rounded-xl border border-[#1e2633]">
+            <div className="flex justify-between text-xs text-slate-400 mb-2 font-medium">
+              <span>0.00 (Mais Direta e Previsível)</span>
+              <span>0.50 (Equilibrada)</span>
+              <span>1.00 (Mais Variada)</span>
             </div>
 
-            {/* Aviso Obrigatório da Trava de Estabilidade */}
-            <div className="lg:col-span-5 p-4 rounded-xl bg-blue-950/30 border border-blue-500/30 text-xs text-blue-200">
-              <div className="flex items-center gap-2 mb-2 font-semibold text-blue-300">
-                <Lock className="w-4 h-4 text-blue-400" />
-                <span>Trava Rígida de Estabilidade Ativa</span>
-              </div>
-              <p className="leading-relaxed text-slate-300">
-                Para evitar instabilidades operacionais e respostas fora de contexto, a temperatura da{' '}
-                <strong className="text-blue-300">classificação de intenção (0.1)</strong> e da{' '}
-                <strong className="text-blue-300">extração de dados cadastrais (0.0)</strong> continua estritamente
-                baixa e fixa nos bastidores, sem opção de alteração.
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={temperaturaEditada}
+              onChange={(e) => setTemperaturaEditada(parseFloat(e.target.value))}
+              className="w-full h-2.5 bg-[#18202b] rounded-lg appearance-none cursor-pointer accent-amber-400"
+            />
+
+            <div className="mt-4 p-3 rounded-lg bg-[#121820] border border-[#263345] flex items-start gap-2.5">
+              <div className="w-2 h-2 rounded-full bg-amber-400 mt-1.5 flex-shrink-0"></div>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                <strong className="text-amber-300">Efeito em vigor:</strong>{' '}
+                {obterDescricaoTemperatura(temperaturaEditada)}
               </p>
             </div>
           </div>
