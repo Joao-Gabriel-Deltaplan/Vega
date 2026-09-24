@@ -360,6 +360,23 @@ export function extrairTitularExplicito(texto: string, titularesDisponiveis?: st
 }
 
 /**
+ * Extrai nome de pessoa potencial citada no texto via preposição ("da Nilceia", "do Fulano", etc.)
+ * Usado para evitar que pedidos com pessoas não cadastradas caiam como "pedidos genéricos sem titular".
+ */
+export function extrairNomePessoaPotencial(texto: string): string | null {
+  if (!texto) return null;
+  const match = texto.match(/\bd[eoa]\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+)/i);
+  if (match) {
+    const nome = match[1];
+    const nNorm = normalizarTexto(nome);
+    if (!TERMOS_NAO_TITULARES.has(nNorm) && nNorm.length >= 3) {
+      return nome;
+    }
+  }
+  return null;
+}
+
+/**
  * Verifica se dois nomes de titular correspondem
  */
 export function titularCorresponde(docTitular?: string, alvo?: string): boolean {
@@ -457,7 +474,8 @@ function verificarSimilaridadeFlexivel(textoBusca: string, alvo: string): number
 export async function buscarDocumentos(
   texto: string,
   contato?: Contato,
-  documentosBase?: DocumentoRegistro[]
+  documentosBase?: DocumentoRegistro[],
+  titularAlvo?: string | null
 ): Promise<RespostaMotorBusca> {
   const nivelAcesso: NivelAcesso = contato?.nivelAcesso || contato?.ficha?.nivelAcesso || 'geral';
 
@@ -488,6 +506,8 @@ export async function buscarDocumentos(
   const tipoPedido = identificarTipoPedido(texto);
   const isPessoal = temMarcadorPessoal(texto);
   const titularExplicito = extrairTitularExplicito(texto);
+  const pessoaCitadaRegex = extrairNomePessoaPotencial(texto);
+  const titularBuscaEfetivo = titularAlvo || titularExplicito || pessoaCitadaRegex;
   const primeiroNomeContato = extrairPrimeiroNome(contato?.nome) || contato?.nome || '';
   const titularVinculado =
     contato?.titularVinculado || contato?.ficha?.titularVinculado || primeiroNomeContato;
@@ -584,9 +604,9 @@ export async function buscarDocumentos(
   }
 
   // =========================================================================
-  // CENÁRIO B: Pedido com TITULAR EXPLÍCITO ("da Empresa", "do Fulano", etc.)
+  // CENÁRIO B: Pedido com TITULAR EXPLÍCITO OU PESSOA CITADA ("da Empresa", "do Fulano", etc.)
   // =========================================================================
-  if (titularExplicito && tipoPedido) {
+  if (titularBuscaEfetivo && tipoPedido) {
     const normTipoPedido = normalizarTexto(tipoPedido);
     const docsCasamTipoETitular = catalogo.filter((d) => {
       const normTipo = normalizarTexto(d.tipo || '');
@@ -598,7 +618,7 @@ export async function buscarDocumentos(
         normTitulo.includes(normTipoPedido) ||
         normTipoPedido.includes(normTipo) ||
         (d.apelidos && d.apelidos.some((ap) => normalizarTexto(ap) === normTipoPedido));
-      return bateTipo && titularCorresponde(d.titular, titularExplicito);
+      return bateTipo && titularCorresponde(d.titular, titularBuscaEfetivo);
     });
 
     if (docsCasamTipoETitular.length === 1) {
@@ -607,6 +627,7 @@ export async function buscarDocumentos(
         resultados: [docsCasamTipoETitular[0]],
         score: 100,
         tipoPedido,
+        titularEncontrado: titularBuscaEfetivo,
       };
     }
 
@@ -616,6 +637,7 @@ export async function buscarDocumentos(
         resultados: docsCasamTipoETitular,
         score: 100,
         tipoPedido,
+        titularEncontrado: titularBuscaEfetivo,
       };
     }
 
@@ -629,7 +651,7 @@ export async function buscarDocumentos(
     const docsEquivTitular = catalogo.filter(
       (d) =>
         tiposQueContem.includes((d.tipo || '').toUpperCase()) &&
-        titularCorresponde(d.titular, titularExplicito)
+        titularCorresponde(d.titular, titularBuscaEfetivo)
     );
 
     if (docsEquivTitular.length > 0) {
@@ -651,14 +673,14 @@ export async function buscarDocumentos(
       resultados: [],
       score: 0,
       tipoPedido,
-      titularEncontrado: titularExplicito,
+      titularEncontrado: titularBuscaEfetivo,
     };
   }
 
   // =========================================================================
   // CENÁRIO C: Pedido por TIPO sem titular ("me manda o CPF", "o contrato social")
   // =========================================================================
-  if (tipoPedido && !titularExplicito) {
+  if (tipoPedido && !titularBuscaEfetivo) {
     const normPed = normalizarTexto(tipoPedido);
     const docsDoTipo = catalogo.filter((d) => {
       const normTit = normalizarTexto(d.titulo);
@@ -859,9 +881,9 @@ export async function buscarDocumentos(
         }
       }
 
-      // Se o pedido informou um titular explícito e o documento tem outro titular divergente, penaliza
-      if (titularExplicito && doc.titular && !titularCorresponde(doc.titular, titularExplicito)) {
-        score = Math.max(0, score - 50);
+      // Se o pedido informou um titular explícito/pessoa e o documento tem outro titular divergente, descarta
+      if (titularBuscaEfetivo && doc.titular && !titularCorresponde(doc.titular, titularBuscaEfetivo)) {
+        score = 0;
       }
 
       pontuados.push({ documento: doc, score });

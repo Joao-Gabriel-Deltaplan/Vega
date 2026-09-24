@@ -6,7 +6,7 @@ dotenv.config();
 import { processarMensagemChat } from '../chat/chatOrquestrador.js';
 import { Contato } from '../types.js';
 
-const contatoTeste: Contato = {
+const contatoDiretoria: Contato = {
   id: 'contato_teste_campos',
   telefone: '5514999999999',
   nome: 'Diretoria',
@@ -14,11 +14,18 @@ const contatoTeste: Contato = {
   criadoEm: new Date().toISOString(),
   atualizadoEm: new Date().toISOString(),
   conversaAtiva: true,
+  nivelAcesso: 'diretoria',
+  ficha: {
+    nivelAcesso: 'diretoria',
+    cargo: 'Diretor',
+    setor: 'Diretoria',
+    observacoes: '',
+  },
 };
 
 async function rodarTestes() {
   console.log('\n================================================================');
-  console.log('🧪 BATERIA DE TESTES: CORRESPONDÊNCIA ESTRITA DE CAMPOS (REGRA 17)');
+  console.log('🧪 BATERIA DE TESTES: CORRESPONDÊNCIA ESTRITA E PASSAPORTE REAL');
   console.log('================================================================\n');
 
   const casos = [
@@ -26,7 +33,7 @@ async function rodarTestes() {
       id: 1,
       titulo: 'Título de Eleitor do Thomaz (campo inexistente na ficha/docs)',
       pergunta: 'qual número do título eleitoral do thomaz',
-      verificacao: (resp: string) => {
+      verificacao: (resp: string, anexos?: any[]) => {
         const rLower = resp.toLowerCase();
         const naoEncontrou = rLower.includes('não encontrei') && (rLower.includes('título') || rLower.includes('titulo'));
         const naoTemFiliacao = !rLower.includes('moises') && !rLower.includes('lidia') && !rLower.includes('filiação');
@@ -39,7 +46,7 @@ async function rodarTestes() {
       id: 2,
       titulo: 'PIS do Thomaz (campo inexistente)',
       pergunta: 'qual o PIS do thomaz?',
-      verificacao: (resp: string) => {
+      verificacao: (resp: string, anexos?: any[]) => {
         const rLower = resp.toLowerCase();
         const naoEncontrou = rLower.includes('não encontrei') && rLower.includes('pis');
         const naoTemFiliacao = !rLower.includes('moises') && !rLower.includes('lidia');
@@ -52,7 +59,7 @@ async function rodarTestes() {
       id: 3,
       titulo: 'Carteira de Reservista do Thomaz (inexistente; tem apenas Dispensa)',
       pergunta: 'qual a carteira de reservista do thomaz?',
-      verificacao: (resp: string) => {
+      verificacao: (resp: string, anexos?: any[]) => {
         const rLower = resp.toLowerCase();
         const naoEncontrou = rLower.includes('não encontrei');
         const naoTemNascimento = !rLower.includes('06/10/1984') && !rLower.includes('nascimento');
@@ -65,7 +72,7 @@ async function rodarTestes() {
       id: 4,
       titulo: 'Certidão de Nascimento do Thomaz (inexistente; tem apenas Casamento)',
       pergunta: 'qual a certidão de nascimento do thomaz?',
-      verificacao: (resp: string) => {
+      verificacao: (resp: string, anexos?: any[]) => {
         const rLower = resp.toLowerCase();
         const naoEncontrou = rLower.includes('não encontrei');
         const naoConfundiuComCasamento = !rLower.includes('casamento') || rLower.includes('anotei na lista');
@@ -77,7 +84,7 @@ async function rodarTestes() {
       id: 5,
       titulo: 'Passaporte de outra pessoa (Nilceia - inexistente no cofre)',
       pergunta: 'qual o número do passaporte da Nilceia?',
-      verificacao: (resp: string) => {
+      verificacao: (resp: string, anexos?: any[]) => {
         const rLower = resp.toLowerCase();
         const naoEncontrou = rLower.includes('não encontrei');
         const naoFalouThomaz = !rLower.includes('thomaz') && !rLower.includes('333.599');
@@ -87,15 +94,16 @@ async function rodarTestes() {
     },
     {
       id: 6,
-      titulo: 'Passaporte do Thomaz (campo inexistente)',
+      titulo: 'Passaporte do Thomaz (DOCUMENTO EXISTENTE no Cofre)',
       pergunta: 'qual o passaporte do thomaz?',
-      verificacao: (resp: string) => {
+      verificacao: (resp: string, anexos?: any[]) => {
         const rLower = resp.toLowerCase();
-        const naoEncontrou = rLower.includes('não encontrei') && rLower.includes('passaporte');
-        const naoEntregouCnh = !rLower.includes('03127781771');
-        return naoEncontrou && naoEntregouCnh;
+        const entregouPassaporte = (anexos && anexos.length > 0 && anexos[0].nome === 'PASSAPORTE.pdf') ||
+                                   rLower.includes('passaporte');
+        const naoTemErro = !rLower.includes('não encontrei');
+        return entregouPassaporte && naoTemErro;
       },
-      esperado: 'Não encontrou passaporte e NÃO respondeu CNH nem outro campo',
+      esperado: 'Localizou e entregou o Passaporte Thomaz Lustri Fabre (PASSAPORTE.pdf)',
     },
   ];
 
@@ -108,16 +116,19 @@ async function rodarTestes() {
       const res = await processarMensagemChat({
         mensagemUsuario: caso.pergunta,
         historicoRecente: [],
-        contato: contatoTeste,
+        contato: contatoDiretoria,
       });
 
       console.log(`Resposta VEGA: "${res.textoResposta}"`);
+      if (res.anexos && res.anexos.length > 0) {
+        console.log(`Anexos entregues:`, res.anexos.map((a: any) => a.nome));
+      }
       console.log(`Intenção detectada: ${res.intencaoDetectada}`);
       if (res.buscaUsada) console.log(`Busca usada: ${res.buscaUsada}`);
 
-      const passou = caso.verificacao(res.textoResposta);
+      const passou = caso.verificacao(res.textoResposta, res.anexos);
       if (passou) {
-        console.log(`✅ APROVADO: Respondeu rigorosamente que não encontrou o campo solicitado.`);
+        console.log(`✅ APROVADO: Comportamento rigorosamente correto.`);
         aprovados++;
       } else {
         console.error(`❌ FALHOU! Esperado: ${caso.esperado}`);

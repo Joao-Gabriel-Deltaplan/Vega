@@ -15,6 +15,7 @@ import {
   identificarMultiplosDocumentosNoTexto,
   identificarTipoPedido,
   extrairTitularExplicito,
+  titularCorresponde,
 } from '../busca/motor.js';
 import {
   registrarOuIncrementarDocumentoFaltante,
@@ -2554,69 +2555,77 @@ async function executarProcessamentoMensagemChatInterno(dados: {
       termoBuscaArquivo = `${termoBuscaArquivo} ${titularBusca}`.trim();
     }
     // 1. Busca por nome no Cofre (documentos físicos / PDFs)
-    const buscaDoc = await buscarDocumentos(termoBuscaArquivo, contato, todosDocs);
+    const buscaDoc = await buscarDocumentos(termoBuscaArquivo, contato, todosDocs, titularBusca);
     const tempoBuscaDoc = Date.now() - inicioBuscaDoc;
 
     if (buscaDoc.status === 'unico') {
       const doc = buscaDoc.resultados[0];
-      const anexo = await criarAnexoParaDocumento(doc);
-      modeloUsado = 'Motor Interno';
+      const titularDivergente = titularBusca && !titularCorresponde(doc.titular, titularBusca);
+      if (titularDivergente) {
+        // Bloqueio de divergência: o único documento encontrado pertence a outro titular!
+        buscaDoc.status = 'nenhum';
+        buscaDoc.resultados = [];
+        buscaDoc.titularEncontrado = titularBusca;
+      } else {
+        const anexo = await criarAnexoParaDocumento(doc);
+        modeloUsado = 'Motor Interno';
 
-      etapas.push({
-        ordem: 2,
-        nome: 'Localização de Arquivo Físico no Cofre',
-        descricao: `Documento "${doc.titulo}" (${doc.arquivo}) localizado com 100% de correspondência por nome em ${tempoBuscaDoc} ms.`,
-        tempoMs: tempoBuscaDoc,
-        detalhes: {
-          documentoId: doc.id,
-          titulo: doc.titulo,
-          arquivo: doc.arquivo,
-          tamanho: doc.tamanho,
-        },
-      });
+        etapas.push({
+          ordem: 2,
+          nome: 'Localização de Arquivo Físico no Cofre',
+          descricao: `Documento "${doc.titulo}" (${doc.arquivo}) localizado com 100% de correspondência por nome em ${tempoBuscaDoc} ms.`,
+          tempoMs: tempoBuscaDoc,
+          detalhes: {
+            documentoId: doc.id,
+            titulo: doc.titulo,
+            arquivo: doc.arquivo,
+            tamanho: doc.tamanho,
+          },
+        });
 
-      etapas.push({
-        ordem: 3,
-        nome: 'Geração e Anexo do Arquivo PDF',
-        descricao: `Arquivo PDF "${doc.arquivo}" preparado para entrega direta ao usuário.`,
-        tempoMs: 2,
-        detalhes: { anexo: doc.arquivo },
-      });
+        etapas.push({
+          ordem: 3,
+          nome: 'Geração e Anexo do Arquivo PDF',
+          descricao: `Arquivo PDF "${doc.arquivo}" preparado para entrega direta ao usuário.`,
+          tempoMs: 2,
+          detalhes: { anexo: doc.arquivo },
+        });
 
-      const docsRastro: DocumentoRastro[] = [
-        {
-          id: doc.id,
-          titulo: doc.titulo,
-          tipo: doc.tipo,
-          similaridade: 100,
-          usadoNaResposta: true,
-        },
-      ];
+        const docsRastro: DocumentoRastro[] = [
+          {
+            id: doc.id,
+            titulo: doc.titulo,
+            tipo: doc.tipo,
+            similaridade: 100,
+            usadoNaResposta: true,
+          },
+        ];
 
-      const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
-      const textoDocFormatado = formatarFraseAcompanhamento(doc.titulo, contato.nome, doc.titular);
-      const textoResposta = `${prefixoSaudacao}${textoDocFormatado}`;
+        const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+        const textoDocFormatado = formatarFraseAcompanhamento(doc.titulo, contato.nome, doc.titular);
+        const textoResposta = `${prefixoSaudacao}${textoDocFormatado}`;
 
-      const rastro = criarRastroFinal({
-        tipoBusca: 'nome_cofre',
-        docsEncontrados: docsRastro,
-        docUsado: doc.titulo,
-        enviouAnexo: true,
-        anexos: [anexo],
-        respostaFinal: textoResposta,
-        modelo: modeloUsado,
-      });
+        const rastro = criarRastroFinal({
+          tipoBusca: 'nome_cofre',
+          docsEncontrados: docsRastro,
+          docUsado: doc.titulo,
+          enviouAnexo: true,
+          anexos: [anexo],
+          respostaFinal: textoResposta,
+          modelo: modeloUsado,
+        });
 
-      return {
-        textoResposta,
-        anexos: [anexo],
-        origem: 'motor',
-        intencaoDetectada: intencao,
-        perguntaReescrita: pergunta_reescrita,
-        buscaUsada: 'Busca por nome no Cofre (Arquivo Físico)',
-        similaridade: '100% (Correspondência por nome)',
-        rastro,
-      };
+        return {
+          textoResposta,
+          anexos: [anexo],
+          origem: 'motor',
+          intencaoDetectada: intencao,
+          perguntaReescrita: pergunta_reescrita,
+          buscaUsada: 'Busca por nome no Cofre (Arquivo Físico)',
+          similaridade: '100% (Correspondência por nome)',
+          rastro,
+        };
+      }
     }
 
     if (buscaDoc.status === 'ambiguo') {
@@ -4593,11 +4602,13 @@ export function validarCorrespondenciaCampoResposta(
 
   // 7. PESSOA ESPECÍFICA CITADA VS TITULAR DO CONTEXTO (ex: Nilceia vs Thomaz)
   if (msgNorm.includes('nilceia') && !msgNorm.includes('thomaz')) {
-    if (/\b(m[aã]e\s+do\s+thomaz|pai\s+do\s+thomaz|cpf\s+do\s+thomaz)\b/i.test(respNorm)) {
+    const atribuiAoThomaz = /\b(m[aã]e\s+do\s+thomaz|pai\s+do\s+thomaz|cpf\s+do\s+thomaz|nascimento\s+do\s+thomaz|nascid[oa]\s+do\s+thomaz|aqui\s+est[aá].*do\s+thomaz|passaporte\s+thomaz)\b/i.test(respNorm);
+    const naoMencionaNilceia = !respNorm.includes('nilceia');
+    if (atribuiAoThomaz || (naoMencionaNilceia && /\b(thomaz|lustri|fabre)\b/i.test(respNorm))) {
       return {
-        textoValidado: `Não encontrei essas informações sobre a Nilceia nos documentos do Cofre.`,
+        textoValidado: `Não encontrei esse documento da *Nilceia* no Cofre.`,
         interceptado: true,
-        motivo: 'Usuário perguntou sobre Nilceia, mas a resposta continha dados do Thomaz.',
+        motivo: 'Usuário perguntou sobre Nilceia, mas a resposta atribuiu dados/documento ao Thomaz.',
       };
     }
   }
@@ -4622,8 +4633,13 @@ export async function processarMensagemChat(dados: {
   if (checagemCampo.interceptado) {
     console.warn(`[VEGA Guardrail] Resposta interceptada pela Regra 17: ${checagemCampo.motivo}`);
     resultado.textoResposta = checagemCampo.textoValidado;
+    if (resultado.anexos && resultado.anexos.length > 0) {
+      resultado.anexos = [];
+    }
     if (resultado.rastro) {
       resultado.rastro.respostaFinal = checagemCampo.textoValidado;
+      resultado.rastro.enviouAnexo = false;
+      resultado.rastro.anexosDetalhes = [];
       resultado.rastro.etapas.push({
         ordem: resultado.rastro.etapas.length + 1,
         nome: 'Guardrail de Correspondência de Campo (Regra 17)',
