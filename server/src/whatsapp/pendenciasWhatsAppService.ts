@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { getSupabaseClient } from '../db/supabaseClient.js';
+import { chamarChatComTelemetria } from '../ai/telemetriaIaService.js';
 import { salvarOuAtualizarTitular, obterTodosTitulares, resolverTitularCadastrado } from '../storage.js';
 import { formatarHorarioBrasilia } from '../utils/dataHoraUtils.js';
 
@@ -194,18 +195,22 @@ export async function processarRespostaPendenciaWhatsApp(
     // Se a intenção for incerta, utiliza a IA para classificar
     if (openai) {
       try {
-        const resp = await openai.chat.completions.create({
-          model: 'gpt-5.4-mini',
-          messages: [
-            {
-              role: 'system',
-              content:
-                'O usuário foi perguntado se prefere "substituir" o documento anterior ou "manter ambos". Classifique a resposta do usuário estritamente em JSON: {"intencao": "substituir" | "manter" | "outro"}',
-            },
-            { role: 'user', content: textoLimpo },
-          ],
-          response_format: { type: 'json_object' },
-        });
+        const resp = await chamarChatComTelemetria(
+          openai,
+          {
+            model: 'gpt-5.4-mini',
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'O usuário foi perguntado se prefere "substituir" o documento anterior ou "manter ambos". Classifique a resposta do usuário estritamente em JSON: {"intencao": "substituir" | "manter" | "outro"}',
+              },
+              { role: 'user', content: textoLimpo },
+            ],
+            response_format: { type: 'json_object' },
+          },
+          { motivo: 'whatsapp_pendencia_duplicidade' }
+        );
 
         const intencao = JSON.parse(resp.choices[0]?.message?.content || '{}').intencao;
         if (intencao === 'substituir') {
@@ -297,19 +302,23 @@ export async function processarRespostaPendenciaWhatsApp(
         const titulares = await obterTodosTitulares();
         const listaNomes = titulares.map((t) => t.nome).join(', ');
 
-        const resp = await openai.chat.completions.create({
-          model: 'gpt-5.4-mini',
-          messages: [
-            {
-              role: 'system',
-              content: `O usuário respondeu à pergunta sobre cadastrar um novo titular. Extraia se ele indicou outro titular já cadastrado ou um nome diferente.
+        const resp = await chamarChatComTelemetria(
+          openai,
+          {
+            model: 'gpt-5.4-mini',
+            messages: [
+              {
+                role: 'system',
+                content: `O usuário respondeu à pergunta sobre cadastrar um novo titular. Extraia se ele indicou outro titular já cadastrado ou um nome diferente.
 Titulares existentes: ${listaNomes}
 Retorne estritamente JSON: {"nomeTitular": string | null, "querCadastrarNovo": boolean}`,
-            },
-            { role: 'user', content: textoLimpo },
-          ],
-          response_format: { type: 'json_object' },
-        });
+              },
+              { role: 'user', content: textoLimpo },
+            ],
+            response_format: { type: 'json_object' },
+          },
+          { motivo: 'whatsapp_pendencia_titular' }
+        );
 
         const parsed = JSON.parse(resp.choices[0]?.message?.content || '{}');
         if (parsed.nomeTitular) {
@@ -363,12 +372,14 @@ Retorne estritamente JSON: {"nomeTitular": string | null, "querCadastrarNovo": b
         const titulares = await obterTodosTitulares();
         const listaNomes = titulares.map((t) => t.nome).join(', ');
 
-        const resp = await openai.chat.completions.create({
-          model: 'gpt-5.4-mini',
-          messages: [
-            {
-              role: 'system',
-              content: `Você está auxiliando no cadastro de um documento no Cofre.
+        const resp = await chamarChatComTelemetria(
+          openai,
+          {
+            model: 'gpt-5.4-mini',
+            messages: [
+              {
+                role: 'system',
+                content: `Você está auxiliando no cadastro de um documento no Cofre.
 O usuário está informando campos que estavam faltando (${tipoPendencia}).
 Titulares cadastrados: ${listaNomes}
 Analise a mensagem do usuário e extraia o titular e o tipo de documento informados.
@@ -377,11 +388,13 @@ Retorne estritamente JSON:
   "titular": string | null,
   "tipo": string | null
 }`,
-            },
-            { role: 'user', content: textoLimpo },
-          ],
-          response_format: { type: 'json_object' },
-        });
+              },
+              { role: 'user', content: textoLimpo },
+            ],
+            response_format: { type: 'json_object' },
+          },
+          { motivo: 'whatsapp_pendencia_completar' }
+        );
 
         const parsed = JSON.parse(resp.choices[0]?.message?.content || '{}');
         if (parsed.titular) titularExtraido = parsed.titular.trim();
@@ -529,12 +542,14 @@ Retorne estritamente JSON:
 
     if (pareceCorrecao && openai) {
       try {
-        const resp = await openai.chat.completions.create({
-          model: 'gpt-5.4-mini',
-          messages: [
-            {
-              role: 'system',
-              content: `O documento foi previamente salvo como tipo: "${pendencia.dados_detectados.tipo}" e titular: "${pendencia.dados_detectados.titular}".
+        const resp = await chamarChatComTelemetria(
+          openai,
+          {
+            model: 'gpt-5.4-mini',
+            messages: [
+              {
+                role: 'system',
+                content: `O documento foi previamente salvo como tipo: "${pendencia.dados_detectados.tipo}" e titular: "${pendencia.dados_detectados.titular}".
 O usuário está enviando uma mensagem. Verifique se ele está corrigindo o titular ou o tipo.
 Retorne estritamente JSON:
 {
@@ -542,11 +557,13 @@ Retorne estritamente JSON:
   "novoTitular": string | null,
   "novoTipo": string | null
 }`,
-            },
-            { role: 'user', content: textoLimpo },
-          ],
-          response_format: { type: 'json_object' },
-        });
+              },
+              { role: 'user', content: textoLimpo },
+            ],
+            response_format: { type: 'json_object' },
+          },
+          { motivo: 'whatsapp_pendencia_correcao' }
+        );
 
         const parsed = JSON.parse(resp.choices[0]?.message?.content || '{}');
         if (parsed.ehCorrecao && (parsed.novoTitular || parsed.novoTipo)) {

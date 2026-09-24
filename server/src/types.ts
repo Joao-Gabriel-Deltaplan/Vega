@@ -268,14 +268,33 @@ export interface Conversa {
   mensagens: Mensagem[];
 }
 
-export type MotivoUsoIA = 'interpretacao' | 'equivalencia' | 'conversa' | 'transcricao_audio';
+export type MotivoUsoIA =
+  | 'interpretacao'
+  | 'equivalencia'
+  | 'conversa'
+  | 'transcricao_audio'
+  | 'chat_classificador'
+  | 'chat_resposta_trechos'
+  | 'chat_resumo_conhecimento'
+  | 'chat_fallback_vetorial'
+  | 'chat_pergunta_documento_entregue'
+  | 'indexacao_ocr_visao'
+  | 'indexacao_embedding'
+  | 'indexacao_extracao_ficha'
+  | 'busca_embedding'
+  | 'whatsapp_pendencia_duplicidade'
+  | 'whatsapp_pendencia_titular'
+  | 'whatsapp_pendencia_completar'
+  | 'whatsapp_pendencia_correcao'
+  | 'conhecimento_estruturacao'
+  | string;
 
 export interface RegistroUsoIA {
   id: string;
   data: string; // ISO
   provedor: string;
   modelo: string;
-  contatoId: string;
+  contatoId?: string;
   contatoNome?: string;
   motivo: MotivoUsoIA;
   tokensEntrada: number;

@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { getSupabaseClient } from '../db/supabaseClient.js';
 import { gerarEmbedding } from '../ai/openaiProvider.js';
+import { chamarChatComTelemetria } from '../ai/telemetriaIaService.js';
 import {
   obterTitularPorNome,
   obterTodosTitulares,
@@ -812,22 +813,26 @@ async function formatarOuResumirConhecimento(
 
   const chatModel = process.env.OPENAI_CHAT_MODEL?.trim() || 'gpt-5.4-mini';
   try {
-    const res = await openai.chat.completions.create({
-      model: chatModel,
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Você é a assistente VEGA da construtora Delta Plan. Apresente o conteúdo da instrução corporativa de forma resumida, clara e profissional em português do Brasil, citando o título no início. Use obrigatoriamente a formatação do WhatsApp: *negrito* com um asterisco, _itálico_, sem títulos (#), sem tabelas e sem links em markdown. Negrito só quando ajudar a leitura.',
-        },
-        {
-          role: 'user',
-          content: `Título: "${titulo}"\nConteúdo:\n${conteudo}`,
-        },
-      ],
-      temperature: obterConfiguracoesVegaSync().temperaturaResposta,
-      max_completion_tokens: 300,
-    });
+    const res = await chamarChatComTelemetria(
+      openai,
+      {
+        model: chatModel,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'Você é a assistente VEGA da construtora Delta Plan. Apresente o conteúdo da instrução corporativa de forma resumida, clara e profissional em português do Brasil, citando o título no início. Use obrigatoriamente a formatação do WhatsApp: *negrito* com um asterisco, _itálico_, sem títulos (#), sem tabelas e sem links em markdown. Negrito só quando ajudar a leitura.',
+          },
+          {
+            role: 'user',
+            content: `Título: "${titulo}"\nConteúdo:\n${conteudo}`,
+          },
+        ],
+        temperature: obterConfiguracoesVegaSync().temperaturaResposta,
+        max_completion_tokens: 300,
+      },
+      { motivo: 'chat_resumo_conhecimento' }
+    );
     const resposta = res.choices[0]?.message?.content?.trim() || `De acordo com *${titulo}*:\n${conteudo}`;
     const textoLimpo = resposta.replace(/\*\*([^*]+)\*\*/g, '*$1*').replace(/^#{1,6}\s+/gm, '');
 
@@ -1114,16 +1119,20 @@ EXEMPLOS OBRIGATÓRIOS:
     : `Mensagem atual do usuário: "${mensagemUsuario}"`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: chatModel,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPromptContent },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.1,
-      max_completion_tokens: 300,
-    });
+    const response = await chamarChatComTelemetria(
+      openai,
+      {
+        model: chatModel,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPromptContent },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.1,
+        max_completion_tokens: 300,
+      },
+      { motivo: 'chat_classificador' }
+    );
 
     const parsed = JSON.parse(response.choices[0]?.message?.content || '{}');
     const tempoMs = Date.now() - inicio;
@@ -1642,18 +1651,22 @@ REGRAS OBRIGATÓRIAS:
 10. PROIBIÇÃO ABSOLUTA DE BLOCOS TÉCNICOS: NUNCA emita blocos markdown como \`\`\`documento, \`\`\`json, \`\`\`pdf ou qualquer estrutura de código/JSON. Toda a resposta deve ser em texto natural formatado exclusivamente para WhatsApp.`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: chatModel,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        {
-          role: 'user',
-          content: `Trechos recuperados dos documentos:\n${contextoTrechos}\n\nPergunta do usuário: "${pergunta}"`,
-        },
-      ],
-      temperature: configVega.temperaturaResposta,
-      max_completion_tokens: 500,
-    });
+    const response = await chamarChatComTelemetria(
+      openai,
+      {
+        model: chatModel,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content: `Trechos recuperados dos documentos:\n${contextoTrechos}\n\nPergunta do usuário: "${pergunta}"`,
+          },
+        ],
+        temperature: configVega.temperaturaResposta,
+        max_completion_tokens: 500,
+      },
+      { motivo: 'chat_resposta_trechos' }
+    );
 
     const respostaTexto = response.choices[0]?.message?.content?.trim() || 'Não encontrei nos documentos.';
     let textoLimpo = respostaTexto.replace(/\*\*([^*]+)\*\*/g, '*$1*').replace(/^#{1,6}\s+/gm, '');
@@ -3849,11 +3862,21 @@ Se não encontrar esse dado com total clareza no trecho, responda apenas: NÃO_E
 NÃO inclua explicações nem frases antes ou depois, apenas o valor exato.`;
 
             try {
-              const respExtracao = await openai.chat.completions.create({
-                model: 'gpt-5.4-mini',
-                messages: [{ role: 'user', content: promptExtracao }],
-                temperature: 0.0,
-              });
+              const respExtracao = await chamarChatComTelemetria(
+                openai,
+                {
+                  model: 'gpt-5.4-mini',
+                  messages: [{ role: 'user', content: promptExtracao }],
+                  temperature: 0.0,
+                },
+                { motivo: 'chat_fallback_vetorial', contatoId: contato.id, contatoNome: contato.nome }
+              );
+              const pTokens = respExtracao.usage?.prompt_tokens || 0;
+              const cTokens = respExtracao.usage?.completion_tokens || 0;
+              tokensPromptTotal += pTokens;
+              tokensCompletionTotal += cTokens;
+              tokensGeraisTotal += pTokens + cTokens;
+
               const val = respExtracao.choices[0]?.message?.content?.trim();
               if (val && !val.includes('NÃO_ENCONTRADO') && val.length >= 2) {
                 valorAchadoVetorial = val;
@@ -4073,11 +4096,15 @@ DIRETRIZES OBRIGATÓRIAS:
 5. NÃO forneça links e NÃO envie novamente o arquivo anexo: responda de maneira puramente textual em Português do Brasil com formatação do WhatsApp (*negrito*, _itálico_).`;
 
         const inicioIA = Date.now();
-        const completion = await openai.chat.completions.create({
-          model: 'gpt-5.4-mini',
-          messages: [{ role: 'user', content: promptDoc }],
-          temperature: obterConfiguracoesVegaSync().temperaturaResposta,
-        });
+        const completion = await chamarChatComTelemetria(
+          openai,
+          {
+            model: 'gpt-5.4-mini',
+            messages: [{ role: 'user', content: promptDoc }],
+            temperature: obterConfiguracoesVegaSync().temperaturaResposta,
+          },
+          { motivo: 'chat_pergunta_documento_entregue', contatoId: contato.id, contatoNome: contato.nome }
+        );
 
         const textoRespostaDoc =
           completion.choices[0]?.message?.content?.trim() || 'Não consegui analisar o conteúdo do documento.';

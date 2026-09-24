@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { chamarChatComTelemetria } from './ai/telemetriaIaService.js';
 import { TipoConhecimento, DadosPix, DadosLink, DadosContato } from './types.js';
 
 export interface ItemEstruturadoProposto {
@@ -86,15 +87,19 @@ REGRAS IMPORTANTES:
 }`;
 
   try {
-    const resposta = await openai.chat.completions.create({
-      model: 'gpt-5.4-mini',
-      messages: [
-        { role: 'system', content: promptSistema },
-        { role: 'user', content: textoEntrada.trim() },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.1,
-    });
+    const resposta = await chamarChatComTelemetria(
+      openai,
+      {
+        model: 'gpt-5.4-mini',
+        messages: [
+          { role: 'system', content: promptSistema },
+          { role: 'user', content: textoEntrada.trim() },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.1,
+      },
+      { motivo: 'conhecimento_estruturacao' }
+    );
 
     const conteudoJson = resposta.choices[0]?.message?.content;
     if (!conteudoJson) {

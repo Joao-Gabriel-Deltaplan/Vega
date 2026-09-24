@@ -14,6 +14,7 @@ import {
   obterTodosConhecimentos,
   obterTodosTitulares,
 } from '../storage.js';
+import { chamarEmbeddingsComTelemetria } from './telemetriaIaService.js';
 
 export type AcaoIA =
   | { acao: 'entregar'; id: string }
@@ -478,10 +479,14 @@ export async function gerarEmbedding(texto: string): Promise<number[]> {
   const embeddingModel = process.env.OPENAI_EMBEDDING_MODEL?.trim() || 'text-embedding-3-small';
   const openai = new OpenAI({ apiKey });
 
-  const resposta = await openai.embeddings.create({
-    model: embeddingModel,
-    input: texto,
-  });
+  const resposta = await chamarEmbeddingsComTelemetria(
+    openai,
+    {
+      model: embeddingModel,
+      input: texto,
+    },
+    { motivo: 'busca_embedding' }
+  );
 
   return resposta.data[0].embedding;
 }

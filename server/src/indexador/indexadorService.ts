@@ -5,6 +5,7 @@ import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import OpenAI from 'openai';
 import { getSupabaseClient } from '../db/supabaseClient.js';
+import { chamarChatComTelemetria, chamarEmbeddingsComTelemetria } from '../ai/telemetriaIaService.js';
 import { extrairTextoPdfComSenha, PdfProtegidoPorSenhaError } from '../pdfService.js';
 import {
   obterTodosDocumentos,
@@ -100,29 +101,33 @@ async function executarOcrPaginaComVisao(
 
     // Chama o gpt-5.4-mini com visão
     const chatModel = process.env.OPENAI_CHAT_MODEL?.trim() || 'gpt-5.4-mini';
-    const response = await openai.chat.completions.create({
-      model: chatModel,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: 'Transcreva todo o texto contido nesta imagem de documento com máxima fidelidade, preservando nomes próprios, datas, números, filiação e campos estruturados. Não adicione comentários adicionais, apenas o texto transcrito.',
-            },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:image/png;base64,${base64Img}`,
-                detail: 'high',
+    const response = await chamarChatComTelemetria(
+      openai,
+      {
+        model: chatModel,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Transcreva todo o texto contido nesta imagem de documento com máxima fidelidade, preservando nomes próprios, datas, números, filiação e campos estruturados. Não adicione comentários adicionais, apenas o texto transcrito.',
               },
-            },
-          ],
-        },
-      ],
-      max_completion_tokens: 3000,
-      temperature: 0.1,
-    });
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:image/png;base64,${base64Img}`,
+                  detail: 'high',
+                },
+              },
+            ],
+          },
+        ],
+        max_completion_tokens: 3000,
+        temperature: 0.1,
+      },
+      { motivo: 'indexacao_ocr_visao' }
+    );
 
     return response.choices[0]?.message?.content?.trim() || '';
   } catch (err: any) {
@@ -188,29 +193,33 @@ export async function extrairTextoImagemComVisao(
     mediaType = 'image/jpeg';
   }
 
-  const response = await openai.chat.completions.create({
-    model: chatModel,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: 'Transcreva todo o texto contido nesta imagem de documento com máxima fidelidade, preservando nomes próprios, datas, números, filiação e campos estruturados. Não adicione comentários adicionais, apenas o texto transcrito.',
-          },
-          {
-            type: 'image_url',
-            image_url: {
-              url: `data:${mediaType};base64,${base64Img}`,
-              detail: 'high',
+  const response = await chamarChatComTelemetria(
+    openai,
+    {
+      model: chatModel,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: 'Transcreva todo o texto contido nesta imagem de documento com máxima fidelidade, preservando nomes próprios, datas, números, filiação e campos estruturados. Não adicione comentários adicionais, apenas o texto transcrito.',
             },
-          },
-        ],
-      },
-    ],
-    max_completion_tokens: 3000,
-    temperature: 0.1,
-  });
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:${mediaType};base64,${base64Img}`,
+                detail: 'high',
+              },
+            },
+          ],
+        },
+      ],
+      max_completion_tokens: 3000,
+      temperature: 0.1,
+    },
+    { motivo: 'indexacao_ocr_visao' }
+  );
 
   return response.choices[0]?.message?.content?.trim() || '';
 }
@@ -367,10 +376,14 @@ export async function gerarEmbeddingsEmLote(
   if (textos.length === 0) return [];
   const model = process.env.OPENAI_EMBEDDING_MODEL?.trim() || 'text-embedding-3-small';
 
-  const response = await openai.embeddings.create({
-    model,
-    input: textos,
-  });
+  const response = await chamarEmbeddingsComTelemetria(
+    openai,
+    {
+      model,
+      input: textos,
+    },
+    { motivo: 'indexacao_embedding' }
+  );
 
   return response.data.map((d) => d.embedding);
 }
@@ -416,16 +429,20 @@ Retorne ESTRITAMENTE um objeto JSON com as chaves (todas opcionais, preencha ape
 }`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: chatModel,
-      messages: [
-        { role: 'system', content: promptInstrucao },
-        { role: 'user', content: textoCompleto.slice(0, 10000) },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.1,
-      max_completion_tokens: 1000,
-    });
+    const response = await chamarChatComTelemetria(
+      openai,
+      {
+        model: chatModel,
+        messages: [
+          { role: 'system', content: promptInstrucao },
+          { role: 'user', content: textoCompleto.slice(0, 10000) },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.1,
+        max_completion_tokens: 1000,
+      },
+      { motivo: 'indexacao_extracao_ficha' }
+    );
 
     const conteudo = response.choices[0]?.message?.content || '{}';
     return JSON.parse(conteudo);
