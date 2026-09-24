@@ -453,8 +453,12 @@ export async function sincronizarSupabaseNoStartup(): Promise<{
   let indexadosDoc = 0;
   const removidosDoc = 0;
 
-  // Reindexa apenas documentos existentes que precisam de atualização de hash
   for (const doc of docsCofre) {
+    // REGRA 1: Documento protegido por senha NUNCA deve ser reprocessado automaticamente no startup!
+    if (doc.statusIndexacao === 'protegido_senha' || (doc as any).status_indexacao === 'protegido_senha') {
+      continue;
+    }
+
     const caminhoArquivo = path.join(ARQUIVOS_DIR, doc.arquivo);
     if (!fs.existsSync(caminhoArquivo)) {
       continue;
@@ -465,20 +469,47 @@ export async function sincronizarSupabaseNoStartup(): Promise<{
 
     const { data: docExistente } = await supabase
       .from('documentos')
-      .select('id, hash_arquivo')
+      .select('id, hash_arquivo, status_indexacao')
       .eq('id', doc.id)
       .maybeSingle();
 
-    if (docExistente && docExistente.hash_arquivo === hashDisco) {
+    if (!docExistente) {
+      continue;
+    }
+
+    // Se o registro no banco tiver status protegido_senha, pula imediatamente
+    if (docExistente.status_indexacao === 'protegido_senha') {
+      if (!docExistente.hash_arquivo) {
+        await supabase.from('documentos').update({ hash_arquivo: hashDisco }).eq('id', doc.id);
+      }
+      continue;
+    }
+
+    // REGRA 2: Se o documento já tem o mesmo hash, está 100% em dia!
+    if (docExistente.hash_arquivo === hashDisco) {
       continue; // Em dia
     }
 
-    // Regra 1 Oficial: Apenas limpa trechos anteriores, NUNCA deleta o registro em documentos!
-    if (docExistente) {
-      await supabase.from('trechos').delete().eq('documento_id', docExistente.id);
+    // REGRA 3: Se o documento já estiver com status 'indexado', NUNCA reindexar com IA no startup!
+    // Apenas atualiza o hash_arquivo no registro existente para manter a integridade sem gastar tokens.
+    if (docExistente.status_indexacao === 'indexado') {
+      const { count: countTrechos } = await supabase
+        .from('trechos')
+        .select('*', { count: 'exact', head: true })
+        .eq('documento_id', doc.id);
+
+      if ((countTrechos || 0) > 0) {
+        console.log(`[Startup ℹ️] Documento "${doc.titulo}" (${doc.arquivo}) já está indexado com ${countTrechos} trechos. Atualizando hash no banco.`);
+        await supabase
+          .from('documentos')
+          .update({ hash_arquivo: hashDisco })
+          .eq('id', doc.id);
+        continue;
+      }
     }
 
-    console.log(`[Startup ⚡] Reindexando documento do cofre: "${doc.titulo}" (${doc.arquivo})...`);
+    // REGRA 4: Somente documentos que comprovadamente NÃO têm trechos e não são protegidos por senha
+    console.log(`[Startup ⚡] Indexando documento novo ou pendente do cofre: "${doc.titulo}" (${doc.arquivo})...`);
     try {
       const { paginas } = await extrairTextoDocumento(caminhoArquivo, openai, {
         titulo: doc.titulo,
@@ -502,27 +533,22 @@ export async function sincronizarSupabaseNoStartup(): Promise<{
         }
       }
 
-      const { data: novoDoc, error: errDoc } = await supabase
+      // NUNCA criar documento duplicado com insert! Atualiza o existente in-place!
+      await supabase
         .from('documentos')
-        .insert({
-          titulo: doc.titulo,
-          arquivo: doc.arquivo,
+        .update({
           hash_arquivo: hashDisco,
-          tipo: doc.tipo || 'Documento',
+          status_indexacao: 'indexado',
           pessoa_id: pessoaId,
           corporativo: ehCorporativo,
-          visibilidade: doc.visibilidade || 'diretoria',
         })
-        .select('id')
-        .single();
+        .eq('id', doc.id);
 
-      if (errDoc || !novoDoc) {
-        console.error(`[Startup ❌] Erro ao salvar "${doc.titulo}" no Supabase:`, errDoc?.message);
-        continue;
-      }
+      // Limpa trechos anteriores do documento antes de reinserir
+      await supabase.from('trechos').delete().eq('documento_id', doc.id);
 
       const payloadTrechos = trechos.map((t, idx) => ({
-        documento_id: novoDoc.id,
+        documento_id: doc.id,
         pessoa_id: pessoaId,
         corporativo: ehCorporativo,
         pagina: t.pagina,
@@ -532,9 +558,9 @@ export async function sincronizarSupabaseNoStartup(): Promise<{
 
       await supabase.from('trechos').insert(payloadTrechos);
       indexadosDoc++;
-      console.log(`[Startup ✅] Documento do cofre "${doc.titulo}" sincronizado no Supabase.`);
+      console.log(`[Startup ✅] Documento do cofre "${doc.titulo}" indexado com sucesso.`);
     } catch (err: any) {
-      console.error(`[Startup ❌] Falha ao reindexar "${doc.titulo}":`, err?.message || err);
+      console.error(`[Startup ❌] Falha ao indexar "${doc.titulo}":`, err?.message || err);
     }
   }
 
