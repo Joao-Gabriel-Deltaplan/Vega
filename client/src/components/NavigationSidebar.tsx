@@ -159,7 +159,7 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
           <Shield className="w-4 h-4 text-emerald-400" />
           <span className="absolute bottom-0 right-0 w-2 h-2 rounded-full bg-emerald-400 border border-[#0b0f14]"></span>
           <span className="absolute left-16 bg-[#18202b] border border-[#263345] text-slate-200 text-xs px-2.5 py-1.5 rounded-lg shadow-xl opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 font-medium">
-            {nomeUsuario ? `${nomeUsuario} • Online` : 'Delta Admin • Online'}
+            {nomeUsuario ? `${nomeUsuario} • Online` : 'Painel (senha única) • Online'}
           </span>
         </div>
 

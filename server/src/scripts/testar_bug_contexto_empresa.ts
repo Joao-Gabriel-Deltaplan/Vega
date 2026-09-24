@@ -11,7 +11,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 const contatoTeste: Contato = {
   id: 'cont-teste-contexto',
-  nome: 'Carlos Eduardo',
+  nome: 'Titular Teste',
   telefone: '11999998888',
   avatarCor: '#10b981',
   cargo: 'Diretor',

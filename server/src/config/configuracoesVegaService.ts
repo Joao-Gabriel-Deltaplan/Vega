@@ -222,8 +222,18 @@ export async function salvarConfiguracoesVega(dados: {
   autorNome: string;
   autorId: string;
   motivo?: string;
+  idVersaoCustomizado?: string;
+  gravarHistorico?: boolean;
 }): Promise<ConfiguracaoVega> {
-  const { promptPersona, temperaturaResposta, autorNome, autorId, motivo } = dados;
+  const {
+    promptPersona,
+    temperaturaResposta,
+    autorNome,
+    autorId,
+    motivo,
+    idVersaoCustomizado,
+    gravarHistorico = true,
+  } = dados;
 
   if (!promptPersona || typeof promptPersona !== 'string' || promptPersona.trim().length === 0) {
     throw new Error('O prompt da persona não pode estar em branco.');
@@ -238,6 +248,8 @@ export async function salvarConfiguracoesVega(dados: {
   const tempNormalizada = Math.round(tempNum * 100) / 100;
   const promptNormalizado = promptPersona.trim();
   const agoraIso = new Date().toISOString();
+  const autorFinal = autorNome || 'Painel (senha única)';
+  const autorIdFinal = autorId || 'painel-senha-unica';
 
   const supabase = getSupabaseClient();
 
@@ -246,8 +258,8 @@ export async function salvarConfiguracoesVega(dados: {
     id: 'config_padrao',
     prompt_persona: promptNormalizado,
     temperatura_resposta: tempNormalizada,
-    atualizado_por_nome: autorNome || 'Administrador',
-    atualizado_por_id: autorId || 'admin',
+    atualizado_por_nome: autorFinal,
+    atualizado_por_id: autorIdFinal,
     atualizado_em: agoraIso,
   });
 
@@ -255,20 +267,22 @@ export async function salvarConfiguracoesVega(dados: {
     throw new Error(`Falha ao salvar configurações no Supabase: ${erroUpdate.message}`);
   }
 
-  // 2. Registra na tabela de histórico
-  const idVersao = `ver-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
-  const { error: erroHist } = await supabase.from('configuracoes_vega_historico').insert({
-    id: idVersao,
-    prompt_persona: promptNormalizado,
-    temperatura_resposta: tempNormalizada,
-    autor_nome: autorNome || 'Administrador',
-    autor_id: autorId || 'admin',
-    motivo: motivo || 'edicao_manual',
-    criado_em: agoraIso,
-  });
+  // 2. Registra na tabela de histórico apenas se gravarHistorico for true
+  const idVersao = idVersaoCustomizado || `ver-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  if (gravarHistorico) {
+    const { error: erroHist } = await supabase.from('configuracoes_vega_historico').insert({
+      id: idVersao,
+      prompt_persona: promptNormalizado,
+      temperatura_resposta: tempNormalizada,
+      autor_nome: autorFinal,
+      autor_id: autorIdFinal,
+      motivo: motivo || 'edicao_manual',
+      criado_em: agoraIso,
+    });
 
-  if (erroHist) {
-    console.warn('[Config VEGA ⚠️] Falha ao registrar versão no histórico:', erroHist.message);
+    if (erroHist) {
+      console.warn('[Config VEGA ⚠️] Falha ao registrar versão no histórico:', erroHist.message);
+    }
   }
 
   // 3. Atualiza cache em memória imediatamente (efeito em tempo real sem reiniciar o servidor)
@@ -276,13 +290,13 @@ export async function salvarConfiguracoesVega(dados: {
     id: 'config_padrao',
     promptPersona: promptNormalizado,
     temperaturaResposta: tempNormalizada,
-    atualizadoPorNome: autorNome || 'Administrador',
-    atualizadoPorId: autorId || 'admin',
+    atualizadoPorNome: autorFinal,
+    atualizadoPorId: autorIdFinal,
     atualizadoEm: agoraIso,
   };
 
   console.log(
-    `[Config VEGA 💾] Configurações atualizadas por ${autorNome}. Temp: ${tempNormalizada}, Versão: ${idVersao}`
+    `[Config VEGA 💾] Configurações atualizadas por ${autorFinal}. Temp: ${tempNormalizada}, Versão: ${gravarHistorico ? idVersao : '(sem histórico)'}`
   );
   return cacheConfiguracao;
 }
@@ -294,6 +308,8 @@ export async function salvarConfiguracoesVega(dados: {
 export async function restaurarPadraoVega(autor: {
   autorNome: string;
   autorId: string;
+  idVersaoCustomizado?: string;
+  gravarHistorico?: boolean;
 }): Promise<ConfiguracaoVega> {
   const padrao = await obterPromptPadraoSistema();
   return salvarConfiguracoesVega({
@@ -302,6 +318,8 @@ export async function restaurarPadraoVega(autor: {
     autorNome: autor.autorNome,
     autorId: autor.autorId,
     motivo: 'restauracao_padrao',
+    idVersaoCustomizado: autor.idVersaoCustomizado,
+    gravarHistorico: autor.gravarHistorico,
   });
 }
 
@@ -326,7 +344,7 @@ export async function obterHistoricoVersoes(limite = 30): Promise<VersaoHistoric
       id: item.id,
       promptPersona: item.prompt_persona,
       temperaturaResposta: Number(item.temperatura_resposta ?? 0.1),
-      autorNome: item.autor_nome || 'Desconhecido',
+      autorNome: item.autor_nome || 'Painel (senha única)',
       autorId: item.autor_id || '',
       motivo: item.motivo,
       criadoEm: item.criado_em,
@@ -342,7 +360,12 @@ export async function obterHistoricoVersoes(limite = 30): Promise<VersaoHistoric
  */
 export async function restaurarVersaoHistorico(
   idVersao: string,
-  autor: { autorNome: string; autorId: string }
+  autor: {
+    autorNome: string;
+    autorId: string;
+    idVersaoCustomizado?: string;
+    gravarHistorico?: boolean;
+  }
 ): Promise<ConfiguracaoVega> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
@@ -361,6 +384,8 @@ export async function restaurarVersaoHistorico(
     autorNome: autor.autorNome,
     autorId: autor.autorId,
     motivo: `restauracao_versao_${idVersao}`,
+    idVersaoCustomizado: autor.idVersaoCustomizado,
+    gravarHistorico: autor.gravarHistorico,
   });
 }
 

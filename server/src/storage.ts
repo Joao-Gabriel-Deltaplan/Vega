@@ -758,52 +758,6 @@ export async function registrarBuscaSemResultado(
 }
 
 // ==========================================
-// GERADOR DE USUÁRIOS DE TESTE INTERNOS
-// ==========================================
-
-const NOMES_BRASILEIROS = [
-  'Carlos Eduardo Silva',
-  'Mariana Albuquerque',
-  'Rodrigo Mendonça',
-  'Juliana Castro',
-  'Gabriel Silveira',
-  'Beatriz Camargo',
-  'Felipe Nogueira',
-  'Camila Vasconcelos',
-  'Thiago Siqueira',
-  'Larissa Pires',
-  'Lucas Fontana',
-  'Fernanda Guimarães',
-  'André Sanches',
-  'Renata Meireles',
-  'Marcelo Fagundes',
-];
-
-const CARGOS_TESTE = [
-  'Diretor Executivo',
-  'Diretora Financeira',
-  'Gerente de Obras',
-  'Engenheiro Civil Sênior',
-  'Coordenador de Suprimentos',
-  'Analista de Recursos Humanos',
-  'Gerente Administrativo',
-  'Supervisor Comercial',
-  'Diretor de Novos Negócios',
-  'Engenheiro de Planejamento',
-];
-
-const CORES_AVATAR = [
-  '#10b981',
-  '#3b82f6',
-  '#8b5cf6',
-  '#ec4899',
-  '#f59e0b',
-  '#06b6d4',
-  '#14b8a6',
-];
-
-
-// ==========================================
 // REGISTROS DE USO IA (SUPABASE)
 // ==========================================
 

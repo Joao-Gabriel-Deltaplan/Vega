@@ -1279,12 +1279,26 @@ app.get('/api/configuracoes-vega', exigirAdmin, async (_req, res) => {
   }
 });
 
+// Helper para identificar o responsável pela alteração de configuração
+function extrairResponsavelSessao(req: any): { autorNome: string; autorId: string } {
+  // Quando o painel usar senha única (sem login individual por pessoa), registrar como "Painel (senha única)"
+  if (!req.usuario || req.usuario.authType === 'master_password') {
+    return { autorNome: 'Painel (senha única)', autorId: 'painel-senha-unica' };
+  }
+  // Quando houver login individual com usuário próprio, registrar a pessoa real
+  const nome = req.usuario.nome?.trim();
+  const autorNome = (nome && nome !== 'Administrador' && nome !== 'Administrador Delta Plan')
+    ? nome
+    : 'Painel (senha única)';
+  const autorId = req.usuario.userId || 'painel-senha-unica';
+  return { autorNome, autorId };
+}
+
 // POST /api/configuracoes-vega - Salva nova configuração e gera versão no histórico
 app.post('/api/configuracoes-vega', exigirAdmin, async (req, res) => {
   try {
     const { promptPersona, temperaturaResposta } = req.body;
-    const autorNome = req.usuario?.nome || 'Administrador';
-    const autorId = req.usuario?.userId || 'admin';
+    const { autorNome, autorId } = extrairResponsavelSessao(req);
 
     const novaConfig = await salvarConfiguracoesVega({
       promptPersona,
@@ -1302,8 +1316,7 @@ app.post('/api/configuracoes-vega', exigirAdmin, async (req, res) => {
 // POST /api/configuracoes-vega/restaurar-padrao - Restaura prompt oficial e temperatura 0.1
 app.post('/api/configuracoes-vega/restaurar-padrao', exigirAdmin, async (req, res) => {
   try {
-    const autorNome = req.usuario?.nome || 'Administrador';
-    const autorId = req.usuario?.userId || 'admin';
+    const { autorNome, autorId } = extrairResponsavelSessao(req);
 
     const configRestaurada = await restaurarPadraoVega({ autorNome, autorId });
     return res.status(200).json({ sucesso: true, configuracoes: configRestaurada });
@@ -1328,8 +1341,7 @@ app.get('/api/configuracoes-vega/historico', exigirAdmin, async (_req, res) => {
 app.post('/api/configuracoes-vega/historico/:id/restaurar', exigirAdmin, async (req, res) => {
   try {
     const idVersao = req.params.id;
-    const autorNome = req.usuario?.nome || 'Administrador';
-    const autorId = req.usuario?.userId || 'admin';
+    const { autorNome, autorId } = extrairResponsavelSessao(req);
 
     const configRestaurada = await restaurarVersaoHistorico(idVersao, { autorNome, autorId });
     return res.status(200).json({ sucesso: true, configuracoes: configRestaurada });

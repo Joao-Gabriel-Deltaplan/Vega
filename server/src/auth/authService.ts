@@ -214,7 +214,7 @@ export async function autenticarPainel(dados: {
   // 4. Cria sessão estruturada (preparada para múltiplos usuários no futuro)
   const usuarioInfo = {
     userId: usuario?.trim() || 'admin',
-    nome: 'Administrador Delta Plan',
+    nome: 'Painel (senha única)',
     role: 'admin' as const,
     authType: 'master_password' as const,
   };

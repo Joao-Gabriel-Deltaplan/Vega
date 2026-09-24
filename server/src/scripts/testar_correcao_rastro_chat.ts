@@ -14,7 +14,7 @@ async function main() {
 
   const contatoTeste: Contato = {
     id: 'user-teste-rastro-chat',
-    nome: 'Carlos Eduardo Silva',
+    nome: 'Titular Teste',
     telefone: '11989373770',
     avatarCor: '#06b6d4',
     nivelAcesso: 'diretoria',
