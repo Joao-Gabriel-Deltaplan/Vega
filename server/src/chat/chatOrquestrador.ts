@@ -954,12 +954,23 @@ export async function classificarEReescreverMensagem(
   ]);
   const nomesTitularesConhecidos = titulares.map((t) => t.nome).join(', ');
   const titulosConhecimento = conhecimentos.map((c) => `"${c.titulo}"`).join(', ');
-  const titulosDocs = docs.map((d) => `"${d.titulo}"`).join(', ');
+
+  // Eixo A: Tipos únicos de documentos gerados 100% dinamicamente da tabela documentos, sem tipos fixos em código
+  const tiposDocsUnicos = Array.from(
+    new Set(
+      docs
+        .map((d) => (d.tipo || '').trim())
+        .filter((t) => t.length > 0 && t.toLowerCase() !== 'outros')
+    )
+  ).sort();
+  const listaTiposDocs = tiposDocsUnicos.length > 0
+    ? tiposDocsUnicos.map((t) => `"${t}"`).join(', ')
+    : 'Nenhum documento cadastrado';
 
   const systemPrompt = `Você é o classificador de intenções da VEGA, assistente corporativa da Delta Plan.
 Titulares cadastrados: ${nomesTitularesConhecidos || 'Nenhum titular cadastrado'}.
-Base de Conhecimento: ${titulosConhecimento || '"Escritório Deltaplan", "Regra de Negócio: Proposta Comercial e Orçamentos"'}.
-Documentos no cofre: ${titulosDocs || '"CNH", "Crea", "CRT", "Certidão de Casamento", "Cartão Vacinas"'}.
+Base de Conhecimento: ${titulosConhecimento || 'Nenhum item cadastrado'}.
+Tipos de documentos no cofre: ${listaTiposDocs}.
 
 Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
 {
@@ -998,40 +1009,21 @@ REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - O CONTEXTO SÓ DEVE SER USADO quando a mensagem atual NÃO tem sujeito nenhum (ex.: perguntas com pronomes como "ele", "dele", ou elípticas como "e a validade?", "e o CPF dele?", "e o RG dele?", "e o endereço dele?"). Nesses casos, herde o titular mencionado anteriormente no histórico.
 
 EXEMPLOS OBRIGATÓRIOS:
-- "perfeito, agora me envie o pdf" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
-- "show, agora solta esse arquivo aí" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
-- "me envia o pdf" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
-- "manda o arquivo" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
-- "solta esse documento" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
+- "show, agora me envie o pdf" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
 - "contrato de locação" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "contrato de locação", "documentos_citados": ["contrato de locação"], "pergunta_completa": "Enviar documento contrato de locação", "termo_busca": "contrato de locação"}
-- "me manda a certidão de óbito" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "certidão de óbito", "documentos_citados": ["certidão de óbito"], "pergunta_completa": "Enviar documento certidão de óbito", "termo_busca": "certidão de óbito"}
-- "me envia o crea e a certidão de casamento do fulano por favor" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CREA, Certidão de Casamento", "documentos_citados": ["CREA", "Certidão de Casamento"], "pergunta_completa": "Enviar documentos CREA e Certidão de Casamento do Fulano", "termo_busca": "CREA, Certidão de Casamento"}
-- "quero a certidão e o crea do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "Certidão de Casamento, CREA", "documentos_citados": ["Certidão de Casamento", "CREA"], "pergunta_completa": "Enviar documentos Certidão de Casamento e CREA do Fulano", "termo_busca": "Certidão de Casamento, CREA"}
-- "esses 2 documentos, preciso do anexo dos 2" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Confirmar envio dos dois documentos oferecidos", "termo_busca": ""}
-- "pode mandar" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Confirmar envio dos documentos oferecidos", "termo_busca": ""}
-- "os dois" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Confirmar envio dos dois documentos oferecidos", "termo_busca": ""}
-- "me manda o conselho do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "conselho", "documentos_citados": [], "pergunta_completa": "Enviar documento do conselho do Fulano", "termo_busca": "conselho Fulano"}
+- "me envia o crea e a certidão de casamento do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CREA, Certidão de Casamento", "documentos_citados": ["CREA", "Certidão de Casamento"], "pergunta_completa": "Enviar documentos CREA e Certidão de Casamento do Fulano", "termo_busca": "CREA, Certidão de Casamento"}
+- "esses 2 documentos, pode mandar" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Confirmar envio dos documentos oferecidos", "termo_busca": ""}
 - "me envia o registro profissional do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "registro profissional", "documentos_citados": [], "pergunta_completa": "Enviar registro profissional do Fulano", "termo_busca": "registro profissional Fulano"}
 - "pare de alertar o CRT do fulano" -> {"intencao": "silenciar_alerta", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CRT", "pergunta_completa": "Desativar alertas de vencimento do documento CRT do Fulano", "termo_busca": "CRT"}
-- "não alerte mais sobre o CRT" -> {"intencao": "silenciar_alerta", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CRT", "pergunta_completa": "Desativar alertas de vencimento do documento CRT", "termo_busca": "CRT"}
 - "qual o CPF do fulano?" -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["cpf"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o CPF do Fulano?", "termo_busca": "Fulano"}
 - "endereço delta" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o endereço da Delta Plan?", "termo_busca": "Escritorio Deltaplan"}
-- "endereço deltaplan" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o endereço do escritório da Deltaplan?", "termo_busca": "Escritorio Deltaplan"}
-- "e o endereço dele?" (após falar de um titular) -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["endereco"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o endereço do Fulano?", "termo_busca": "Fulano"}
 - "e o RG dele?" (após falar de um titular) -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["rg"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o RG do Fulano?", "termo_busca": "Fulano"}
-- "me envie esses documentos do fulano, Endereço, estado civil, RG, profissão." -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["endereco", "estadoCivil", "rg", "profissao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Quais são o endereço, estado civil, RG e profissão do Fulano?", "termo_busca": "Fulano"}
-- "tem algum documento vencendo?" -> {"intencao": "consultar_vencimentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Consultar documentos com vencimento próximo no cofre", "termo_busca": ""}
+- "me envie esses documentos do fulano: endereço, estado civil e profissão" -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["endereco", "estadoCivil", "profissao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Quais são o endereço, estado civil e profissão do Fulano?", "termo_busca": "Fulano"}
 - "o que vence este mês?" -> {"intencao": "consultar_vencimentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Consultar documentos que vencem este mês", "termo_busca": ""}
-- "quais documentos estão vencidos?" -> {"intencao": "consultar_vencimentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Consultar documentos vencidos no cofre", "termo_busca": ""}
-- "a validade da CNH do fulano é 10/05/2030" -> {"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "validadeCnh", "valor_novo": "10/05/2030", "campos": ["validadeCnh"], "documento_citado": "", "pergunta_completa": "Corrigir validade da CNH do Fulano para 10/05/2030", "termo_busca": ""}
-- "a validade da CNH do fulano está errada, é 10/05/2030" -> {"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "validadeCnh", "valor_novo": "10/05/2030", "campos": ["validadeCnh"], "documento_citado": "", "pergunta_completa": "Corrigir validade da CNH do Fulano para 10/05/2030", "termo_busca": ""}
 - "a profissão do fulano está errada, é Técnico em Eletrotécnica" -> {"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "profissao", "valor_novo": "Técnico em Eletrotécnica", "campos": ["profissao"], "documento_citado": "", "pergunta_completa": "Corrigir profissão do Fulano para Técnico em Eletrotécnica", "termo_busca": ""}
-- "está errado, é Técnico em Eletrotécnica" (após VEGA responder profissão) -> {"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "profissao", "valor_novo": "Técnico em Eletrotécnica", "campos": ["profissao"], "documento_citado": "", "pergunta_completa": "Corrigir profissão do Fulano para Técnico em Eletrotécnica", "termo_busca": ""}
-- "está errado" (após VEGA responder profissão) -> {"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "profissao", "valor_novo": "", "campos": ["profissao"], "documento_citado": "", "pergunta_completa": "Informar que o dado do Fulano está errado", "termo_busca": ""}
+- "está errado, é 10/05/2030" (após VEGA responder validade) -> {"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "validadeCnh", "valor_novo": "10/05/2030", "campos": ["validadeCnh"], "documento_citado": "", "pergunta_completa": "Corrigir validade da CNH do Fulano para 10/05/2030", "termo_busca": ""}
 - "quem é a mãe do fulano" -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["filiacao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Quem é a mãe do Fulano?", "termo_busca": "filiacao Fulano"}
 - "qual cpf?" -> {"intencao": "dado_pessoal", "pessoa": "", "campos": ["cpf"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o CPF?", "termo_busca": "cpf"}
-- "qual rg?" -> {"intencao": "dado_pessoal", "pessoa": "", "campos": ["rg"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o RG?", "termo_busca": "rg"}
-- "qual endereço?" -> {"intencao": "dado_pessoal", "pessoa": "", "campos": ["endereco"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o endereço?", "termo_busca": "endereco"}
 - "qual é a CNH do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CNH", "pergunta_completa": "Enviar documento CNH do Fulano", "termo_busca": "CNH Fulano"}
 - "o que tem em Regra de Negócio: Proposta Comercial" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o conteúdo do documento ou instrução Regra de Negócio: Proposta Comercial?", "termo_busca": "Proposta Comercial"}
 - "sim" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Confirmar envio do documento oferecido", "termo_busca": ""}
