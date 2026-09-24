@@ -333,13 +333,59 @@ export function sanitizarPedidoArquivo(mensagem: string): {
   };
 }
 
+export const VALIDADE_CONTEXTO_MINUTOS = 60;
+export const VALIDADE_CONTEXTO_MS = VALIDADE_CONTEXTO_MINUTOS * 60 * 1000;
+
+/**
+ * Converte timestamp ou horário de uma Mensagem para Date.
+ * Retorna null se não houver timestamp nem horário parseável.
+ */
+export function extrairDataMensagem(msg: Mensagem): Date | null {
+  if (msg.timestamp) {
+    const d = new Date(msg.timestamp);
+    if (!isNaN(d.getTime())) return d;
+  }
+  if (msg.horario) {
+    const d = new Date(msg.horario);
+    if (!isNaN(d.getTime())) return d;
+    // Se for no formato HH:mm ou HH:mm:ss
+    const match = msg.horario.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (match) {
+      const agora = new Date();
+      const d = new Date(agora);
+      d.setHours(parseInt(match[1], 10), parseInt(match[2], 10), match[3] ? parseInt(match[3], 10) : 0, 0);
+      return d;
+    }
+  }
+  return null;
+}
+
+/**
+ * Verifica se a mensagem foi enviada há menos de 60 minutos (ou limite especificado).
+ * Se a mensagem não contiver data/horário (ex.: mocks simplificados em testes sintéticos legados),
+ * ela é considerada recente para compatibilidade.
+ */
+export function isMensagemRecenteValida(
+  msg: Mensagem,
+  agora: Date = new Date(),
+  limiteMs: number = VALIDADE_CONTEXTO_MS
+): boolean {
+  const dataMsg = extrairDataMensagem(msg);
+  if (!dataMsg) return true;
+  const diffMs = agora.getTime() - dataMsg.getTime();
+  if (diffMs < 0) return true;
+  return diffMs < limiteMs;
+}
+
 /**
  * Recupera o documento mais recente que esteve em discussão no histórico recente da conversa.
  * Inspeciona rastro.documentoUsado, documentoOferecidoId, anexos e citações textuais no histórico.
+ * Validade: Apenas mensagens ocorridas há menos de 60 minutos.
  */
 export function extrairDocumentoRecenteDoHistorico(
   historicoRecente: Mensagem[],
-  todosDocs: DocumentoRegistro[]
+  todosDocs: DocumentoRegistro[],
+  agora: Date = new Date()
 ): DocumentoRegistro | null {
   if (!historicoRecente || historicoRecente.length === 0 || !todosDocs || todosDocs.length === 0) {
     return null;
@@ -349,6 +395,11 @@ export function extrairDocumentoRecenteDoHistorico(
   const msgsReversas = [...historicoRecente].reverse().slice(0, 10);
 
   for (const msg of msgsReversas) {
+    // Regra 15: Mensagens com mais de 60 minutos são ignoradas
+    if (!isMensagemRecenteValida(msg, agora)) {
+      continue;
+    }
+
     // 1. Checa se a mensagem ofereceu um documento específico por ID
     if (msg.documentoOferecidoId) {
       const doc = todosDocs.find((d) => d.id === msg.documentoOferecidoId);
@@ -553,12 +604,17 @@ function resolverDocumentoOrigem(
  */
 function obterUltimoDocumentoEnviado(
   historico: Mensagem[],
-  todosDocs: DocumentoRegistro[]
+  todosDocs: DocumentoRegistro[],
+  agora: Date = new Date()
 ): DocumentoRegistro | null {
   if (!historico || historico.length === 0) return null;
 
   for (let i = historico.length - 1; i >= 0; i--) {
     const m = historico[i];
+    // Regra 15: Documento entregue há mais de 60 minutos não é considerado recente
+    if (!isMensagemRecenteValida(m, agora)) {
+      continue;
+    }
     if (m.remetente === 'assistente') {
       // 1. Checa por anexos da mensagem
       if (m.anexos && m.anexos.length > 0) {
@@ -898,13 +954,21 @@ export async function buscarConhecimentoPorNome(
 /**
  * Extrai o último titular mencionado no histórico de mensagens (do mais recente para o mais antigo)
  */
-function extrairUltimoTitularDoHistorico(historicoRecente: Mensagem[]): string | undefined {
+function extrairUltimoTitularDoHistorico(
+  historicoRecente: Mensagem[],
+  agora: Date = new Date()
+): string | undefined {
   if (!historicoRecente || historicoRecente.length === 0) return undefined;
   for (let i = historicoRecente.length - 1; i >= 0; i--) {
     const msg = historicoRecente[i];
     // Se a mensagem for de saudação pura ou apresentação padrão da VEGA, ignorar para não contaminar o contexto
     if (msg.rastro?.intencaoDetectada === 'saudacao_ou_vago') continue;
     if (msg.remetente === 'assistente' && /sou a vega/i.test(msg.texto || '')) continue;
+
+    // Regra 15: O titular do histórico só vale se a mensagem sobre ele tiver menos de 60 minutos
+    if (!isMensagemRecenteValida(msg, agora)) {
+      continue;
+    }
 
     if (msg.rastro?.pessoa) {
       return msg.rastro.pessoa;
@@ -1019,8 +1083,9 @@ EXEMPLOS OBRIGATÓRIOS:
 - "sim" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Confirmar envio do documento oferecido", "termo_busca": ""}
 `;
 
-  // Limita o histórico recente estritamente às últimas 4 mensagens e extrai apenas remetente e texto (sem rastros pesados)
+  // Limita o histórico recente estritamente às últimas 4 mensagens válidas (< 60 minutos) e extrai apenas remetente e texto
   const ultimas4Msgs = (historicoRecente || [])
+    .filter((m) => isMensagemRecenteValida(m))
     .slice(-4)
     .map((m) => `${m.remetente === 'cliente' ? 'Usuário' : 'VEGA'}: ${m.texto || ''}`)
     .filter((linha) => linha.trim().length > 0)
@@ -1144,7 +1209,7 @@ EXEMPLOS OBRIGATÓRIOS:
       origemPessoa = 'mensagem_atual';
     } else {
       // Mensagem atual NÃO cita nem a empresa nem pessoa explicitamente
-      // Contexto só deve ser usado quando a mensagem não tem sujeito nenhum
+      // Contexto só deve ser usado quando a mensagem não tem sujeito nenhum e está dentro da validade de 60 minutos
       const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
       if (titularDoHistorico) {
         const temPronomeOuCampo = /\b(ele|dele|dela|ela)\b/i.test(msgNorm) || camposDetectadosRegex.length > 0 || ehMensagemCorrecao;
@@ -1152,8 +1217,10 @@ EXEMPLOS OBRIGATÓRIOS:
           parsed.pessoa = titularDoHistorico;
           origemPessoa = 'contexto';
         }
-      } else if (parsed.pessoa) {
-        origemPessoa = 'contexto';
+      } else {
+        // Se expirou (> 60 min) ou não há titular no histórico recente, limpa a pessoa
+        parsed.pessoa = '';
+        origemPessoa = undefined;
       }
     }
 
@@ -1197,22 +1264,28 @@ EXEMPLOS OBRIGATÓRIOS:
       parsed.intencao = 'dado_pessoal';
       const camposSet = new Set([...(parsed.campos || []), ...camposDetectadosRegex]);
       parsed.campos = Array.from(camposSet);
-      if (!parsed.pessoa) {
+      if (!titularExplicitoMsg) {
         const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
         if (titularDoHistorico) {
           parsed.pessoa = titularDoHistorico;
           origemPessoa = 'contexto';
+        } else {
+          parsed.pessoa = '';
+          origemPessoa = undefined;
         }
       }
     }
 
     if (ehPerguntaFatoDocumento) {
       parsed.intencao = 'pergunta_conteudo';
-      if (!parsed.pessoa) {
+      if (!titularExplicitoMsg) {
         const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
         if (titularDoHistorico) {
           parsed.pessoa = titularDoHistorico;
           origemPessoa = 'contexto';
+        } else {
+          parsed.pessoa = '';
+          origemPessoa = undefined;
         }
       }
     }

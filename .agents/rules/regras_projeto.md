@@ -109,3 +109,11 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
 - **Formato obrigatório da pergunta:** A resposta deve ser direta e específica ao campo solicitado: `"De quem você precisa do [campo]?"` (ex.: `"De quem você precisa do CPF?"`), incorporando saudação inicial se houver. É PROIBIDO listar os titulares cadastrados ou tentar adivinhar a pessoa.
 - **Validade para busca vetorial e ficha:** Um único resultado retornado pela busca na ficha cadastral ou pela busca vetorial de trechos jamais autoriza a entrega de dados pessoais sem que o titular tenha sido determinado.
 - **Diferenciação para pedidos de arquivo:** Para pedidos de documentos físicos/arquivos (`pedir_arquivo`), se houver apenas um documento daquele tipo no Cofre, mantém-se a entrega direta com anexo.
+
+---
+
+## 15. Validade Temporal do Contexto de Titular e Documentos (TTL 60 minutos)
+- **Janela máxima de 60 minutos:** O titular ou documento identificado no histórico da conversa só é válido se a última mensagem sobre ele tiver ocorrido há menos de 60 minutos.
+- **Expiração do contexto:** Passados 60 minutos desde a última menção ao titular ou documento, o histórico recente sobre esse assunto é considerado expirado e a mensagem atual é tratada como sem titular no contexto ativo.
+- **Aplicação para dados pessoais:** Solicitações de dados pessoais após 60 minutos sem novo titular citado na mensagem atual devem obrigatoriamente perguntar `"De quem você precisa do [campo]?"`.
+- **Aplicação para documentos:** Solicitações de documentos após 60 minutos sem titular citado devem perguntar de qual titular é o documento (quando houver mais de um documento daquele tipo no Cofre) ou perguntar qual documento deseja (para comandos genéricos de envio).
