@@ -43,7 +43,7 @@ export function validarTipoDocumentoReconhecivel(tipo?: string | null): boolean 
 
   // 4. Exige que contenha uma raiz ou sigla de tipo documental reconhecível
   const REGEX_TIPO_VALIDO =
-    /\b(certidao|contrato|alvara|cnh|carteira|habilitacao|rg|identidade|cpf|passaporte|crea|crt|cau|oab|ctps|art|rrt|diploma|certificado|historico|comprovante|procuracao|termo|recibo|declaracao|estatuto|licenca|apolice|seguro|escritura|habite|vacina|vacinacao|atestado|laudo|exame|nota\s*fiscal|nf|dre|balanco|proposta|orcamento|holerite|contracheque|requerimento)\b/i;
+    /\b(certidao|contrato|alvara|cnh|carteira|habilitacao|rg|identidade|cpf|passaporte|crea|crt|cau|oab|ctps|art|rrt|diploma|certificado|historico|comprovante|procuracao|termo|recibo|declaracao|estatuto|licenca|apolice|seguro|escritura|habite|cartao|vacinas?|vacinacao|imunizacao|covid|atestado|laudo|exame|nota\s*fiscal|nf|dre|balanco|proposta|orcamento|holerite|contracheque|requerimento)\b/i;
 
   return REGEX_TIPO_VALIDO.test(limpo);
 }

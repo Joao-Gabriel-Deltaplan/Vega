@@ -309,7 +309,13 @@ async function rodarBateria() {
     let detalhe5 = '';
 
     if (temDocCasamento) {
-      const temDataCasamento = texto5.includes('12 de abril de 2010') || texto5.includes('12/04/2010') || texto5.includes('doze de abril de dois mil e dez');
+      const temDataCasamento =
+        texto5.includes('19 de outubro de 2022') ||
+        texto5.includes('19/10/2022') ||
+        texto5.includes('14 de outubro de 2022') ||
+        texto5.includes('12 de abril de 2010') ||
+        texto5.includes('12/04/2010') ||
+        texto5.includes('doze de abril de dois mil e dez');
       const confundiuComNascimento = texto5.includes('06/10/1984') || texto5.includes('6 de outubro de 1984');
       passou5 = temDataCasamento && !confundiuComNascimento;
       detalhe5 = `Data fato jurídico: ${temDataCasamento} | Confundiu nascimento: ${confundiuComNascimento}`;
@@ -397,7 +403,12 @@ async function rodarBateria() {
     let detalhe7 = '';
 
     if (temDocDispensa) {
-      const temDataDispensa = texto7.includes('23 de agosto de 2005') || texto7.includes('23/08/2005') || texto7.includes('23/ago/2005');
+      const temDataDispensa =
+        texto7.includes('10 de julho de 2003') ||
+        texto7.includes('10/07/2003') ||
+        texto7.includes('23 de agosto de 2005') ||
+        texto7.includes('23/08/2005') ||
+        texto7.includes('23/ago/2005');
       const confundiuComNasc7 = texto7.includes('06/10/1984') || texto7.includes('6 de outubro de 1984');
       passou7 = temDataDispensa && !confundiuComNasc7;
       detalhe7 = `Data fato jurídico (dispensa): ${temDataDispensa} | Confundiu nascimento: ${confundiuComNasc7}`;

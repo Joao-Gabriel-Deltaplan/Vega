@@ -35,7 +35,7 @@ import {
   adicionarMensagem,
   obterDocumentosPorNivelAcesso,
 } from '../storage.js';
-import { processarMensagemChat } from '../chat/chatOrquestrador.js';
+import { processarMensagemChat, sanitizarRespostaTextoFinal } from '../chat/chatOrquestrador.js';
 import { salvarRastro } from '../rastros/rastroService.js';
 import { Contato, Mensagem, RastroRegistro, NivelAcesso, SetorUsuario, Anexo, Conversa } from '../types.js';
 import { ASSISTENTE } from '../config/assistente.js';
@@ -1150,7 +1150,7 @@ export async function processarEventoEvolution(
     documentosDisponiveis: docsDisponiveis,
   });
 
-  const textoResposta = resultadoChat.textoResposta;
+  const textoResposta = sanitizarRespostaTextoFinal(resultadoChat.textoResposta);
   const assistenteMsgId = `wa-msg-${Date.now()}-vega`;
 
   // Se a mensagem veio de áudio, enriquece o rastro com o custo e a etapa de transcrição

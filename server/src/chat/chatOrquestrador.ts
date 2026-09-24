@@ -41,9 +41,47 @@ import {
   CorrecaoPendenteFicha,
   DadosEstruturadosMensagem,
 } from '../types.js';
-import { extrairPrimeiroNome } from '../utils/nomeUtils.js';
+import { extrairPrimeiroNome, formatarFraseAcompanhamento } from '../utils/nomeUtils.js';
 import { criarAnexoParaDocumento } from '../pdfService.js';
 import { mascararDadosSensiveis, mascararDocumento, truncarTrecho } from '../utils/segurancaUtils.js';
+
+/**
+ * Sanitiza rigorosamente qualquer texto que será entregue ao usuário no WhatsApp ou no painel.
+ * Remove sumariamente blocos de código técnicos (```documento, ```json, ```pdf, ```nao_encontrado),
+ * objetos JSON acidentais ({ "id": ... }), chaves e resíduos de formatação.
+ */
+export function sanitizarRespostaTextoFinal(texto: string): string {
+  if (!texto) return '';
+
+  let limpo = texto;
+
+  // 1. Remove qualquer bloco markdown de código com delimitadores triplos (```...```)
+  limpo = limpo.replace(/```(?:documento|pdf|json|nao_encontrado)?\s*[\s\S]*?```/gi, '');
+
+  // 2. Remove blocos JSON que tenham vazado soltos sem crases (ex: { "id": "...", "titulo": ... })
+  limpo = limpo.replace(/\{\s*"(?:id|titulo|arquivo|termo)"\s*:[\s\S]*?\}/gi, '');
+
+  // 3. Remove quaisquer crases triplas ou duplas residuais
+  limpo = limpo.replace(/```+/g, '');
+
+  // 4. Normaliza quebras de linha múltiplas e espaços
+  limpo = limpo
+    .split('\n')
+    .map((linha) => linha.trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  // 5. Normalização estrita de pontuações anômalas (ex: ".." ou ",." ou ", .")
+  limpo = limpo
+    .replace(/,\s*\./g, '.')
+    .replace(/,\./g, '.')
+    .replace(/\.{2,}/g, '.')
+    .trim();
+
+  return limpo;
+}
+
 
 import {
   calcularDiasRestantes,
@@ -269,6 +307,17 @@ export function formatarPerguntaDadoPessoalSemTitular(
   if (c === 'cnh' || /\b(cnh|habilita[cç][aã]o)\b/i.test(msgNorm)) {
     return `${prefixoSaudacao}De quem você precisa da CNH?`;
   }
+  if (
+    c === 'vacina' ||
+    c === 'vacinacao' ||
+    c === 'covid' ||
+    /\b(vacina|vacinas|vacina[cç][aã]o|imuniza[cç][aã]o|covid(-?19)?|doses?)\b/i.test(msgNorm)
+  ) {
+    if (/\b(dias?|datas?|quando)\b/i.test(msgNorm)) {
+      return `${prefixoSaudacao}De quem você precisa das datas de vacinação?`;
+    }
+    return `${prefixoSaudacao}De quem você precisa das informações de vacinação?`;
+  }
 
   return `${prefixoSaudacao}De quem você precisa dessa informação?`;
 }
@@ -277,7 +326,8 @@ export function formatarPerguntaDadoPessoalSemTitular(
  * Expressão regular que reconhece qualquer menção a tipos de documentos ou certidões corporativas/pessoais.
  * Pedidos de documentos são SEMPRE do escopo da VEGA (nunca fora de escopo).
  */
-export const REGEX_DOCUMENTO_QUALQUER = /\b(documentos?|arquivos?|pdfs?|contratos?|alvar[aá]s?|certid[aã]o|certid[oõ]es|notas?(\s*fiscais|\s*fiscal)?|comprovantes?|procura[cç][aã]o|procura[cç][oõ]es|termos?|recibos?|declara[cç][aã]o|declara[cç][oõ]es|estatutos?|licen[cç]as?|ap[oó]lices?|escrituras?|habite-?se|cnh|carteira(\s*de\s*motorista)?|habilita[cç][aã]o|crea|crt|cau|oab|conselho|registro\s*profissional|cart[aã]o(\s*de)?\s*vacinas?|passaportes?|atestados?|laudos?|art|rrt)\b/i;
+export const REGEX_DOCUMENTO_QUALQUER = /\b(documentos?|arquivos?|pdfs?|contratos?|alvar[aá]s?|certid[aã]o|certid[oõ]es|notas?(\s*fiscais|\s*fiscal)?|comprovantes?|procura[cç][aã]o|procura[cç][oõ]es|termos?|recibos?|declara[cç][aã]o|declara[cç][oõ]es|estatutos?|licen[cç]as?|ap[oó]lices?|escrituras?|habite-?se|cnh|carteira(\s*de\s*motorista)?|carteira(\s*de)?\s*vacina[cç][aã]o|cart[aã]o(\s*de)?\s*vacinas?|vacinas?|vacina[cç][aã]o|covid(-?19)?|imuniza[cç][aã]o|doses?|habilita[cç][aã]o|crea|crt|cau|oab|conselho|registro\s*profissional|passaportes?|atestados?|laudos?|art|rrt)\b/i;
+
 
 /**
  * Sanitiza pedidos de arquivo removendo cortesias, saudações, comandos de envio e termos genéricos de arquivo.
@@ -996,12 +1046,14 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
    - Pedidos de RESUMO, EXPLICAÇÃO, INTERPRETAÇÃO ou PERGUNTAS sobre o que está escrito ("resuma esse documento", "o que esse documento fala sobre X?", "explique o documento", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?") são SEMPRE "pergunta_conteudo", NUNCA "pedir_arquivo"!
 3. "listar_documentos": Quando o usuário solicitar listar, ver ou consultar quais documentos existem no Cofre ou de uma pessoa ("quais documentos você tem?", "o que tem no cofre?", "quais documentos do Fulano você tem?", "o que você tem do Fulano?", "preciso de mais alguns documentos do Fulano", "me mostra os documentos"). Preencha "pessoa" se citada.
 4. "dado_pessoal": Perguntas sobre dados cadastrais básicos de titulares (RG, CPF, filiação/mãe/pai, profissão, estado civil, validade da CNH etc.).
-5. "pergunta_conteudo": Perguntas sobre o conteúdo de documentos ("resuma esse documento em 10 linhas", "o que esse documento fala sobre águas fluviais?", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?", "qual o endereço do Fulano?", "o que diz na página 2?").
+5. "pergunta_conteudo": Perguntas sobre o conteúdo de documentos ("resuma esse documento em 10 linhas", "o que esse documento fala sobre águas fluviais?", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?", "quais dias eu tomei as vacinas da covid?", "quais vacinas ele tomou?", "qual o endereço do Fulano?", "o que diz na página 2?").
+   - REGRA MANDATÓRIA: Perguntas sobre o conteúdo de documentos arquivados no Cofre (como vacinas tomadas, datas de vacinação/doses de covid, cláusulas contratuais, valores, datas de registro de certidões, alvarás) são SEMPRE "pergunta_conteudo", NUNCA "fora_de_escopo"!
+   - Se o usuário perguntar sem citar titular (ex: "quais dias eu tomei as vacinas da covid?"), devolva "intencao": "pergunta_conteudo", "pessoa": "", "termo_busca": "vacina covid". O sistema perguntará de quem é. NUNCA classifique como fora_de_escopo!
    - Quando o usuário disser "esse documento" ou "o documento acima" logo após a VEGA entregar um anexo, a pergunta DEVE ser respondida com base estrita no texto daquele documento!
 6. "corrigir_dado": Quando o usuário afirmar que uma informação cadastral de titular está errada, incorreta ou precisar ser corrigida (ex.: "a profissão do Fulano está errada, é Técnico em Eletrotécnica").
 7. "consultar_vencimentos": Perguntas sobre prazos de validade ou vencimento de documentos do cofre ("tem algum documento vencendo?", "o que vence este mês?", "quais documentos estão vencidos?").
 8. "silenciar_alerta": Quando o usuário solicitar para parar de alertar sobre o vencimento de um documento (ex: "pare de alertar o CRT do Fulano").
-9. "fora_de_escopo": Apenas assuntos que NÃO TÊM NENHUMA relação com documentos ou informações da empresa (ex: receitas culinárias, futebol, piadas).
+9. "fora_de_escopo": Apenas assuntos que NÃO TÊM NENHUMA relação com documentos ou informações da empresa (ex: receitas culinárias, futebol, piadas). Perguntas sobre vacinas, documentos, datas de imunização ou dados de titulares NUNCA são fora de escopo.
 
 REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - SE A MENSAGEM ATUAL CITA UM SUJEITO (pessoa ou empresa), ele SEMPRE SUBSTITUI o sujeito das mensagens anteriores! O contexto anterior DEVE SER IGNORADO nesse caso!
@@ -1016,6 +1068,7 @@ EXEMPLOS OBRIGATÓRIOS:
 - "me envia o registro profissional do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "registro profissional", "documentos_citados": [], "pergunta_completa": "Enviar registro profissional do Fulano", "termo_busca": "registro profissional Fulano"}
 - "pare de alertar o CRT do fulano" -> {"intencao": "silenciar_alerta", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CRT", "pergunta_completa": "Desativar alertas de vencimento do documento CRT do Fulano", "termo_busca": "CRT"}
 - "qual o CPF do fulano?" -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["cpf"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o CPF do Fulano?", "termo_busca": "Fulano"}
+- "quais dias eu tomei as vacinas da covid?" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Quais dias foram tomadas as vacinas da covid?", "termo_busca": "vacina covid"}
 - "endereço delta" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o endereço da Delta Plan?", "termo_busca": "Escritorio Deltaplan"}
 - "e o RG dele?" (após falar de um titular) -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["rg"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o RG do Fulano?", "termo_busca": "Fulano"}
 - "me envie esses documentos do fulano: endereço, estado civil e profissão" -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["endereco", "estadoCivil", "profissao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Quais são o endereço, estado civil e profissão do Fulano?", "termo_busca": "Fulano"}
@@ -1027,6 +1080,7 @@ EXEMPLOS OBRIGATÓRIOS:
 - "qual é a CNH do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CNH", "pergunta_completa": "Enviar documento CNH do Fulano", "termo_busca": "CNH Fulano"}
 - "o que tem em Regra de Negócio: Proposta Comercial" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o conteúdo do documento ou instrução Regra de Negócio: Proposta Comercial?", "termo_busca": "Proposta Comercial"}
 - "sim" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Confirmar envio do documento oferecido", "termo_busca": ""}
+
 `;
 
   // Limita o histórico recente às últimas 12 mensagens para contexto rico e sem custo excessivo
@@ -1453,7 +1507,10 @@ REGRAS OBRIGATÓRIAS:
 8. ATENÇÃO MÁXIMA AO DADO EXATO PERGUNTADO:
    - Se a pergunta for sobre data de DISPENSA DO SERVIÇO MILITAR, responda rigorosamente a data em que foi dispensado do serviço militar (ex.: 23 de agosto de 2005), e NUNCA a data de nascimento!
    - Se a pergunta for sobre data do REGISTRO DO CASAMENTO, responda rigorosamente a data do registro do casamento (ex.: 12 de abril de 2010), e NUNCA a data de nascimento!
-   - Se o trecho contiver múltiplas datas, leia atentamente o contexto para responder EXATAMENTE a data solicitada pelo usuário.`;
+   - Se a pergunta for sobre VACINAS ou DOSES TOMADAS, responda listando com clareza o nome da vacina, a dose e a data exata em que foi aplicada conforme constar no documento.
+   - Se o trecho contiver múltiplas datas, leia atentamente o contexto para responder EXATAMENTE a data solicitada pelo usuário.
+9. DISTINÇÃO USUÁRIO VS TITULAR: NUNCA chame o usuário que está conversando pelo nome do titular do documento. Trate o titular do documento na terceira pessoa.
+10. PROIBIÇÃO ABSOLUTA DE BLOCOS TÉCNICOS: NUNCA emita blocos markdown como \`\`\`documento, \`\`\`json, \`\`\`pdf ou qualquer estrutura de código/JSON. Toda a resposta deve ser em texto natural formatado exclusivamente para WhatsApp.`;
 
   try {
     const response = await openai.chat.completions.create({
@@ -1470,7 +1527,8 @@ REGRAS OBRIGATÓRIAS:
     });
 
     const respostaTexto = response.choices[0]?.message?.content?.trim() || 'Não encontrei nos documentos.';
-    const textoLimpo = respostaTexto.replace(/\*\*([^*]+)\*\*/g, '*$1*').replace(/^#{1,6}\s+/gm, '');
+    let textoLimpo = respostaTexto.replace(/\*\*([^*]+)\*\*/g, '*$1*').replace(/^#{1,6}\s+/gm, '');
+    textoLimpo = sanitizarRespostaTextoFinal(textoLimpo);
 
     return {
       texto: textoLimpo,
@@ -1494,7 +1552,7 @@ REGRAS OBRIGATÓRIAS:
 /**
  * 4. ORQUESTRADOR PRINCIPAL DO CHAT COM RASTRO DE RACIOCÍNIO
  */
-export async function processarMensagemChat(dados: {
+async function executarProcessamentoMensagemChatInterno(dados: {
   mensagemUsuario: string;
   historicoRecente: Mensagem[];
   contato: Contato;
@@ -1555,7 +1613,7 @@ export async function processarMensagemChat(dados: {
     } else {
       const doc = documentosDisponiveis.find((d) => d.id === documentoIdDireto);
       if (doc) {
-        const textoDoc = `Aqui está o documento solicitado: ${doc.titulo}.`;
+        const textoDoc = formatarFraseAcompanhamento(doc.titulo, contato.nome, doc.titular);
         const anexo = await criarAnexoParaDocumento(doc);
         const rastro = {
           mensagemId: '',
@@ -2296,7 +2354,8 @@ export async function processarMensagemChat(dados: {
         modeloUsado = 'Motor Interno';
         const anexo = await criarAnexoParaDocumento(docContexto);
         const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
-        const textoResposta = `${prefixoSaudacao}Aqui está o documento solicitado: ${docContexto.titulo}.`;
+        const textoDocFormatado = formatarFraseAcompanhamento(docContexto.titulo, contato.nome, docContexto.titular);
+        const textoResposta = `${prefixoSaudacao}${textoDocFormatado}`;
 
         const docsRastro: DocumentoRastro[] = [
           {
@@ -2421,7 +2480,8 @@ export async function processarMensagemChat(dados: {
       ];
 
       const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
-      const textoResposta = `${prefixoSaudacao}Aqui está o documento solicitado: ${doc.titulo}.`;
+      const textoDocFormatado = formatarFraseAcompanhamento(doc.titulo, contato.nome, doc.titular);
+      const textoResposta = `${prefixoSaudacao}${textoDocFormatado}`;
 
       const rastro = criarRastroFinal({
         tipoBusca: 'nome_cofre',
@@ -3751,12 +3811,15 @@ DIRETRIZES OBRIGATÓRIAS:
 
     let pessoaIdAlvo: string | null = null;
     const todosTitulares = await obterTodosTitulares();
-    const titularHist = extrairUltimoTitularDoHistorico(historicoRecente);
+    const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
     const titularDoContato = todosTitulares.find(
-      (t) => contato.nome && t.nome.toLowerCase().includes(contato.nome.toLowerCase().trim())
+      (t) =>
+        contato?.nome &&
+        (t.nome.toLowerCase().includes(contato.nome.toLowerCase().trim()) ||
+          contato.nome.toLowerCase().includes(t.nome.toLowerCase().trim()))
     )?.nome;
     const pessoaIdentificada =
-      classificacao.pessoa || pessoa || titularHist || titularDoContato || null;
+      classificacao.pessoa || pessoa || titularDoHistorico || titularDoContato || null;
     if (pessoaIdentificada) {
       const titResolvido = resolverTitularCadastrado(pessoaIdentificada, todosTitulares);
       if (titResolvido) {
@@ -3764,11 +3827,12 @@ DIRETRIZES OBRIGATÓRIAS:
       }
     }
 
-    // 0.5. Blindagem de dado pessoal sem titular na busca de conteúdo/vetorial:
-    // Se não há pessoa titular definida explicitamente nem no histórico recente da conversa,
-    // e a pergunta solicita dado pessoal (CPF, RG, CNH, data de nascimento, filiação, endereço residencial),
-    // a VEGA NUNCA assume ninguém nem busca trechos de titular arbitrário: pergunta diretamente o titular.
-    const regexDadoPessoalSensivel = /\b(cpf|rg|identidade|endere[cç]o|mora|resid[eê]ncia|m[aã]e|pai|filia[cç][aã]o|nascimento|data\s*(de\s*)?nascimento)\b/i;
+    // 0.5. Blindagem de dado pessoal ou informacao de documento sem titular na busca de conteudo/vetorial:
+    // Se nao ha pessoa titular definida explicitamente nem no historico recente da conversa,
+    // e a pergunta solicita dado pessoal (CPF, RG, CNH, data de nascimento, filiacao, endereco residencial)
+    // ou dados de documentos pessoais (vacinas, covid, imunizacao), a VEGA NUNCA assume ninguem
+    // nem busca trechos de titular arbitrario: pergunta diretamente o titular.
+    const regexDadoPessoalSensivel = /\b(cpf|rg|identidade|endere[cç]o|mora|resid[eê]ncia|m[aã]e|pai|filia[cç][aã]o|nascimento|data\s*(de\s*)?nascimento|vacina|vacinas|vacina[cç][aã]o|covid(-?19)?|imuniza[cç][aã]o|doses?)\b/i;
     const ehTemaCorporativo = /\b(delta|deltaplan|empresa|escrit[oó]rio|sede|obra|proposta|contrato|or[cç]amento)\b/i.test(mensagemUsuario);
     if (!pessoaIdAlvo && regexDadoPessoalSensivel.test(mensagemUsuario) && !ehTemaCorporativo) {
       const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
@@ -4021,6 +4085,30 @@ DIRETRIZES OBRIGATÓRIAS:
   // CASO 5: FORA DE ESCOPO
   // ============================================================================
   const msgNormFinal = normalizarParaBusca(mensagemUsuario);
+  const ehPerguntaVacina = /\b(vacina|vacinas|vacina[cç][aã]o|covid(-?19)?|imuniza[cç][aã]o|doses?)\b/i.test(msgNormFinal);
+  if (ehPerguntaVacina) {
+    const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+    const textoPerguntaTitular = formatarPerguntaDadoPessoalSemTitular(
+      classificacao.campos,
+      mensagemUsuario,
+      prefixoSaudacao
+    );
+    const rastro = criarRastroFinal({
+      tipoBusca: 'vetorial',
+      docsEncontrados: [],
+      enviouAnexo: false,
+      respostaFinal: textoPerguntaTitular,
+      modelo: 'Motor Interno',
+    });
+    return {
+      textoResposta: textoPerguntaTitular,
+      origem: 'motor',
+      intencaoDetectada: 'pergunta_conteudo',
+      perguntaReescrita: classificacao.pergunta_completa || pergunta_reescrita || mensagemUsuario,
+      rastro,
+    };
+  }
+
   if (REGEX_DOCUMENTO_QUALQUER.test(msgNormFinal)) {
     const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
     const textoDocNaoEncontrado = `${prefixoSaudacao}Não encontrei esse documento no Cofre.`;
@@ -4070,3 +4158,26 @@ DIRETRIZES OBRIGATÓRIAS:
     rastro,
   };
 }
+
+/**
+ * 4. ORQUESTRADOR PRINCIPAL DO CHAT COM RASTRO DE RACIOCÍNIO E SANITIZAÇÃO RIGOROSA
+ */
+export async function processarMensagemChat(dados: {
+  mensagemUsuario: string;
+  historicoRecente: Mensagem[];
+  contato: Contato;
+  documentosDisponiveis?: DocumentoRegistro[];
+  documentoIdDireto?: string;
+}): Promise<ResultadoChatOrquestrador> {
+  const resultado = await executarProcessamentoMensagemChatInterno(dados);
+
+  // SANITIZAÇÃO DUPLA: Garante que NENHUM bloco de código, JSON ou resíduo técnico
+  // jamais chegue à interface do usuário ou seja enviado para o WhatsApp.
+  resultado.textoResposta = sanitizarRespostaTextoFinal(resultado.textoResposta);
+  if (resultado.rastro && resultado.rastro.respostaFinal) {
+    resultado.rastro.respostaFinal = sanitizarRespostaTextoFinal(resultado.rastro.respostaFinal);
+  }
+
+  return resultado;
+}
+

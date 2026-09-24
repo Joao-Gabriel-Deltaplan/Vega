@@ -43,12 +43,37 @@ export function extrairPrimeiroNome(nomeCompleto?: string): string {
   return palavraLimpa;
 }
 
+import { obterArtigoDefinido, obterPreposicaoTitular } from '../busca/equivalenciaService.js';
+
 /**
- * Monta a frase de acompanhamento garantindo pontuação rigorosa (nunca gera ".." ou ",.").
+ * Monta a frase de acompanhamento garantindo separação rigorosa entre o usuário solicitante
+ * e o titular do documento, sem nunca chamar o usuário pelo nome do titular.
+ * Ex: titular Thomaz, usuário João -> "Aqui está o Cartão Vacinas do Thomaz, João."
+ *     titular e usuário João       -> "Aqui está seu Cartão Vacinas, João."
  */
-export function formatarFraseAcompanhamento(titulo: string, nomeOuPrimeiroNome?: string): string {
-  const nomeReal = extrairPrimeiroNome(nomeOuPrimeiroNome);
-  let frase = nomeReal ? `Aqui está seu ${titulo}, ${nomeReal}.` : `Aqui está seu ${titulo}.`;
+export function formatarFraseAcompanhamento(
+  titulo: string,
+  nomeUsuario?: string,
+  nomeTitularDoc?: string
+): string {
+  const usuarioLimpo = extrairPrimeiroNome(nomeUsuario);
+  const titularLimpo = extrairPrimeiroNome(nomeTitularDoc);
+
+  let frase: string;
+
+  if (titularLimpo && (!usuarioLimpo || titularLimpo.toLowerCase() !== usuarioLimpo.toLowerCase())) {
+    const prep = obterPreposicaoTitular(titularLimpo);
+    const artigo = obterArtigoDefinido(titulo);
+    frase = usuarioLimpo
+      ? `Aqui está ${artigo} ${titulo} ${prep} ${titularLimpo}, ${usuarioLimpo}.`
+      : `Aqui está ${artigo} ${titulo} ${prep} ${titularLimpo}.`;
+  } else if (usuarioLimpo) {
+    const artigo = obterArtigoDefinido(titulo);
+    const pronome = artigo === 'a' ? 'sua' : 'seu';
+    frase = `Aqui está ${pronome} ${titulo}, ${usuarioLimpo}.`;
+  } else {
+    frase = `Aqui está o documento solicitado: ${titulo}.`;
+  }
 
   // Normalização estrita de pontuação final
   frase = frase

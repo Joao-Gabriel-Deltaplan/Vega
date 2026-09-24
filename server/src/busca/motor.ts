@@ -494,13 +494,20 @@ export async function buscarDocumentos(
   // CENÁRIO A: Pedido PESSOAL ("meu/minha/pra mim")
   // =========================================================================
   if (isPessoal && tipoPedido) {
+    const normTipoPedido = normalizarTexto(tipoPedido);
     // Procura documento do tipo pedido cujo titular seja o próprio contato
-    const docsDoContato = catalogo.filter(
-      (d) =>
-        (d.tipo?.toUpperCase() === tipoPedido.toUpperCase() ||
-          d.titulo.toUpperCase().includes(tipoPedido.toUpperCase())) &&
-        titularCorresponde(d.titular, titularVinculado)
-    );
+    const docsDoContato = catalogo.filter((d) => {
+      const normTipo = normalizarTexto(d.tipo || '');
+      const normTitulo = normalizarTexto(d.titulo || '');
+      const bateTipo =
+        d.tipo?.toUpperCase() === tipoPedido.toUpperCase() ||
+        d.titulo.toUpperCase().includes(tipoPedido.toUpperCase()) ||
+        normTipo === normTipoPedido ||
+        normTitulo.includes(normTipoPedido) ||
+        normTipoPedido.includes(normTipo) ||
+        (d.apelidos && d.apelidos.some((ap) => normalizarTexto(ap) === normTipoPedido));
+      return bateTipo && titularCorresponde(d.titular, titularVinculado);
+    });
 
     if (docsDoContato.length === 1) {
       return {
@@ -522,11 +529,17 @@ export async function buscarDocumentos(
 
     // Não encontrou documento deste tipo para o próprio contato.
     // 1. Verifica se há o MESMO TIPO de outro titular que o contato PODE ver
-    const docsOutroTitular = catalogo.filter(
-      (d) =>
+    const docsOutroTitular = catalogo.filter((d) => {
+      const normTipo = normalizarTexto(d.tipo || '');
+      const normTitulo = normalizarTexto(d.titulo || '');
+      return (
         d.tipo?.toUpperCase() === tipoPedido.toUpperCase() ||
-        d.titulo.toUpperCase().includes(tipoPedido.toUpperCase())
-    );
+        d.titulo.toUpperCase().includes(tipoPedido.toUpperCase()) ||
+        normTipo === normTipoPedido ||
+        normTitulo.includes(normTipoPedido) ||
+        normTipoPedido.includes(normTipo)
+      );
+    });
 
     if (docsOutroTitular.length > 0) {
       const docOutro = docsOutroTitular[0];
@@ -570,13 +583,19 @@ export async function buscarDocumentos(
   // CENÁRIO B: Pedido com TITULAR EXPLÍCITO ("da Empresa", "do Fulano", etc.)
   // =========================================================================
   if (titularExplicito && tipoPedido) {
-    const docsCasamTipoETitular = catalogo.filter(
-      (d) =>
-        (d.tipo?.toUpperCase() === tipoPedido.toUpperCase() ||
-          d.titulo.toUpperCase().includes(tipoPedido.toUpperCase()) ||
-          (d.apelidos && d.apelidos.some((ap) => ap.toLowerCase() === tipoPedido.toLowerCase()))) &&
-        titularCorresponde(d.titular, titularExplicito)
-    );
+    const normTipoPedido = normalizarTexto(tipoPedido);
+    const docsCasamTipoETitular = catalogo.filter((d) => {
+      const normTipo = normalizarTexto(d.tipo || '');
+      const normTitulo = normalizarTexto(d.titulo || '');
+      const bateTipo =
+        d.tipo?.toUpperCase() === tipoPedido.toUpperCase() ||
+        d.titulo.toUpperCase().includes(tipoPedido.toUpperCase()) ||
+        normTipo === normTipoPedido ||
+        normTitulo.includes(normTipoPedido) ||
+        normTipoPedido.includes(normTipo) ||
+        (d.apelidos && d.apelidos.some((ap) => normalizarTexto(ap) === normTipoPedido));
+      return bateTipo && titularCorresponde(d.titular, titularExplicito);
+    });
 
     if (docsCasamTipoETitular.length === 1) {
       return {

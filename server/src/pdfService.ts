@@ -169,7 +169,11 @@ export async function processarEntregaDocumento(
   // GARANTIA DE TEXTO (Fallback determinístico):
   // Se, após remover o bloco, o texto ficar vazio ou só com espaços, preencher automaticamente
   if (!textoLimpo || textoLimpo.length === 0) {
-    textoLimpo = formatarFraseAcompanhamento(titulo.trim(), primeiroNome || contato?.nome);
+    textoLimpo = formatarFraseAcompanhamento(
+      titulo.trim(),
+      primeiroNome || contato?.nome,
+      docCorrespondente?.titular
+    );
   } else {
     // Normalização estrita: impede pontuações anômalas como ".." ou ",." ou ", ."
     textoLimpo = textoLimpo
