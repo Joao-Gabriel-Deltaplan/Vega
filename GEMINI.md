@@ -121,3 +121,11 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
   - Para documentos: pergunta de qual titular é o documento (se houver ambiguidade) ou qual documento deseja (para comandos genéricos de envio).
 - **Expiração além de 30 mensagens:** Menções a titulares ou documentos ocorridas além da janela das últimas 30 mensagens deixam de surtir efeito automaticamente, tratando novas solicitações como início de novo contexto.
 
+---
+
+## 16. Prevalência de Nomes Citados e Pessoas Não Cadastradas
+- **Prevalência absoluta:** Nome citado na mensagem sempre prevalece sobre o contexto, mesmo que não seja titular cadastrado. Nunca substituir a pessoa perguntada pela pessoa do contexto.
+- **Pessoas não cadastradas:** Quando a mensagem citar um nome que não consta no cadastro oficial de titulares (ex.: cônjuge, sócio, testemunha, terceiro), a VEGA nunca pode ignorá-lo nem substituí-lo por um titular do histórico ou do contato.
+- **Busca em documentos do Cofre:** Nesses casos, deve ser feita busca nos documentos do Cofre pelo nome citado. Se o nome aparecer em algum documento (como certidões, contratos, etc.), responder com base no que consta ali, citando o documento e deixando explícito de quem é o dado (ex.: *"A mãe da Nilceia, conforme a Certidão de Casamento, é..."*).
+- **Pessoa inexistente no Cofre:** Se o nome não aparecer em nenhum documento do Cofre, responder que não encontrou informações sobre essa pessoa no Cofre. Nunca responder dados sobre outra pessoa.
+

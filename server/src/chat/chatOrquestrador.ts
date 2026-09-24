@@ -1025,7 +1025,7 @@ Tipos de documentos no cofre: ${listaTiposDocs}.
 Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
 {
   "intencao": "saudacao_ou_vago" | "pedir_arquivo" | "listar_documentos" | "dado_pessoal" | "pergunta_conteudo" | "corrigir_dado" | "consultar_vencimentos" | "silenciar_alerta" | "fora_de_escopo",
-  "pessoa": "nome do titular (ex: Fulano) ou vazio",
+  "pessoa": "nome do titular ou pessoa citada na mensagem (ex: Fulano, Nilceia) ou vazio",
   "campos": ["lista de campos cadastrais solicitados ou vazio (valores padronizados: endereco, estadoCivil, rg, profissao, cpf, filiacao, dataNascimento, cnh, validadeCnh, categoriaCnh, orgaoEmissor)"],
   "campo_corrigir": "nome do campo a ser corrigido (ex: profissao, cpf, rg, etc.) ou vazio",
   "valor_novo": "novo valor correto informado pelo usuário ou vazio",
@@ -1045,7 +1045,7 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
    - ATENÇÃO CRÍTICA: Só é "pedir_arquivo" quando a pessoa pede o DOCUMENTO EM SI para envio ("me manda", "me envia", "preciso do arquivo", "quero o PDF", "solta esse arquivo").
    - Pedidos de RESUMO, EXPLICAÇÃO, INTERPRETAÇÃO ou PERGUNTAS sobre o que está escrito ("resuma esse documento", "o que esse documento fala sobre X?", "explique o documento", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?") são SEMPRE "pergunta_conteudo", NUNCA "pedir_arquivo"!
 3. "listar_documentos": Quando o usuário solicitar listar, ver ou consultar quais documentos existem no Cofre ou de uma pessoa ("quais documentos você tem?", "o que tem no cofre?", "quais documentos do Fulano você tem?", "o que você tem do Fulano?", "preciso de mais alguns documentos do Fulano", "me mostra os documentos"). Preencha "pessoa" se citada.
-4. "dado_pessoal": Perguntas sobre dados cadastrais básicos de titulares (RG, CPF, filiação/mãe/pai, profissão, estado civil, validade da CNH etc.).
+4. "dado_pessoal": Perguntas sobre dados cadastrais básicos de pessoas (RG, CPF, filiação/mãe/pai, profissão, estado civil, validade da CNH etc.).
 5. "pergunta_conteudo": Perguntas sobre o conteúdo de documentos ("resuma esse documento em 10 linhas", "o que esse documento fala sobre águas fluviais?", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?", "quais dias eu tomei as vacinas da covid?", "quais vacinas ele tomou?", "qual o endereço do Fulano?", "o que diz na página 2?").
    - REGRA MANDATÓRIA: Perguntas sobre o conteúdo de documentos arquivados no Cofre (como vacinas tomadas, datas de vacinação/doses de covid, cláusulas contratuais, valores, datas de registro de certidões, alvarás) são SEMPRE "pergunta_conteudo", NUNCA "fora_de_escopo"!
    - Se o usuário perguntar sem citar titular (ex: "quais dias eu tomei as vacinas da covid?"), devolva "intencao": "pergunta_conteudo", "pessoa": "", "termo_busca": "vacina covid". O sistema perguntará de quem é. NUNCA classifique como fora_de_escopo!
@@ -1056,7 +1056,8 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
 9. "fora_de_escopo": Apenas assuntos que NÃO TÊM NENHUMA relação com documentos ou informações da empresa (ex: receitas culinárias, futebol, piadas). Perguntas sobre vacinas, documentos, datas de imunização ou dados de titulares NUNCA são fora de escopo.
 
 REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
-- SE A MENSAGEM ATUAL CITA UM SUJEITO (pessoa ou empresa), ele SEMPRE SUBSTITUI o sujeito das mensagens anteriores! O contexto anterior DEVE SER IGNORADO nesse caso!
+- SE A MENSAGEM ATUAL CITA UM SUJEITO (pessoa cadastrada, pessoa não cadastrada ou empresa), ele SEMPRE SUBSTITUI o sujeito das mensagens anteriores! O contexto anterior DEVE SER IGNORADO nesse caso!
+- NOME CITADO NA MENSAGEM SEMPRE PREVALECE: Se a mensagem citar expressamente qualquer nome de pessoa (mesmo que NÃO conste na lista de titulares cadastrados, ex.: cônjuge, parente, terceiro como "Nilceia"), preencha "pessoa" com esse nome exato. NUNCA substitua esse nome por um titular do histórico e NUNCA o apague!
 - RECONHECIMENTO DA EMPRESA: Os termos "Delta", "Deltaplan", "Delta Plan", "empresa", "escritório", "construtora" referem-se à própria Delta Plan Construtora. Nesses casos, a intenção É SEMPRE "pergunta_conteudo" (busca no Conhecimento e documentos corporativos), NUNCA "dado_pessoal" de um titular, e "pessoa" DEVE SER VAZIA ("")!
 - O CONTEXTO SÓ DEVE SER USADO quando a mensagem atual NÃO tem sujeito nenhum (ex.: perguntas com pronomes como "ele", "dele", ou elípticas como "e a validade?", "e o CPF dele?", "e o RG dele?", "e o endereço dele?"). Nesses casos, herde o titular mencionado anteriormente no histórico.
 
@@ -1068,6 +1069,7 @@ EXEMPLOS OBRIGATÓRIOS:
 - "me envia o registro profissional do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "registro profissional", "documentos_citados": [], "pergunta_completa": "Enviar registro profissional do Fulano", "termo_busca": "registro profissional Fulano"}
 - "pare de alertar o CRT do fulano" -> {"intencao": "silenciar_alerta", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CRT", "pergunta_completa": "Desativar alertas de vencimento do documento CRT do Fulano", "termo_busca": "CRT"}
 - "qual o CPF do fulano?" -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["cpf"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o CPF do Fulano?", "termo_busca": "Fulano"}
+- "qual o nome da mãe da Nilceia?" -> {"intencao": "dado_pessoal", "pessoa": "Nilceia", "campos": ["filiacao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Quem é a mãe da Nilceia?", "termo_busca": "filiacao Nilceia"}
 - "quais dias eu tomei as vacinas da covid?" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Quais dias foram tomadas as vacinas da covid?", "termo_busca": "vacina covid"}
 - "endereço delta" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o endereço da Delta Plan?", "termo_busca": "Escritorio Deltaplan"}
 - "e o RG dele?" (após falar de um titular) -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["rg"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o RG do Fulano?", "termo_busca": "Fulano"}
@@ -1109,8 +1111,42 @@ EXEMPLOS OBRIGATÓRIOS:
     const parsed = JSON.parse(response.choices[0]?.message?.content || '{}');
     const tempoMs = Date.now() - inicio;
 
-    // Validação estrita: titular só é reconhecido se existir no cadastro de titulares
+    const msgNorm = normalizarParaBusca(mensagemUsuario);
+
+    // Identifica se uma pessoa foi citada diretamente na mensagem atual
+    let pessoaCitadaNaMensagem: string | undefined = undefined;
     if (parsed.pessoa) {
+      const pNorm = normalizarParaBusca(parsed.pessoa);
+      if (
+        msgNorm.includes(pNorm) ||
+        pNorm.split(/\s+/).some((parte: string) => parte.length >= 3 && msgNorm.includes(parte))
+      ) {
+        pessoaCitadaNaMensagem = parsed.pessoa;
+      }
+    }
+
+    // Fallback de detecção por regex para casos como "da Nilceia", "do Marcos", "de Fulano"
+    if (!pessoaCitadaNaMensagem) {
+      const matchPessoa = mensagemUsuario.match(/\b(?:de|da|do|dos|das)\s+([A-ZÁÉÍÓÚÂÊÔÃÕ][a-záéíóúâêôãõç]+(?:\s+[A-ZÁÉÍÓÚÂÊÔÃÕ][a-záéíóúâêôãõç]+)*)/);
+      if (matchPessoa) {
+        const candidato = matchPessoa[1].trim();
+        const candNorm = normalizarParaBusca(candidato);
+        const ehPalavraIgnorada = /\b(documento|pdf|arquivo|certidao|contrato|alvara|cnh|rg|empresa|delta|deltaplan|registro|casamento|nascimento|mae|pai|filiacao|resumo|vacina|covid)\b/i.test(candNorm);
+        if (!ehPalavraIgnorada) {
+          pessoaCitadaNaMensagem = candidato;
+        }
+      }
+    }
+
+    let origemPessoa: 'mensagem_atual' | 'contexto' | undefined = undefined;
+
+    // Regra 16: Nome citado na mensagem sempre prevalece sobre o contexto, mesmo que não seja titular cadastrado
+    if (pessoaCitadaNaMensagem) {
+      parsed.pessoa = pessoaCitadaNaMensagem;
+      origemPessoa = 'mensagem_atual';
+    } else if (parsed.pessoa) {
+      // Se parsed.pessoa veio da LLM mas não está textualmente na mensagem atual,
+      // só aceitamos se for um titular cadastrado válido
       const pNorm = normalizarParaBusca(parsed.pessoa);
       const titularValido = titulares.some((t) => {
         const tNorm = normalizarParaBusca(t.nome);
@@ -1126,8 +1162,6 @@ EXEMPLOS OBRIGATÓRIOS:
         parsed.pessoa = '';
       }
     }
-
-    const msgNorm = normalizarParaBusca(mensagemUsuario);
 
     const ehPedidoCertidao = /\bcertid[aã]o\b/i.test(msgNorm);
 
@@ -1174,12 +1208,11 @@ EXEMPLOS OBRIGATÓRIOS:
     const REGEX_SILENCIAR = /\b(pare\s*de\s*alerta(r)?|n[aã]o\s*alerte(\s*mais)?|desative(\s*os)?\s*alerta(s)?|desativar\s*alerta(s)?|silenciar\s*alerta(s)?|parar\s*de\s*alerta(r)?)\b/i;
     const ehSilenciarAlerta = REGEX_SILENCIAR.test(msgNorm) || parsed.intencao === 'silenciar_alerta';
 
-    let origemPessoa: 'mensagem_atual' | 'contexto' | undefined = undefined;
-
     if (ehSilenciarAlerta) {
       parsed.intencao = 'silenciar_alerta';
-      if (!parsed.pessoa && titularExplicitoMsg) {
-        parsed.pessoa = titularExplicitoMsg;
+      if (!parsed.pessoa && (pessoaCitadaNaMensagem || titularExplicitoMsg)) {
+        parsed.pessoa = pessoaCitadaNaMensagem || titularExplicitoMsg;
+        origemPessoa = 'mensagem_atual';
       }
       if (!parsed.documento_citado) {
         if (/\bcrt\b/i.test(msgNorm)) parsed.documento_citado = 'CRT';
@@ -1202,6 +1235,10 @@ EXEMPLOS OBRIGATÓRIOS:
         parsed.termo_busca = 'Escritório Deltaplan';
         parsed.pergunta_completa = 'Qual é o endereço do escritório da Deltaplan?';
       }
+    } else if (pessoaCitadaNaMensagem) {
+      // Regra 16: Citou expressamente uma pessoa na mensagem atual (mesmo não sendo titular cadastrado)
+      parsed.pessoa = pessoaCitadaNaMensagem;
+      origemPessoa = 'mensagem_atual';
     } else if (titularExplicitoMsg) {
       // Citou expressamente um titular cadastrado na mensagem atual
       parsed.pessoa = titularExplicitoMsg;
@@ -1263,7 +1300,7 @@ EXEMPLOS OBRIGATÓRIOS:
       parsed.intencao = 'dado_pessoal';
       const camposSet = new Set([...(parsed.campos || []), ...camposDetectadosRegex]);
       parsed.campos = Array.from(camposSet);
-      if (!titularExplicitoMsg) {
+      if (!titularExplicitoMsg && !pessoaCitadaNaMensagem && !parsed.pessoa) {
         const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
         if (titularDoHistorico) {
           parsed.pessoa = titularDoHistorico;
@@ -1277,7 +1314,7 @@ EXEMPLOS OBRIGATÓRIOS:
 
     if (ehPerguntaFatoDocumento) {
       parsed.intencao = 'pergunta_conteudo';
-      if (!titularExplicitoMsg) {
+      if (!titularExplicitoMsg && !pessoaCitadaNaMensagem && !parsed.pessoa) {
         const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
         if (titularDoHistorico) {
           parsed.pessoa = titularDoHistorico;
@@ -1454,6 +1491,70 @@ export async function executarBuscaVetorial(
 }
 
 /**
+ * 2.1. BUSCA DE TRECHOS NO COFRE POR NOME DE PESSOA NÃO CADASTRADA COMO TITULAR
+ * Permite localizar ocorrências de cônjuges (ex: Nilceia na Certidão de Casamento),
+ * testemunhas, sócios em contratos e terceiros citados em qualquer documento.
+ */
+export async function buscarTrechosPorNomePessoaNoCofre(
+  nomePessoa: string,
+  perguntaOuTermo?: string,
+  documentosDisponiveis?: DocumentoRegistro[]
+): Promise<TrechoEncontrado[]> {
+  const supabase = getSupabaseClient();
+  const primeiroNome = extrairPrimeiroNome(nomePessoa) || nomePessoa;
+  const termoNorm = normalizarParaBusca(primeiroNome);
+
+  if (!termoNorm || termoNorm.length < 3) {
+    return [];
+  }
+
+  // 1. Busca direta na tabela trechos por ocorrência do nome (ilike)
+  const { data: trechosSupabase, error } = await supabase
+    .from('trechos')
+    .select('id, documento_id, pessoa_id, conteudo, pagina')
+    .ilike('conteudo', `%${termoNorm}%`);
+
+  if (error) {
+    console.error('[VEGA Chat] Erro ao buscar trechos por nome de pessoa no Cofre:', error.message);
+    return [];
+  }
+
+  const trechosEncontrados = trechosSupabase || [];
+  if (trechosEncontrados.length === 0) {
+    return [];
+  }
+
+  // 2. Metadados dos documentos onde os trechos foram encontrados
+  const docIds = Array.from(new Set(trechosEncontrados.map((t) => t.documento_id)));
+  const docs = documentosDisponiveis && documentosDisponiveis.length > 0
+    ? documentosDisponiveis.filter((d) => docIds.includes(d.id))
+    : (await supabase.from('documentos').select('id, titulo, titular, tipo').in('id', docIds)).data || [];
+
+  const mapaDocs = new Map((docs || []).map((d: any) => [d.id, d]));
+
+  // 3. Monta TrechoEncontrado para cada trecho que de fato contém o nome
+  const trechosFormatados: TrechoEncontrado[] = [];
+  for (const t of trechosEncontrados) {
+    const conteudoNorm = normalizarParaBusca(t.conteudo);
+    if (conteudoNorm.includes(termoNorm)) {
+      const doc = mapaDocs.get(t.documento_id);
+      trechosFormatados.push({
+        id: t.id,
+        documento_id: t.documento_id,
+        titulo_documento: doc?.titulo || 'Documento do Cofre',
+        pessoa_id: t.pessoa_id,
+        corporativo: !t.pessoa_id,
+        pagina: t.pagina || 1,
+        conteudo: t.conteudo,
+        similaridade: 0.95,
+      });
+    }
+  }
+
+  return trechosFormatados;
+}
+
+/**
  * 3. GERAÇÃO DA RESPOSTA FINAL BASEADA ESTRITAMENTE NOS TRECHOS ENCONTRADOS
  */
 export async function responderComTrechos(
@@ -1508,7 +1609,9 @@ REGRAS OBRIGATÓRIAS:
    - Se a pergunta for sobre data de DISPENSA DO SERVIÇO MILITAR, responda rigorosamente a data em que foi dispensado do serviço militar (ex.: 23 de agosto de 2005), e NUNCA a data de nascimento!
    - Se a pergunta for sobre data do REGISTRO DO CASAMENTO, responda rigorosamente a data do registro do casamento (ex.: 12 de abril de 2010), e NUNCA a data de nascimento!
    - Se a pergunta for sobre VACINAS ou DOSES TOMADAS, responda listando com clareza o nome da vacina, a dose e a data exata em que foi aplicada conforme constar no documento.
-   - Se o trecho contiver múltiplas datas, leia atentamente o contexto para responder EXATAMENTE a data solicitada pelo usuário.
+   - Se a pergunta for sobre uma PESSOA ESPECÍFICA citada na mensagem (mesmo que não seja o titular principal do documento, como cônjuge, parente, sócio, testemunha ou terceiro citado no texto), responda estritamente sobre a pessoa perguntada! NUNCA responda dados de outra pessoa.
+   - Deixe SEMPRE explícito de quem é a informação respondida e cite o documento (exemplo: "A mãe da Nilceia, conforme a *Certidão de Casamento*, é Celucia Fanha Ramos.").
+   - Se o trecho contiver múltiplas datas ou múltiplas pessoas, leia atentamente o contexto para responder EXATAMENTE a pessoa e o dado solicitados pelo usuário.
 9. DISTINÇÃO USUÁRIO VS TITULAR: NUNCA chame o usuário que está conversando pelo nome do titular do documento. Trate o titular do documento na terceira pessoa.
 10. PROIBIÇÃO ABSOLUTA DE BLOCOS TÉCNICOS: NUNCA emita blocos markdown como \`\`\`documento, \`\`\`json, \`\`\`pdf ou qualquer estrutura de código/JSON. Toda a resposta deve ser em texto natural formatado exclusivamente para WhatsApp.`;
 
@@ -3350,6 +3453,100 @@ async function executarProcessamentoMensagemChatInterno(dados: {
     const nomePessoa = classificacao.pessoa || pessoa || titularDoHistorico || null;
     const titular = nomePessoa ? await obterTitularPorNome(nomePessoa) : null;
 
+    // Regra 16: Se a mensagem citou expressamente uma pessoa que NÃO é titular cadastrado:
+    // NUNCA ignorar nem substituir pelo titular do contexto!
+    // Fazer busca nos documentos do Cofre pelo nome citado.
+    if (!titular && classificacao.pessoa && classificacao.origemPessoa === 'mensagem_atual') {
+      const nomeNaoCadastrado = classificacao.pessoa;
+      const trechosDaPessoa = await buscarTrechosPorNomePessoaNoCofre(
+        nomeNaoCadastrado,
+        classificacao.pergunta_completa || mensagemUsuario,
+        documentosDisponiveis
+      );
+
+      if (trechosDaPessoa.length > 0) {
+        modeloUsado = chatModel;
+        const resTrechos = await responderComTrechos(
+          classificacao.pergunta_completa || mensagemUsuario,
+          trechosDaPessoa,
+          openai
+        );
+
+        tokensPromptTotal += resTrechos.tokensPrompt;
+        tokensCompletionTotal += resTrechos.tokensCompletion;
+        tokensGeraisTotal += resTrechos.tokensTotal;
+
+        etapas.push({
+          ordem: 2,
+          nome: 'Busca no Cofre por Pessoa Não Cadastrada',
+          descricao: `Encontrado(s) ${trechosDaPessoa.length} trecho(s) citando "${nomeNaoCadastrado}" no documento "${trechosDaPessoa[0].titulo_documento}".`,
+          tempoMs: Date.now() - inicioFicha,
+          detalhes: {
+            pessoa: nomeNaoCadastrado,
+            documento: trechosDaPessoa[0].titulo_documento,
+            quantidadeTrechos: trechosDaPessoa.length,
+          },
+        });
+
+        const docsRastro: DocumentoRastro[] = trechosDaPessoa.map((t) => ({
+          id: t.documento_id,
+          titulo: t.titulo_documento,
+          pagina: t.pagina,
+          similaridade: Number((t.similaridade * 100).toFixed(1)),
+          trecho: truncarTrecho(t.conteudo, 300),
+          usadoNaResposta: true,
+        }));
+
+        const rastro = criarRastroFinal({
+          tipoBusca: 'vetorial',
+          docsEncontrados: docsRastro,
+          docUsado: trechosDaPessoa[0].titulo_documento,
+          enviouAnexo: false,
+          respostaFinal: resTrechos.texto,
+          modelo: modeloUsado,
+        });
+
+        return {
+          textoResposta: resTrechos.texto,
+          origem: 'motor',
+          intencaoDetectada: intencao,
+          perguntaReescrita: classificacao.pergunta_completa || pergunta_reescrita,
+          buscaUsada: 'Busca em documentos do Cofre (Pessoa Não Cadastrada)',
+          similaridade: `${(trechosDaPessoa[0].similaridade * 100).toFixed(1)}% (${trechosDaPessoa[0].titulo_documento})`,
+          rastro,
+        };
+      } else {
+        // Pessoa não cadastrada NÃO aparece em nenhum documento do Cofre
+        const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+        const artigo = (nomeNaoCadastrado.toLowerCase().endsWith('a') || nomeNaoCadastrado.toLowerCase().endsWith('eia')) ? 'a' : 'o';
+        const textoResposta = `${prefixoSaudacao}Não encontrei informações sobre ${artigo} *${nomeNaoCadastrado}* nos documentos do Cofre.`;
+
+        etapas.push({
+          ordem: 2,
+          nome: 'Varredura no Cofre (Pessoa Inexistente)',
+          descricao: `Nenhum documento ou menção a "${nomeNaoCadastrado}" foi encontrado no Cofre.`,
+          tempoMs: Date.now() - inicioFicha,
+          detalhes: { pessoa: nomeNaoCadastrado },
+        });
+
+        const rastro = criarRastroFinal({
+          tipoBusca: 'vetorial',
+          docsEncontrados: [],
+          enviouAnexo: false,
+          respostaFinal: textoResposta,
+          modelo: 'Motor Interno',
+        });
+
+        return {
+          textoResposta,
+          origem: 'motor',
+          intencaoDetectada: intencao,
+          perguntaReescrita: classificacao.pergunta_completa || pergunta_reescrita,
+          rastro,
+        };
+      }
+    }
+
     if (!titular) {
       const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
       const textoPerguntaTitular = formatarPerguntaDadoPessoalSemTitular(
@@ -3827,6 +4024,80 @@ DIRETRIZES OBRIGATÓRIAS:
       }
     }
 
+    // Regra 16: Se a mensagem citou expressamente uma pessoa na mensagem atual que NÃO é titular cadastrado:
+    // NUNCA ignorar nem substituir pelo titular do contexto!
+    // Fazer busca nos documentos do Cofre pelo nome citado.
+    if (!pessoaIdAlvo && classificacao.pessoa && classificacao.origemPessoa === 'mensagem_atual') {
+      const nomeNaoCadastrado = classificacao.pessoa;
+      const trechosDaPessoa = await buscarTrechosPorNomePessoaNoCofre(
+        nomeNaoCadastrado,
+        classificacao.pergunta_completa || mensagemUsuario,
+        documentosDisponiveis
+      );
+
+      if (trechosDaPessoa.length > 0) {
+        modeloUsado = chatModel;
+        const resTrechos = await responderComTrechos(
+          classificacao.pergunta_completa || mensagemUsuario,
+          trechosDaPessoa,
+          openai
+        );
+
+        tokensPromptTotal += resTrechos.tokensPrompt;
+        tokensCompletionTotal += resTrechos.tokensCompletion;
+        tokensGeraisTotal += resTrechos.tokensTotal;
+
+        const docsRastro: DocumentoRastro[] = trechosDaPessoa.map((t) => ({
+          id: t.documento_id,
+          titulo: t.titulo_documento,
+          pagina: t.pagina,
+          similaridade: Number((t.similaridade * 100).toFixed(1)),
+          trecho: truncarTrecho(t.conteudo, 300),
+          usadoNaResposta: true,
+        }));
+
+        const rastro = criarRastroFinal({
+          tipoBusca: 'vetorial',
+          docsEncontrados: docsRastro,
+          docUsado: trechosDaPessoa[0].titulo_documento,
+          enviouAnexo: false,
+          respostaFinal: resTrechos.texto,
+          modelo: modeloUsado,
+        });
+
+        return {
+          textoResposta: resTrechos.texto,
+          origem: 'motor',
+          intencaoDetectada: intencao,
+          perguntaReescrita: classificacao.pergunta_completa || pergunta_reescrita,
+          buscaUsada: 'Busca em documentos do Cofre (Pessoa Não Cadastrada)',
+          similaridade: `${(trechosDaPessoa[0].similaridade * 100).toFixed(1)}% (${trechosDaPessoa[0].titulo_documento})`,
+          rastro,
+        };
+      } else {
+        // Pessoa não cadastrada NÃO aparece em nenhum documento do Cofre
+        const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+        const artigo = (nomeNaoCadastrado.toLowerCase().endsWith('a') || nomeNaoCadastrado.toLowerCase().endsWith('eia')) ? 'a' : 'o';
+        const textoResposta = `${prefixoSaudacao}Não encontrei informações sobre ${artigo} *${nomeNaoCadastrado}* nos documentos do Cofre.`;
+
+        const rastro = criarRastroFinal({
+          tipoBusca: 'vetorial',
+          docsEncontrados: [],
+          enviouAnexo: false,
+          respostaFinal: textoResposta,
+          modelo: 'Motor Interno',
+        });
+
+        return {
+          textoResposta,
+          origem: 'motor',
+          intencaoDetectada: intencao,
+          perguntaReescrita: classificacao.pergunta_completa || pergunta_reescrita,
+          rastro,
+        };
+      }
+    }
+
     // 0.5. Blindagem de dado pessoal ou informacao de documento sem titular na busca de conteudo/vetorial:
     // Se nao ha pessoa titular definida explicitamente nem no historico recente da conversa,
     // e a pergunta solicita dado pessoal (CPF, RG, CNH, data de nascimento, filiacao, endereco residencial)
@@ -3834,7 +4105,7 @@ DIRETRIZES OBRIGATÓRIAS:
     // nem busca trechos de titular arbitrario: pergunta diretamente o titular.
     const regexDadoPessoalSensivel = /\b(cpf|rg|identidade|endere[cç]o|mora|resid[eê]ncia|m[aã]e|pai|filia[cç][aã]o|nascimento|data\s*(de\s*)?nascimento|vacina|vacinas|vacina[cç][aã]o|covid(-?19)?|imuniza[cç][aã]o|doses?)\b/i;
     const ehTemaCorporativo = /\b(delta|deltaplan|empresa|escrit[oó]rio|sede|obra|proposta|contrato|or[cç]amento)\b/i.test(mensagemUsuario);
-    if (!pessoaIdAlvo && regexDadoPessoalSensivel.test(mensagemUsuario) && !ehTemaCorporativo) {
+    if (!pessoaIdAlvo && !classificacao.pessoa && regexDadoPessoalSensivel.test(mensagemUsuario) && !ehTemaCorporativo) {
       const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
       const textoPerguntaTitular = formatarPerguntaDadoPessoalSemTitular(
         classificacao.campos,
