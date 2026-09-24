@@ -7,6 +7,8 @@ import { getSupabaseClient } from '../db/supabaseClient.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+export const ID_VERSAO_PADRAO_SISTEMA = 'versao_padrao_sistema';
+
 export interface ConfiguracaoVega {
   id: string;
   promptPersona: string;
@@ -33,14 +35,15 @@ export interface ModelosEmUso {
   regrasOficiais: string;
 }
 
-// Fallback padrão seguro caso ocorra falha de rede inicial
+// Fallback de segurança em memória se o banco não responder
 const PROMPT_PADRAO_FALLBACK = `Você é a assistente corporativa VEGA da Delta Plan.
 Seu papel é localizar e fornecer informações de documentos arquivados no Cofre da Delta Plan com agilidade, clareza e precisão absoluta.`;
 
 /**
- * Lê o conteúdo do arquivo físico prompts/assistente.md como fonte da verdade do padrão
+ * Lê o arquivo prompts/assistente.md APENAS como semente inicial para o primeiro provisionamento.
+ * Em tempo de execução e produção (Railway), o sistema nunca depende desse arquivo local.
  */
-function lerPromptPadraoDoArquivo(): string {
+function obterPromptSementeDoArquivo(): string {
   try {
     const caminho = path.resolve(__dirname, '../../../prompts/assistente.md');
     if (fs.existsSync(caminho)) {
@@ -48,17 +51,52 @@ function lerPromptPadraoDoArquivo(): string {
       if (conteudo) return conteudo;
     }
   } catch (err) {
-    console.warn('[Config VEGA ⚠️] Não foi possível ler prompts/assistente.md:', err);
+    console.warn('[Config VEGA ⚠️] prompts/assistente.md não encontrado no disco local. Usando fallback em memória.');
   }
   return PROMPT_PADRAO_FALLBACK;
 }
 
-// Cache em memória do processo Node.js (garante leitura com 0ms e efeito imediato)
+// Caches em memória do processo Node.js (garante leitura em 0ms e efeito imediato)
 let cacheConfiguracao: ConfiguracaoVega | null = null;
+let cachePromptPadraoSistema: string | null = null;
+
+/**
+ * Retorna o prompt padrão gravado de forma permanente no Supabase.
+ * Nunca lê arquivo local em tempo de execução, garantindo imunidade à perda de disco no Railway.
+ */
+export async function obterPromptPadraoSistema(): Promise<{ promptPersona: string; temperaturaResposta: number }> {
+  if (cachePromptPadraoSistema) {
+    return { promptPersona: cachePromptPadraoSistema, temperaturaResposta: 0.1 };
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data } = await supabase
+      .from('configuracoes_vega_historico')
+      .select('prompt_persona, temperatura_resposta')
+      .eq('id', ID_VERSAO_PADRAO_SISTEMA)
+      .maybeSingle();
+
+    if (data?.prompt_persona) {
+      cachePromptPadraoSistema = data.prompt_persona;
+      return {
+        promptPersona: data.prompt_persona,
+        temperaturaResposta: Number(data.temperatura_resposta ?? 0.1),
+      };
+    }
+  } catch (err) {
+    console.warn('[Config VEGA ⚠️] Falha ao consultar versao_padrao_sistema no Supabase:', err);
+  }
+
+  // Fallback para semente inicial caso o banco ainda não possua o registro
+  const semente = obterPromptSementeDoArquivo();
+  cachePromptPadraoSistema = semente;
+  return { promptPersona: semente, temperaturaResposta: 0.1 };
+}
 
 /**
  * Retorna a configuração em cache de forma síncrona para chamadas de alta performance no chat.
- * Se o cache ainda não estiver pronto, retorna o fallback padrão.
+ * Se o cache ainda não estiver pronto, retorna o fallback padrão sem tocar em disco.
  */
 export function obterConfiguracoesVegaSync(): ConfiguracaoVega {
   if (cacheConfiguracao) {
@@ -66,7 +104,7 @@ export function obterConfiguracoesVegaSync(): ConfiguracaoVega {
   }
   return {
     id: 'config_padrao',
-    promptPersona: lerPromptPadraoDoArquivo(),
+    promptPersona: cachePromptPadraoSistema || PROMPT_PADRAO_FALLBACK,
     temperaturaResposta: 0.1,
     atualizadoPorNome: 'Sistema (Inicial)',
     atualizadoPorId: 'sistema',
@@ -75,23 +113,49 @@ export function obterConfiguracoesVegaSync(): ConfiguracaoVega {
 
 /**
  * Inicializa e aquece o cache de configurações na inicialização do servidor.
- * Semeia o Supabase se a tabela estiver vazia.
+ * Semeia o Supabase se as tabelas estiverem sem a semente permanente.
  */
 export async function inicializarConfiguracoesVega(): Promise<ConfiguracaoVega> {
   try {
     const supabase = getSupabaseClient();
+
+    // 1. Garante que a versão padrão permanente do sistema exista no histórico do Supabase
+    const { data: registroPadraoSistema } = await supabase
+      .from('configuracoes_vega_historico')
+      .select('prompt_persona, temperatura_resposta')
+      .eq('id', ID_VERSAO_PADRAO_SISTEMA)
+      .maybeSingle();
+
+    if (!registroPadraoSistema) {
+      console.log('[Config VEGA ℹ️] Gravando semente permanente do prompt padrão no Supabase (id = versao_padrao_sistema)...');
+      const promptSemente = obterPromptSementeDoArquivo();
+      await supabase.from('configuracoes_vega_historico').upsert({
+        id: ID_VERSAO_PADRAO_SISTEMA,
+        prompt_persona: promptSemente,
+        temperatura_resposta: 0.1,
+        autor_nome: 'Sistema (Semente Oficial)',
+        autor_id: 'sistema',
+        motivo: 'padrao_sistema',
+        criado_em: new Date().toISOString(),
+      });
+      cachePromptPadraoSistema = promptSemente;
+    } else {
+      cachePromptPadraoSistema = registroPadraoSistema.prompt_persona;
+    }
+
+    // 2. Consulta o registro ativo atual em configuracoes_vega
     const { data, error } = await supabase
       .from('configuracoes_vega')
       .select('*')
       .eq('id', 'config_padrao')
-      .single();
+      .maybeSingle();
 
     if (error || !data) {
-      console.log('[Config VEGA ℹ️] Registro de configuração não encontrado no Supabase. Criando padrão inicial...');
-      const promptPadrao = lerPromptPadraoDoArquivo();
+      console.log('[Config VEGA ℹ️] Registro de configuração não encontrado no Supabase. Criando registro ativo inicial...');
+      const promptAtivo = cachePromptPadraoSistema || PROMPT_PADRAO_FALLBACK;
       const novoRegistro = {
         id: 'config_padrao',
-        prompt_persona: promptPadrao,
+        prompt_persona: promptAtivo,
         temperatura_resposta: 0.1,
         atualizado_por_nome: 'Sistema (Inicialização)',
         atualizado_por_id: 'sistema',
@@ -100,21 +164,9 @@ export async function inicializarConfiguracoesVega(): Promise<ConfiguracaoVega> 
 
       await supabase.from('configuracoes_vega').upsert(novoRegistro);
 
-      // Registra no histórico
-      const idVersao = `ver-${Date.now()}-inicial`;
-      await supabase.from('configuracoes_vega_historico').insert({
-        id: idVersao,
-        prompt_persona: promptPadrao,
-        temperatura_resposta: 0.1,
-        autor_nome: 'Sistema (Inicialização)',
-        autor_id: 'sistema',
-        motivo: 'versao_inicial',
-        criado_em: new Date().toISOString(),
-      });
-
       cacheConfiguracao = {
         id: 'config_padrao',
-        promptPersona: promptPadrao,
+        promptPersona: promptAtivo,
         temperaturaResposta: 0.1,
         atualizadoPorNome: 'Sistema (Inicialização)',
         atualizadoPorId: 'sistema',
@@ -141,7 +193,7 @@ export async function inicializarConfiguracoesVega(): Promise<ConfiguracaoVega> 
     if (!cacheConfiguracao) {
       cacheConfiguracao = {
         id: 'config_padrao',
-        promptPersona: lerPromptPadraoDoArquivo(),
+        promptPersona: cachePromptPadraoSistema || PROMPT_PADRAO_FALLBACK,
         temperaturaResposta: 0.1,
         atualizadoPorNome: 'Fallback Local',
         atualizadoPorId: 'local',
@@ -236,16 +288,17 @@ export async function salvarConfiguracoesVega(dados: {
 }
 
 /**
- * Restaura o prompt padrão original a partir de prompts/assistente.md com temperatura 0.1
+ * Restaura o prompt padrão buscando a semente gravada no Supabase (id = versao_padrao_sistema).
+ * NUNCA lê do disco local no Railway.
  */
 export async function restaurarPadraoVega(autor: {
   autorNome: string;
   autorId: string;
 }): Promise<ConfiguracaoVega> {
-  const promptPadrao = lerPromptPadraoDoArquivo();
+  const padrao = await obterPromptPadraoSistema();
   return salvarConfiguracoesVega({
-    promptPersona: promptPadrao,
-    temperaturaResposta: 0.1,
+    promptPersona: padrao.promptPersona,
+    temperaturaResposta: padrao.temperaturaResposta,
     autorNome: autor.autorNome,
     autorId: autor.autorId,
     motivo: 'restauracao_padrao',

@@ -10,14 +10,17 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 import {
   inicializarConfiguracoesVega,
   obterConfiguracoesVegaSync,
-  obterConfiguracoesVega,
   salvarConfiguracoesVega,
   restaurarPadraoVega,
   obterHistoricoVersoes,
   restaurarVersaoHistorico,
   obterModelosEmUso,
+  obterPromptPadraoSistema,
+  ID_VERSAO_PADRAO_SISTEMA,
 } from '../config/configuracoesVegaService.js';
 import { exigirAdmin } from '../auth/authMiddleware.js';
+import { gerarTokenSessao, validarTokenSessao } from '../auth/authService.js';
+import { getSupabaseClient } from '../db/supabaseClient.js';
 
 let totalPassos = 0;
 let sucessos = 0;
@@ -40,7 +43,7 @@ async function rodarTestes() {
   console.log('===============================================================\n');
 
   // -------------------------------------------------------------
-  // Teste 1: Inicialização e Leitura dos Modelos Homologados
+  // Teste 1: Modelos Homologados em Uso (Apenas Leitura)
   // -------------------------------------------------------------
   console.log('--- Teste 1: Modelos Homologados em Uso (Apenas Leitura) ---');
   const modelos = obterModelosEmUso();
@@ -55,7 +58,7 @@ async function rodarTestes() {
   );
 
   // -------------------------------------------------------------
-  // Teste 2: Inicialização e Leitura da Configuração no Supabase
+  // Teste 2: Inicialização no Supabase e Leitura Síncrona
   // -------------------------------------------------------------
   console.log('\n--- Teste 2: Inicialização no Supabase e Leitura Síncrona ---');
   const configCarregada = await inicializarConfiguracoesVega();
@@ -136,21 +139,41 @@ async function rodarTestes() {
   }
 
   // -------------------------------------------------------------
-  // Teste 5: Restauração do Padrão Oficial (prompts/assistente.md)
+  // Teste 5: Restauração do Padrão a partir do Supabase (Zero Disco)
   // -------------------------------------------------------------
-  console.log('\n--- Teste 5: Restauração do Padrão Oficial (prompts/assistente.md) ---');
-  const configPadrao = await restaurarPadraoVega({
+  console.log('\n--- Teste 5: Cópia Padrão Permanente no Supabase (Zero Dependência de Disco) ---');
+  const supabase = getSupabaseClient();
+  const { data: registroPadraoSistema, error: erroPadrao } = await supabase
+    .from('configuracoes_vega_historico')
+    .select('*')
+    .eq('id', ID_VERSAO_PADRAO_SISTEMA)
+    .single();
+
+  asserir(!erroPadrao && !!registroPadraoSistema, `Registro id='${ID_VERSAO_PADRAO_SISTEMA}' existe no Supabase`);
+  asserir(
+    registroPadraoSistema?.prompt_persona?.length > 100,
+    `Prompt padrão permanente no Supabase contém ${registroPadraoSistema?.prompt_persona?.length} caracteres`
+  );
+  asserir(
+    Number(registroPadraoSistema?.temperatura_resposta) === 0.1,
+    'Temperatura da versão padrão permanente no Supabase é exatamente 0.1'
+  );
+
+  const padraoSistemaObtido = await obterPromptPadraoSistema();
+  asserir(
+    padraoSistemaObtido.promptPersona === registroPadraoSistema.prompt_persona,
+    'obterPromptPadraoSistema() retorna a semente direta do banco Supabase'
+  );
+
+  const configPadraoRestaurada = await restaurarPadraoVega({
     autorNome: 'Carlos Eduardo (Admin)',
     autorId: 'admin-carlos',
   });
 
-  const caminhoArquivoPadrao = path.resolve(__dirname, '../../../prompts/assistente.md');
-  const conteudoArquivoPadrao = fs.readFileSync(caminhoArquivoPadrao, 'utf-8').trim();
-
-  asserir(configPadrao.temperaturaResposta === 0.1, 'Temperatura restaurada para o padrão oficial 0.1');
+  asserir(configPadraoRestaurada.temperaturaResposta === 0.1, 'Temperatura restaurada para 0.1');
   asserir(
-    configPadrao.promptPersona.trim() === conteudoArquivoPadrao,
-    'Prompt da persona restaurado fielmente para o arquivo físico prompts/assistente.md'
+    configPadraoRestaurada.promptPersona === registroPadraoSistema.prompt_persona,
+    'restaurarPadraoVega() restaurou o prompt fielmente a partir do Supabase, sem ler disco local'
   );
 
   // -------------------------------------------------------------
@@ -178,49 +201,96 @@ async function rodarTestes() {
   );
 
   // -------------------------------------------------------------
-  // Teste 7: Controle de Acesso Restrito a Administradores
+  // Teste 7: Validação Criptográfica de Admin na Sessão do Servidor
   // -------------------------------------------------------------
-  console.log('\n--- Teste 7: Controle de Acesso do Middleware exigirAdmin ---');
+  console.log('\n--- Teste 7: Controle de Acesso e Imunidade a Fraudes do Navegador ---');
 
-  // Simula usuário comum
-  let bloqueadoUsuarioComum = false;
-  let statusResposta = 0;
-  const reqUsuarioComum: any = {
-    usuario: { userId: 'u1', nome: 'Colaborador Comum', role: 'usuario' },
+  // 7.1 Simula tentativa de envio de role 'admin' no corpo da requisição com sessão de usuário comum
+  let bloqueadoFraudeBody = false;
+  let statusFraude = 0;
+  const reqComRoleFalsificadoNoBody: any = {
+    body: {
+      role: 'admin',
+      usuario: { role: 'admin' },
+      isAdmin: true,
+      promptPersona: 'Tentativa Invasão',
+      temperaturaResposta: 0.9,
+    },
+    query: { role: 'admin' },
+    headers: { 'x-user-role': 'admin' },
+    // O servidor preenche req.usuario via cookie de sessão validado com HMAC
+    usuario: { userId: 'u-comum-1', nome: 'Colaborador Comum', role: 'usuario' },
   };
+
   const resBloqueio: any = {
     status: (code: number) => {
-      statusResposta = code;
+      statusFraude = code;
       return {
         json: (dados: any) => {
           if (code === 403 && dados.sucesso === false) {
-            bloqueadoUsuarioComum = true;
+            bloqueadoFraudeBody = true;
           }
         },
       };
     },
   };
   const nextNaoChamado = () => {
-    throw new Error('Next não deveria ser chamado para usuário comum!');
+    throw new Error('Next jamais deve ser chamado quando a sessão do servidor for de role "usuario"!');
   };
 
-  exigirAdmin(reqUsuarioComum, resBloqueio, nextNaoChamado);
+  exigirAdmin(reqComRoleFalsificadoNoBody, resBloqueio, nextNaoChamado);
   asserir(
-    bloqueadoUsuarioComum && statusResposta === 403,
-    'Middleware exigirAdmin bloqueia usuário comum com HTTP 403 Forbidden'
+    bloqueadoFraudeBody && statusFraude === 403,
+    'Tentativa do navegador de enviar { role: "admin" } no body/headers é sumariamente bloqueada com HTTP 403'
   );
 
-  // Simula administrador
-  let autorizadoAdmin = false;
-  const reqAdmin: any = {
-    usuario: { userId: 'admin-1', nome: 'Administrador', role: 'admin' },
+  // 7.2 Simula requisição sem sessão (usuário deslogado)
+  let bloqueadoSemSessao = false;
+  const reqSemSessao: any = {};
+  exigirAdmin(reqSemSessao, resBloqueio, nextNaoChamado);
+  asserir(statusFraude === 403, 'Requisição sem sessão autenticada é bloqueada com HTTP 403');
+
+  // 7.3 Valida integridade criptográfica HMAC do token de sessão
+  const tokenUsuarioComum = gerarTokenSessao({
+    userId: 'u-legitimo-comum',
+    nome: 'Colaborador Delta',
+    role: 'usuario',
+    authType: 'usuario_senha',
+  });
+
+  const sessaoDecodificada = validarTokenSessao(tokenUsuarioComum);
+  asserir(
+    sessaoDecodificada?.role === 'usuario',
+    'Token legítimo emitido pelo servidor decodifica fielmente role="usuario"'
+  );
+
+  // Tentativa de adulterar o payload do token para tentar virar admin
+  const partes = tokenUsuarioComum.split('.');
+  const payloadJson = Buffer.from(partes[0], 'base64url').toString('utf-8');
+  const payloadAdulterado = JSON.parse(payloadJson);
+  payloadAdulterado.role = 'admin';
+  const tokenFalsificado = `${Buffer.from(JSON.stringify(payloadAdulterado), 'utf-8').toString('base64url')}.${partes[1]}`;
+
+  const sessaoFalsificada = validarTokenSessao(tokenFalsificado);
+  asserir(
+    sessaoFalsificada === null,
+    'Token com payload adulterado no cliente falha na verificação de assinatura HMAC e é rejeitado (retorna null)'
+  );
+
+  // 7.4 Usuário com sessão genuína de admin no servidor
+  let autorizadoAdminGenuino = false;
+  const reqAdminGenuino: any = {
+    usuario: { userId: 'admin-master', nome: 'Administrador Homologado', role: 'admin' },
   };
   const nextChamado = () => {
-    autorizadoAdmin = true;
+    autorizadoAdminGenuino = true;
   };
 
-  exigirAdmin(reqAdmin, resBloqueio, nextChamado);
-  asserir(autorizadoAdmin, 'Middleware exigirAdmin autoriza usuário com role "admin" com sucesso');
+  exigirAdmin(reqAdminGenuino, resBloqueio, nextChamado);
+  asserir(
+    autorizadoAdminGenuino,
+    'Sessão genuína de administrador validada pelo servidor recebe autorização imediata'
+  );
 
   // -------------------------------------------------------------
   // Resultado Final

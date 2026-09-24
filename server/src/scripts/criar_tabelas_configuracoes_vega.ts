@@ -94,6 +94,31 @@ async function criarTabelasConfiguracoesVega() {
       console.log('✔ Registro de configuração já existente.');
     }
 
+    // 5. Garantir que a versão padrão permanente do sistema exista no histórico (zero dependência de disco no Railway)
+    const checagemPadraoSistema = await client.query(
+      `SELECT id FROM public.configuracoes_vega_historico WHERE id = 'versao_padrao_sistema'`
+    );
+    if (checagemPadraoSistema.rows.length === 0) {
+      console.log('5. Gravando cópia permanente do prompt padrão no Supabase (id = versao_padrao_sistema)...');
+      const caminhoPrompt = path.resolve(__dirname, '../../../prompts/assistente.md');
+      let promptPadrao = '';
+      if (fs.existsSync(caminhoPrompt)) {
+        promptPadrao = fs.readFileSync(caminhoPrompt, 'utf-8').trim();
+      } else {
+        promptPadrao = 'Você é a assistente corporativa VEGA da Delta Plan.';
+      }
+
+      await client.query(
+        `INSERT INTO public.configuracoes_vega_historico (id, prompt_persona, temperatura_resposta, autor_nome, autor_id, motivo)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (id) DO NOTHING`,
+        ['versao_padrao_sistema', promptPadrao, 0.1, 'Sistema (Semente Oficial)', 'sistema', 'padrao_sistema']
+      );
+      console.log('✔ Cópia padrão permanente gravada no Supabase.');
+    } else {
+      console.log('✔ Versão padrão permanente já registrada no Supabase.');
+    }
+
     console.log('Migração de Configurações da VEGA concluída com sucesso!');
   } finally {
     await client.end();
