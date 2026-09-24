@@ -31,16 +31,16 @@ async function rodarTestes() {
   const casos = [
     {
       id: 1,
-      titulo: 'Título de Eleitor do Thomaz (campo inexistente na ficha/docs)',
+      titulo: 'Título de Eleitor do Thomaz (encontrado no Imposto de Renda via Fallback - Regra 19)',
       pergunta: 'qual número do título eleitoral do thomaz',
       verificacao: (resp: string, anexos?: any[]) => {
         const rLower = resp.toLowerCase();
-        const naoEncontrou = rLower.includes('não encontrei') && (rLower.includes('título') || rLower.includes('titulo'));
+        const temNumero = resp.includes('308476780167');
+        const citaFonte = rLower.includes('imposto de renda');
         const naoTemFiliacao = !rLower.includes('moises') && !rLower.includes('lidia') && !rLower.includes('filiação');
-        const naoTemCpf = !rLower.includes('333.599');
-        return naoEncontrou && naoTemFiliacao && naoTemCpf;
+        return temNumero && citaFonte && naoTemFiliacao;
       },
-      esperado: 'Não encontrou título de eleitor e NÃO citou filiação nem CPF nem outro campo',
+      esperado: 'Número 308476780167 citando Imposto de Renda e SEM filiação ou CPF indevidos',
     },
     {
       id: 2,

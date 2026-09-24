@@ -139,4 +139,21 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
   - *Busca vetorial e trechos:* Na ausência inequívoca do dado solicitado no trecho, a IA deve responder estritamente que não encontrou o dado solicitado nos documentos, sem jamais substituir por filiação, CPF, RG, datas de outros fatos ou dados de terceiros.
   - *Guardrail e Verificação Final:* Toda resposta gerada passa por verificação antes do envio. Se a resposta contiver um campo divergente do que foi expressamente perguntado (ex.: usuário perguntou título eleitoral e a resposta contém filiação ou CPF), a mensagem é interceptada e substituída pela resposta padrão de não encontrado nos documentos.
 
+---
+
+## 18. Confirmação Estrita de Documento Ofertado vs. Novas Perguntas
+- **Aceite estrito:** Somente mensagens curtas e inequivocamente afirmativas (`"sim"`, `"pode mandar"`, `"manda"`, `"quero"`, `"isso"`, `"por favor"`, `"ok"`, `"claro"`, `"1"`, `"2"`, `"o primeiro"`) ou que citem especificamente o tipo ou título do documento ofertado constituem aceite de documento oferecido.
+- **Proibição absoluta de captura por nome de titular:** Uma mensagem NUNCA pode ser considerada aceite de documento apenas por conter o nome do titular (ex.: a palavra `"Thomaz"` em uma mensagem seguinte jamais autoriza disparar o envio de documento ofertado).
+- **Prevalência de nova pergunta:** Qualquer mensagem que contenha ponto de interrogação (`?`), pronomes ou verbos interrogativos (`qual`, `quando`, `onde`, `quem`, `quanto`, `como`, `por que`, `cadê`, `me diga`, `informa`) ou que solicite uma nova informação deve ser processada como uma nova consulta independente, cancelando a expectativa de confirmação do documento ofertado.
+
+---
+
+## 19. Fallback Obrigatório em Duas Camadas para Dados Cadastrais
+- **Duas camadas obrigatórias:** Quando uma informação pessoal ou cadastral de um titular for solicitada, a VEGA deve consultar obrigatoriamente duas camadas antes de emitir resposta de não encontrado:
+  1. *Camada 1 (Ficha Cadastral Estruturada):* Consulta aos campos estruturados da tabela `titulares`.
+  2. *Camada 2 (Trechos dos Documentos do Titular):* Busca híbrida (palavra-chave direta + busca vetorial semântica) na tabela `trechos`, restrita estritamente aos documentos vinculados àquele titular.
+- **Resposta de campo inexistente condicionada:** A resposta `"Não encontrei [campo] d[prep] [titular] nos documentos."` só pode ser emitida se o dado falhar comprovadamente em AMBAS as camadas.
+- **Citação do documento fonte:** Ao localizar a informação nos trechos de algum documento do titular (ex.: Título Eleitoral localizado na Declaração de Imposto de Renda), a VEGA deve responder com o dado exato e oferecer o envio do documento oficial de origem.
+
+
 

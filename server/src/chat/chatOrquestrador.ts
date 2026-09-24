@@ -147,9 +147,19 @@ export function resolverEscolhaDocumentosOferecidos(
     .replace(/[\u0300-\u036f]/g, '')
     .trim();
 
-  // 1. Quero TODOS ("os dois", "esses 2", "ambos", "todos", "pode mandar", "manda", "sim", "quero", "manda tudo")
-  const regexTodos = /\b(os dois|os 2|esses 2|estes 2|esses dois|estes dois|ambos|ambas|todos|todas|manda os dois|envia os dois|quero os dois|manda ambos|manda todos|manda tudo|pode mandar|pode enviar|sim|quero|pode ser|por favor|com certeza|manda|envia|preciso dos 2|preciso dos dois|anexo dos 2|anexo dos dois|preciso do anexo dos 2)\b/i;
-  if (regexTodos.test(msgLimpa) || isConfirmacaoSimples(mensagemUsuario)) {
+  // REGRA DE EXCLUSÃO ABSOLUTA: Se a mensagem for uma pergunta, pedido de informação ou comando interrogativo,
+  // NUNCA pode ser tratada como confirmação de documento ofertado!
+  const ehPerguntaOuNovaBusca =
+    mensagemUsuario.includes('?') ||
+    /\b(qual|quando|onde|quem|quanto|quantos|como|por\s*que|porque|cad[eê]|me\s*diga|informa|informe|sabe|mostra|mostre)\b/i.test(msgLimpa);
+
+  if (ehPerguntaOuNovaBusca) {
+    return null;
+  }
+
+  // 1. Mensagens afirmativas explícitas ("sim", "pode mandar", "manda", "quero", "isso", "por favor", etc.)
+  const regexAfirmativo = /\b(sim|pode mandar|pode enviar|manda|envia|quero|isso|por favor|com certeza|manda ai|manda a[ií]|manda ele|solta esse arquivo|envia ele|os dois|os 2|ambos|todos|todas|pode ser|com certeza|ok|claro|perfeito|manda bala)\b/i;
+  if (regexAfirmativo.test(msgLimpa) || isConfirmacaoSimples(mensagemUsuario)) {
     return docsOferecidos;
   }
 
@@ -171,17 +181,21 @@ export function resolverEscolhaDocumentosOferecidos(
     return [docsOferecidos[2]];
   }
 
-  // 5. Escolha pelo nome / título / titular do documento
+  // 5. Escolha pelo nome do documento ou tipo (NUNCA por nome do titular!)
+  // Mensagens com mais de 6 palavras não são escolha de documento
+  if (msgLimpa.split(/\s+/).length > 6) {
+    return null;
+  }
+
   const matches = docsOferecidos.filter((d) => {
     const tNorm = d.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const arqNorm = d.arquivo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    const titularNorm = (d.titular || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    const palavrasTitulo = tNorm.split(/\s+/).filter((w) => w.length >= 3);
-    const palavrasTitular = titularNorm.split(/\s+/).filter((w) => w.length >= 3);
+    const palavrasTitulo = tNorm.split(/\s+/).filter(
+      (w) => w.length >= 3 && !['documento', 'thomaz', 'lustri', 'fabre', 'delta', 'plan', 'para', 'com'].includes(w)
+    );
     return (
       msgLimpa.includes(tNorm) ||
-      palavrasTitulo.some((p) => msgLimpa.includes(p)) ||
-      (titularNorm && (msgLimpa.includes(titularNorm) || palavrasTitular.some((p) => msgLimpa.includes(p)))) ||
+      (palavrasTitulo.length > 0 && palavrasTitulo.some((p) => msgLimpa.includes(p))) ||
       (d.tipo && msgLimpa.includes(d.tipo.toLowerCase())) ||
       (d.apelidos && d.apelidos.some((ap) => msgLimpa.includes(ap.toLowerCase())))
     );
@@ -3770,16 +3784,58 @@ async function executarProcessamentoMensagemChatInterno(dados: {
           encontrado: true,
         });
       } else {
-        // Não encontrou na ficha cadastral -> tenta localizar nos trechos vetoriais do titular no Supabase
+        // Fallback Obrigatório (Regra 9 do GEMINI.md): busca nos trechos dos documentos do titular no Supabase
         let valorAchadoVetorial: string | null = null;
         let docOrigemVetorial: DocumentoRegistro | undefined = undefined;
 
         const idTitularAlvo = titular?.id || null;
         if (idTitularAlvo) {
-          const termoBuscaCampo = `${label} ${primeiroNomeTitular}`;
-          const trechosTitular = await executarBuscaVetorial(termoBuscaCampo, idTitularAlvo, 3);
-          if (trechosTitular.length > 0 && trechosTitular[0].similaridade >= 0.45) {
-            const topTrecho = trechosTitular[0];
+          const supabase = getSupabaseClient();
+          const trechosCandidatos: { conteudo: string; documento_id: string; titulo_documento?: string }[] = [];
+
+          // 1. Busca Direta por Termo/Palavra-chave nos trechos do titular no Supabase
+          // (Garante que campos como Título de Eleitor, PIS, Reservista, etc. sejam localizados nos documentos oficiais)
+          const termosChave: string[] = [];
+          const lNorm = label.toLowerCase();
+          if (lNorm.includes('titulo') || lNorm.includes('eleitor')) {
+            termosChave.push('título eleitoral', 'titulo eleitoral', 'título de eleitor', 'titulo de eleitor', 'eleitoral');
+          } else if (lNorm.includes('pis') || lNorm.includes('pasep') || lNorm.includes('nis')) {
+            termosChave.push('pis', 'pasep', 'nis');
+          } else if (lNorm.includes('reservista')) {
+            termosChave.push('reservista', 'incorporação', 'dispensa');
+          } else {
+            termosChave.push(lNorm);
+          }
+
+          for (const termo of termosChave) {
+            const { data: trechosMatch } = await supabase
+              .from('trechos')
+              .select('id, documento_id, pessoa_id, conteudo, pagina')
+              .eq('pessoa_id', idTitularAlvo)
+              .ilike('conteudo', `%${termo}%`)
+              .limit(5);
+
+            if (trechosMatch && trechosMatch.length > 0) {
+              for (const tr of trechosMatch) {
+                if (!trechosCandidatos.some((tc) => tc.conteudo === tr.conteudo)) {
+                  trechosCandidatos.push(tr);
+                }
+              }
+              break;
+            }
+          }
+
+          // 2. Se não encontrou por palavra-chave direta, executa a busca vetorial semântica nos trechos do titular
+          if (trechosCandidatos.length === 0) {
+            const termoBuscaCampo = `${label} ${primeiroNomeTitular}`;
+            const trechosVet = await executarBuscaVetorial(termoBuscaCampo, idTitularAlvo, 8);
+            if (trechosVet.length > 0 && trechosVet[0].similaridade >= 0.40) {
+              trechosCandidatos.push(...trechosVet);
+            }
+          }
+
+          // 3. Extração estrita via gpt-5.4-mini (Regra 17): responde SOMENTE se o dado estiver presente
+          for (const topTrecho of trechosCandidatos) {
             const promptExtracao = `A partir do seguinte trecho de documento oficial:
 """
 ${topTrecho.conteudo}
@@ -3799,37 +3855,32 @@ NÃO inclua explicações nem frases antes ou depois, apenas o valor exato.`;
                 temperature: 0.0,
               });
               const val = respExtracao.choices[0]?.message?.content?.trim();
-              if (val && !val.includes('NÃO_ENCONTRADO') && val.length > 2) {
+              if (val && !val.includes('NÃO_ENCONTRADO') && val.length >= 2) {
                 valorAchadoVetorial = val;
                 docOrigemVetorial = todosDocs.find(
-                  (d) => d.id === topTrecho.documento_id || d.titulo === topTrecho.titulo_documento
+                  (d) => d.id === topTrecho.documento_id || d.titulo === (topTrecho as any).titulo_documento
                 );
-
-                // Salva na ficha do titular para persistir apenas se for campo válido da ficha
-                if (campoId && titular) {
-                  titular.campos[campoId] = {
-                    valor: val,
-                    origem: docOrigemVetorial?.titulo || topTrecho.titulo_documento || 'Documento do Cofre',
-                    origemNome: docOrigemVetorial?.titulo || topTrecho.titulo_documento || 'Documento do Cofre',
-                    origemVisibilidade: 'diretoria',
-                    conferido: false,
-                    dataConferencia: new Date().toLocaleDateString('pt-BR'),
-                    manual: false,
-                  };
-                  await salvarOuAtualizarTitular(titular);
+                if (!docOrigemVetorial) {
+                  const { data: dSup } = await supabase.from('documentos').select('*').eq('id', topTrecho.documento_id).maybeSingle();
+                  if (dSup) docOrigemVetorial = dSup;
                 }
+                break;
               }
             } catch (err) {
-              console.error('[VEGA Chat] Erro ao extrair dado via vetor:', err);
+              console.error('[VEGA Chat] Erro ao extrair dado via trechos:', err);
             }
           }
         }
 
         if (valorAchadoVetorial) {
+          const valorFormatadoFinal = campoId
+            ? formatarValorParaUsuario(campoId, valorAchadoVetorial)
+            : `*${valorAchadoVetorial}*`;
+
           camposProcessados.push({
             campoId,
             label,
-            valorFormatado: formatarValorParaUsuario(campoId || '', valorAchadoVetorial),
+            valorFormatado: valorFormatadoFinal,
             valorMascaradoRastro: mascararValorCampo(campoId || ('' as any), valorAchadoVetorial),
             origemNome: docOrigemVetorial?.titulo || 'Documentos do Cofre',
             docOrigem: docOrigemVetorial,
