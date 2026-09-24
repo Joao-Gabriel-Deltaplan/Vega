@@ -36,7 +36,7 @@ function gerarPdfProtegido(senha: string): Promise<Buffer> {
 
     doc.fontSize(16).text('Apólice de Seguro Delta Protegido', { underline: true });
     doc.moveDown();
-    doc.fontSize(12).text('Titular do Documento: Thomaz');
+    doc.fontSize(12).text('Titular do Documento: Titular Teste');
     doc.text('Veículo Coberto: Caminhão Volvo FH 540');
     doc.text('Seguradora: Porto Seguro Cia');
     doc.text('Vigência da Apólice: 10/05/2026 até 10/05/2027');

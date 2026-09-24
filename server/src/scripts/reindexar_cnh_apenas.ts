@@ -11,7 +11,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 async function main() {
   const supabase = getSupabaseClient();
   console.log('1. Apagando registro anterior da CNH...');
-  const { data: doc } = await supabase.from('documentos').select('id').eq('arquivo', 'CNH DIGITAL THOMAZ.pdf').maybeSingle();
+  const { data: doc } = await supabase.from('documentos').select('id').eq('arquivo', 'CNH_DIGITAL.pdf').maybeSingle();
   if (doc) {
     await supabase.from('trechos').delete().eq('documento_id', doc.id);
     await supabase.from('documentos').delete().eq('id', doc.id);
@@ -21,7 +21,7 @@ async function main() {
   await rodarIndexacao(['doc-1789395047417']);
 
   console.log('\n3. Trechos gerados da CNH no Supabase:');
-  const { data: novoDoc } = await supabase.from('documentos').select('id, titulo, arquivo').eq('arquivo', 'CNH DIGITAL THOMAZ.pdf').single();
+  const { data: novoDoc } = await supabase.from('documentos').select('id, titulo, arquivo').eq('arquivo', 'CNH_DIGITAL.pdf').single();
   if (novoDoc) {
     const { data: trechos } = await supabase.from('trechos').select('pagina, conteudo').eq('documento_id', novoDoc.id);
     trechos?.forEach((t, i) => {

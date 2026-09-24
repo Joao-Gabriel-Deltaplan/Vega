@@ -32,13 +32,13 @@ async function executarTestesLid() {
   }
 
   // 1. Teste de busca direta por LID
-  await testar('buscarUsuarioPorNumero deve encontrar Joao Gabriel pelo LID "176948374462673"', async () => {
+  await testar('buscarUsuarioPorNumero deve encontrar Usuario Teste pelo LID "176948374462673"', async () => {
     const usuario = await buscarUsuarioPorNumero('176948374462673@lid');
     return Boolean(usuario && usuario.nome.includes('Joao') && usuario.perfil === 'admin');
   });
 
   // 2. Teste de evento da Evolution com @lid E senderPn presente
-  await testar('Processar evento com @lid e senderPn="5514996863115@s.whatsapp.net"', async () => {
+  await testar('Processar evento com @lid e senderPn="5500000000000@s.whatsapp.net"', async () => {
     const evento = {
       event: 'messages.upsert',
       instance: 'DeltaPlan',
@@ -46,9 +46,9 @@ async function executarTestesLid() {
         remoteJid: '176948374462673@lid',
         fromMe: false,
         id: `test-lid-pn-${Date.now()}`,
-        senderPn: '5514996863115@s.whatsapp.net',
+        senderPn: '5500000000000@s.whatsapp.net',
       },
-      pushName: 'Joao Gabriel',
+      pushName: 'Usuario Teste',
       message: {
         conversation: 'Olá Vega teste senderPn',
       },
@@ -72,7 +72,7 @@ async function executarTestesLid() {
         fromMe: false,
         id: `test-lid-puro-${Date.now()}`,
       },
-      pushName: 'Joao Gabriel',
+      pushName: 'Usuario Teste',
       message: {
         conversation: 'Olá Vega teste lid puro',
       },
@@ -111,12 +111,12 @@ async function executarTestesLid() {
   });
 
   // 5. Teste de evento normal (sem LID, formato tradicional @s.whatsapp.net)
-  await testar('Processar evento tradicional com remoteJid="5514996863115@s.whatsapp.net"', async () => {
+  await testar('Processar evento tradicional com remoteJid="5500000000000@s.whatsapp.net"', async () => {
     const evento = {
       event: 'messages.upsert',
       instance: 'DeltaPlan',
       key: {
-        remoteJid: '5514996863115@s.whatsapp.net',
+        remoteJid: '5500000000000@s.whatsapp.net',
         fromMe: false,
         id: `test-tradicional-${Date.now()}`,
       },
@@ -128,7 +128,7 @@ async function executarTestesLid() {
     const res = await processarEventoEvolution(evento);
     return (
       res.sucesso === true &&
-      res.destinatario === '5514996863115@s.whatsapp.net' &&
+      res.destinatario === '5500000000000@s.whatsapp.net' &&
       res.usuario?.nome.includes('Joao') === true
     );
   });

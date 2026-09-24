@@ -9,12 +9,18 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 import { extrairTitularExplicito, buscarDocumentos } from '../busca/motor.js';
 import { extrairNomeTitularDaMensagem } from '../busca/intencao.js';
 import { processarMensagemChat } from '../chat/chatOrquestrador.js';
+import { obterTodosTitulares } from '../storage.js';
+import { extrairPrimeiroNome } from '../utils/nomeUtils.js';
 import { Contato, DocumentoRegistro, Mensagem } from '../types.js';
 
 async function rodarTestes() {
   console.log('===============================================================');
   console.log('TESTES DE RECONHECIMENTO ESTRITO DE TITULARES (SEM REGEX POSICIONAL)');
   console.log('===============================================================\n');
+
+  const todosTitulares = await obterTodosTitulares();
+  const titularTeste = todosTitulares[0] || { id: 'tit_teste', nome: 'Titular Teste' };
+  const primeiroNome = extrairPrimeiroNome(titularTeste.nome) || titularTeste.nome;
 
   // PARTE 1: Testes unitários de extração determinística
   console.log('--- PARTE 1: Testes Unitários de Extração de Titular ---');
@@ -23,10 +29,11 @@ async function rodarTestes() {
     { texto: 'me manda a certidão de óbito', esperado: null },
     { texto: 'contrato de locação', esperado: null },
     { texto: 'certidão de casamento', esperado: null },
-    { texto: 'certidão de casamento do thomaz', esperado: 'Thomaz' },
+    { texto: `certidão de casamento de ${primeiroNome}`, esperado: titularTeste.nome },
     { texto: 'termo de rescisão', esperado: null },
     { texto: 'comprovante de residência', esperado: null },
-    { texto: 'cnh do thomaz', esperado: 'Thomaz' },
+    { texto: `cnh de ${primeiroNome}`, esperado: titularTeste.nome },
+    { texto: 'certidão de casamento de FulanoInexistente123', esperado: null },
   ];
 
   let passouTodosUnitarios = true;
@@ -36,7 +43,7 @@ async function rodarTestes() {
     const resIntencao = extrairNomeTitularDaMensagem(c.texto);
 
     const motorOk = c.esperado === null ? resMotor === null : resMotor?.toLowerCase() === c.esperado.toLowerCase();
-    const intencaoOk = c.esperado === null ? resIntencao === null : resIntencao?.toLowerCase().includes(c.esperado.toLowerCase());
+    const intencaoOk = c.esperado === null ? resIntencao === null : resIntencao?.toLowerCase().includes(c.esperado.toLowerCase()) || c.esperado.toLowerCase().includes(resIntencao?.toLowerCase() || '');
 
     console.log(`Frase: "${c.texto}"`);
     console.log(`  -> extrairTitularExplicito (motor.ts): "${resMotor}" [${motorOk ? '✅ CORRETO' : '❌ FALHOU'}]`);
@@ -54,12 +61,12 @@ async function rodarTestes() {
 
   const contatoJoao: Contato = {
     id: 'user-joao',
-    nome: 'João Gabriel',
-    telefone: '5511999999999',
+    nome: 'Usuario Teste',
+    telefone: '5500000000005',
     avatarCor: '#10b981',
     nivelAcesso: 'diretoria',
     ficha: {
-      nome: 'João Gabriel',
+      nome: 'Usuario Teste',
       nivelAcesso: 'diretoria',
     } as any,
   };
@@ -67,20 +74,22 @@ async function rodarTestes() {
   const docsDisponiveis: DocumentoRegistro[] = [
     {
       id: 'doc-casamento-1',
-      titulo: 'Certidão de Casamento - Thomaz',
-      arquivo: 'certidao_casamento_thomaz.pdf',
+      titulo: `Certidão de Casamento - ${titularTeste.nome}`,
+      arquivo: 'certidao_casamento_teste.pdf',
       tipo: 'Certidão de Casamento',
-      titular: 'Thomaz',
+      titular: titularTeste.nome,
+      titularId: titularTeste.id,
       apelidos: ['certidão', 'casamento', 'certidão de casamento'],
       tamanho: '1024 KB',
       visibilidade: 'diretoria',
     },
     {
       id: 'doc-cnh-1',
-      titulo: 'CNH - Thomaz',
-      arquivo: 'cnh_thomaz.pdf',
+      titulo: `CNH - ${titularTeste.nome}`,
+      arquivo: 'cnh_teste.pdf',
       tipo: 'CNH',
-      titular: 'Thomaz',
+      titular: titularTeste.nome,
+      titularId: titularTeste.id,
       apelidos: ['cnh', 'habilitação', 'carteira de motorista'],
       tamanho: '2048 KB',
       visibilidade: 'diretoria',
@@ -129,10 +138,11 @@ async function rodarTestes() {
   const e2e3Ok = (resE2E3.anexos?.length || 0) === 1 && resE2E3.textoResposta.includes('Certidão de Casamento');
   console.log('OK?', e2e3Ok ? 'SIM' : 'NÃO');
 
-  // TESTE 4: "certidão de casamento do thomaz"
-  console.log('\n[E2E 4] "certidão de casamento do thomaz"');
+  // TESTE 4: "certidão de casamento de [titular]"
+  const perguntaCasamento = `certidão de casamento de ${primeiroNome}`;
+  console.log(`\n[E2E 4] "${perguntaCasamento}"`);
   const resE2E4 = await processarMensagemChat({
-    mensagemUsuario: 'certidão de casamento do thomaz',
+    mensagemUsuario: perguntaCasamento,
     historicoRecente: historicoVazio,
     contato: contatoJoao,
     documentosDisponiveis: docsDisponiveis,

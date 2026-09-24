@@ -16,7 +16,7 @@ async function main() {
   const contatoTeste: Contato = {
     id: 'user-simulacao-falha',
     nome: 'Diretoria Delta Plan',
-    telefone: '11988887777',
+    telefone: '5500000000006',
     avatarCor: '#25D366',
     nivelAcesso: 'diretoria',
     ficha: {

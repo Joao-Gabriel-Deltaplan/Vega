@@ -34,7 +34,7 @@ async function diagnosticarELimparHistorico() {
   console.log(JSON.stringify(ativo, null, 2));
 
   // Identifica versões de teste a serem removidas:
-  // Nomes de teste: Carlos Eduardo, Admin Rollback Teste, motivo teste_automatizado, etc.
+  // Nomes de teste: Admin Teste, Admin Rollback Teste, motivo teste_automatizado, etc.
   // Preservar: versao_padrao_sistema e qualquer alteração legítima feita por humanos no painel.
   const idsParaRemover: string[] = [];
 

@@ -4,7 +4,8 @@ dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
 dotenv.config();
 
 import { processarMensagemChat } from '../chat/chatOrquestrador.js';
-import { obterDocumentosPorNivelAcesso, obterTodosDocumentos } from '../storage.js';
+import { obterDocumentosPorNivelAcesso, obterTodosDocumentos, obterTodosTitulares } from '../storage.js';
+import { extrairPrimeiroNome } from '../utils/nomeUtils.js';
 import { Contato } from '../types.js';
 
 async function rodarTestes() {
@@ -12,10 +13,14 @@ async function rodarTestes() {
   console.log('🧪 TESTE DE CLASSIFICAÇÃO, REESCRITA E ANEXOS DA VEGA');
   console.log('================================================================\n');
 
+  const todosTitulares = await obterTodosTitulares();
+  const titularAlvo = todosTitulares.find(t => t.tipo !== 'PJ') || todosTitulares[0] || { id: 'tit_teste', nome: 'Titular Teste' };
+  const primeiroNome = extrairPrimeiroNome(titularAlvo.nome) || titularAlvo.nome;
+
   const contatoTeste: Contato = {
     id: 'contato-teste',
-    nome: 'João Gabriel Brandini',
-    telefone: '11999999999',
+    nome: 'Usuario Teste',
+    telefone: '5500000000005',
     avatarCor: '#25D366',
     nivelAcesso: 'diretoria',
     ficha: {
@@ -29,10 +34,10 @@ async function rodarTestes() {
   const docsDisponiveis = await obterDocumentosPorNivelAcesso('diretoria');
 
   const casosDeTeste = [
-    'qual é a CNH do Thomaz',
-    'a CNH do Thomaz',
-    'CNH do Thomaz',
-    'qual o número da CNH do Thomaz?',
+    `qual é a CNH de ${primeiroNome}`,
+    `a CNH de ${primeiroNome}`,
+    `CNH de ${primeiroNome}`,
+    `qual o número da CNH de ${primeiroNome}?`,
     'qual o endereço do escritório?',
   ];
 

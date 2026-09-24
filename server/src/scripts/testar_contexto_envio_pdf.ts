@@ -113,7 +113,7 @@ async function executarTestes() {
 
   const contatoTeste: Contato = {
     id: 'contato-teste-contexto',
-    nome: 'João Gabriel Brandini',
+    nome: 'Usuario Teste',
     telefone: '5514999999999',
     avatarCor: '#25D366',
     nivelAcesso: 'diretoria',
@@ -134,7 +134,7 @@ async function executarTestes() {
     {
       id: 'msg-1',
       remetente: 'cliente',
-      nomeRemetente: 'João Gabriel',
+      nomeRemetente: 'Usuario Teste',
       horario: '14:30',
       timestamp: new Date(Date.now() - 60000).toISOString(),
       texto: 'Qual é o tempo de vigência da apólice do Nivus?',
@@ -150,7 +150,7 @@ async function executarTestes() {
       origem: 'motor',
       rastro: {
         mensagemId: 'msg-2',
-        usuarioNome: 'João Gabriel',
+        usuarioNome: 'Usuario Teste',
         usuarioId: 'contato-teste-contexto',
         mensagemOriginal: 'Qual é o tempo de vigência da apólice do Nivus?',
         perguntaReescrita: 'Tempo de vigência da apólice de seguro do Nivus',

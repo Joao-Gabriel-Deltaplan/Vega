@@ -11,7 +11,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 async function ocrDocs() {
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const arquivos = ['CRT THOMAZ 2025.pdf', 'CREA - SP.pdf'];
+  const arquivos = ['CRT_DOCUMENTO.pdf', 'CREA - SP.pdf'];
 
   for (const arq of arquivos) {
     const caminho = path.resolve(__dirname, '../../../arquivos', arq);
@@ -20,7 +20,7 @@ async function ocrDocs() {
     const res = await extrairTextoDocumento(caminho, openai, {
       titulo: arq,
       descricao: arq,
-      titular: 'Thomaz'
+      titular: 'Titular Teste'
     });
     console.log(`Total páginas: ${res.paginas.length}, Usou OCR: ${res.usouOCR}`);
     for (const p of res.paginas) {

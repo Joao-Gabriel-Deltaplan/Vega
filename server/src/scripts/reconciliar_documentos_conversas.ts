@@ -20,7 +20,7 @@ async function reconciliarDocumentos() {
     console.log(`- Doc: "${doc.arquivo}" | Titular: "${doc.titular}" | Origem: "${doc.metadata?.origem || 'sem_origem'}"`);
   }
 
-  const c = await obterConversaPorId('wa-5514996863115');
+  const c = await obterConversaPorId('wa-5500000000000');
   if (c && c.mensagens) {
     console.log(`\nÚltimas 15 mensagens da conversa ${c.id}:`);
     for (const m of c.mensagens.slice(-15)) {

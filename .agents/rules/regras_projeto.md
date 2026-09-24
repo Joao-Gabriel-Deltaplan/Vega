@@ -27,10 +27,10 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
 ---
 
 ## 4. Proteção de Dados e Segurança
-- **Nomes proibidos:** NUNCA usar nomes fictícios de pessoas (especialmente sobrenome Brandini) em código, testes, scripts ou logs. Usar titulares reais ou "Titular Teste".
+- **Nomes proibidos e ausência de hardcodes:** Nenhum nome de pessoa, telefone, ID de titular ou data real pode estar escrito no código. Titular não identificado é nulo e a VEGA pergunta; nunca assume um titular padrão. NUNCA usar nomes fictícios de pessoas (especialmente sobrenome Brandini) em código, testes, scripts ou logs. Usar consultas dinâmicas ao Supabase ou "Titular Teste".
 - **Sigilo de credenciais:** NUNCA expor variáveis de ambiente (`.env`), chaves de API, tokens ou senhas em logs, commits ou relatórios.
 - **Preservação de fichas:** Dados cadastrais já conferidos (`conferido: true`) ou informados pelo chat nunca podem ser sobrescritos por extração automática.
-- **Reconhecimento estrito de titulares:** Titular só é reconhecido se constar no cadastro oficial; nunca extrair nomes por posição na frase.
+- **Reconhecimento estrito de titulares:** Titular só é reconhecido se constar no cadastro oficial do Supabase; nunca extrair nomes por posição na frase.
 
 ---
 
@@ -59,7 +59,7 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
 
 ## 8. Bloqueio Rígido por Tipo Documental
 - **Sem entrega divergente:** Se o tipo solicitado não existir no Cofre (ex.: certidão de nascimento quando só há certidão de casamento), nunca entregar outro tipo. Responder: `"Não encontrei esse documento no Cofre."` (opcionalmente listando os documentos existentes do titular, sem anexos).
-- **Siglas e PJ:** Reconhecer siglas técnicas oficiais (ART, RRT) e termos significativos de PJs cadastradas (ex.: "Menegazzo" para "Serviços Menegazzo").
+- **Siglas e PJ:** Reconhecer siglas técnicas oficiais (ART, RRT) e termos significativos de PJs cadastradas (ex.: nome fantasia, sigla ou termo principal da razão social cadastrada no Supabase).
 
 ---
 
@@ -101,3 +101,11 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
 - **Classificação por IA como mecanismo primário:** A IA (`gpt-5.4-mini`) deve preencher `documento_citado` e `termo_busca` SOMENTE quando houver tipo/nome de documento real. Para comandos genéricos e gírias de envio, deve retornar vazios (`""`), permitindo o uso do contexto.
 - **Sanitização como proteção extra:** A mensagem inteira nunca pode virar documento citado. Sanitização por lista atua como camada de segurança secundária. Sem documento citado e sem contexto prévio, perguntar qual documento o usuário deseja; nunca inventar arquivo nem registrar frase em faltantes.
 - **Validação estrita de faltantes:** A tabela `documentos_faltantes` só aceita tipos documentais reais e reconhecíveis (Certidão, Contrato, Alvará, CNH, RG, Apólice, etc.). Proibido registrar comandos, cortesias ou frases soltas.
+
+---
+
+## 14. Blindagem Estrita de Dados Pessoais sem Titular
+- **Sem titular, sem entrega:** Quando um dado pessoal cadastral for solicitado (CPF, RG, CNH, data de nascimento, filiação, endereço residencial) sem titular citado na mensagem atual e sem titular identificado no histórico recente daquela conversa específica, a VEGA NUNCA assume nenhum titular, mesmo que exista apenas um titular cadastrado ou que apenas um documento contenha o dado.
+- **Formato obrigatório da pergunta:** A resposta deve ser direta e específica ao campo solicitado: `"De quem você precisa do [campo]?"` (ex.: `"De quem você precisa do CPF?"`), incorporando saudação inicial se houver. É PROIBIDO listar os titulares cadastrados ou tentar adivinhar a pessoa.
+- **Validade para busca vetorial e ficha:** Um único resultado retornado pela busca na ficha cadastral ou pela busca vetorial de trechos jamais autoriza a entrega de dados pessoais sem que o titular tenha sido determinado.
+- **Diferenciação para pedidos de arquivo:** Para pedidos de documentos físicos/arquivos (`pedir_arquivo`), se houver apenas um documento daquele tipo no Cofre, mantém-se a entrega direta com anexo.

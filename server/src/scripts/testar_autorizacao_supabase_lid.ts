@@ -21,8 +21,8 @@ async function rodarTestes() {
 
   const usuarios = await obterTodosUsuariosWhatsApp();
   console.log(`Total de usuários carregados do Supabase: ${usuarios.length}`);
-  const joao = usuarios.find((u) => u.numero === '5514996863115');
-  console.log('Usuário Joao Gabriel carregado do Supabase:', {
+  const joao = usuarios.find((u) => u.numero === '5500000000000');
+  console.log('Usuário Usuario Teste carregado do Supabase:', {
     id: joao?.id,
     nome: joao?.nome,
     numero: joao?.numero,
@@ -32,7 +32,7 @@ async function rodarTestes() {
   });
 
   if (!joao || joao.lid !== '176948374462673') {
-    throw new Error('Falha: Usuário Joao Gabriel com LID 176948374462673 não encontrado no Supabase!');
+    throw new Error('Falha: Usuário Usuario Teste com LID 176948374462673 não encontrado no Supabase!');
   }
   console.log('✅ TESTE 1 PASSOU: Usuário e LID carregados com sucesso do Supabase.\n');
 
@@ -41,16 +41,16 @@ async function rodarTestes() {
   console.log('================================================================');
 
   const variantes = [
-    '5514996863115',
-    '551496863115',
-    '14996863115',
-    '1496863115',
-    '5514996863115@s.whatsapp.net',
+    '5500000000000',
+    '5500000000000',
+    '5500000000000',
+    '5500000000000',
+    '5500000000000@s.whatsapp.net',
   ];
 
   for (const v of variantes) {
     const achou = await buscarUsuarioPorTelefone(v);
-    if (!achou || achou.nome !== 'Joao Gabriel') {
+    if (!achou || achou.nome !== 'Usuario Teste') {
       throw new Error(`Falha ao buscar por variante de telefone: ${v}`);
     }
     console.log(`  - Telefone "${v}" -> Autorizado: ${achou.nome}`);
@@ -70,7 +70,7 @@ async function rodarTestes() {
 
   for (const v of variantesLid) {
     const achou = await buscarUsuarioPorLid(v);
-    if (!achou || achou.nome !== 'Joao Gabriel') {
+    if (!achou || achou.nome !== 'Usuario Teste') {
       throw new Error(`Falha ao buscar por LID: ${v}`);
     }
     console.log(`  - LID "${v}" -> Autorizado: ${achou.nome}`);
@@ -88,7 +88,7 @@ async function rodarTestes() {
       remoteJid: '176948374462673@lid',
       fromMe: false,
       id: `test-pn-priority-${Date.now()}`,
-      senderPn: '5514996863115',
+      senderPn: '5500000000000',
     },
     message: {
       conversation: 'Oi VEGA, teste de prioridade de número',
@@ -102,7 +102,7 @@ async function rodarTestes() {
     destinatario: resultadoAmbos.destinatario,
   });
 
-  if (resultadoAmbos.status !== 'processado' || resultadoAmbos.usuario?.nome !== 'Joao Gabriel') {
+  if (resultadoAmbos.status !== 'processado' || resultadoAmbos.usuario?.nome !== 'Usuario Teste') {
     throw new Error('Falha: Evento com senderPn não foi processado com o usuário correto.');
   }
 
@@ -135,7 +135,7 @@ async function rodarTestes() {
     destinatario: resultadoLid.destinatario,
   });
 
-  if (resultadoLid.status !== 'processado' || resultadoLid.usuario?.nome !== 'Joao Gabriel') {
+  if (resultadoLid.status !== 'processado' || resultadoLid.usuario?.nome !== 'Usuario Teste') {
     throw new Error('Falha: Evento apenas com LID cadastrado no Supabase não foi autorizado.');
   }
   console.log('✅ TESTE 5 PASSOU: Busca por LID direto no Supabase validada.\n');
@@ -150,7 +150,7 @@ async function rodarTestes() {
       remoteJid: '9999999999999@lid',
       fromMe: false,
       id: `test-unknown-${Date.now()}`,
-      senderPn: '5511999999999',
+      senderPn: '5500000000005',
     },
     message: {
       conversation: 'Tentativa de acesso não autorizado',

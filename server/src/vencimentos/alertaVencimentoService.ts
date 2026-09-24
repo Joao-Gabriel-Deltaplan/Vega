@@ -373,17 +373,13 @@ export async function executarRotinaVerificacaoVencimentos(): Promise<{
 }
 
 /**
- * Função para sincronizar as validades extraídas com IA dos documentos existentes:
- * - CNH do Titular: 26/08/2034 ("4b VALIDADE 26/08/2034")
- * - CREA-SP: 30/06/2015 ("Válida até: 30/06/2015")
- * - CRT: sem validade temporal (Carteira de Identidade Profissional permanente)
- * - Demais: sem validade
+ * Sincroniza as validades dos documentos existentes consultando exclusivamente os metadados do documento
+ * e a respectiva ficha cadastral do titular vinculado no Supabase.
+ * Nunca utiliza nomes de titulares, IDs ou datas hardcoded.
  */
 export async function sincronizarValidadesDocumentosExistentes(): Promise<DocumentoRegistro[]> {
   const documentos = await obterTodosDocumentos();
   const titulares = await obterTodosTitulares();
-  const titularPrincipal = titulares.find((t) => t.id === 'tit_thomaz') || titulares[0];
-  const validadeCnhFicha = titularPrincipal?.campos.validadeCnh?.valor?.trim();
 
   let alterados = 0;
 
@@ -395,26 +391,25 @@ export async function sincronizarValidadesDocumentosExistentes(): Promise<Docume
     const titUpper = (doc.titulo || '').toUpperCase();
     const arqUpper = (doc.arquivo || '').toUpperCase();
 
+    // Se o documento é CNH e ainda não possui dataValidade registrada, tenta recuperar da ficha cadastral do titular correspondente
     if (titUpper.includes('CNH') || arqUpper.includes('CNH')) {
-      await atualizarDocumento(doc.id, {
-        dataValidade: validadeCnhFicha || '26/08/2034',
-        origemValidade: 'extraído automaticamente',
-        trechoValidade: '4b VALIDADE 26/08/2034',
-      });
-      alterados++;
+      if (!doc.dataValidade) {
+        const titularDoc = titulares.find((t) => t.id === doc.pessoaId);
+        const validadeFicha = titularDoc?.campos?.validadeCnh?.valor?.trim();
+
+        if (validadeFicha) {
+          await atualizarDocumento(doc.id, {
+            dataValidade: validadeFicha,
+            origemValidade: 'extraído automaticamente',
+            trechoValidade: `Validade CNH: ${validadeFicha}`,
+          });
+          alterados++;
+        }
+      }
       continue;
     }
 
-    if (titUpper.includes('CREA') || arqUpper.includes('CREA')) {
-      await atualizarDocumento(doc.id, {
-        dataValidade: '30/06/2015',
-        origemValidade: 'extraído automaticamente',
-        trechoValidade: 'Válida até: 30/06/2015',
-      });
-      alterados++;
-      continue;
-    }
-
+    // Documentos profissionais que são permanentes e sem vencimento (ex: CRT)
     if (titUpper.includes('CRT') || arqUpper.includes('CRT')) {
       if (doc.dataValidade !== null) {
         await atualizarDocumento(doc.id, {
@@ -427,18 +422,10 @@ export async function sincronizarValidadesDocumentosExistentes(): Promise<Docume
       }
       continue;
     }
-
-    if (doc.dataValidade !== null) {
-      await atualizarDocumento(doc.id, {
-        dataValidade: null,
-        origemValidade: 'extraído automaticamente',
-        trechoValidade: null,
-      });
-      alterados++;
-      await zerarAlertasDocumento(doc.id);
-    }
   }
 
-  console.log(`[Vencimentos 📁] Validades verificadas em ${documentos.length} documento(s) no Supabase.`);
+  if (alterados > 0) {
+    console.log(`[Vencimentos ⏱️] Sincronização concluída: ${alterados} documento(s) atualizado(s) a partir do Supabase.`);
+  }
   return await obterTodosDocumentos();
 }

@@ -143,7 +143,7 @@ const SIGLAS_DOCUMENTO = ['crea', 'crt', 'cnh', 'cpf', 'rg', 'cnpj', 'dre', 'art
 
 /**
  * Identifica se a mensagem cita múltiplos documentos do catálogo que devem ser entregues juntos.
- * Exemplo: "me envia o crea e a certidão de casamento do thomaz", "o CREA e a CNH", "certidão e crea"
+ * Exemplo: "me envia o crea e a certidão de casamento do fulano", "o CREA e a CNH", "certidão e crea"
  */
 export function identificarMultiplosDocumentosNoTexto(
   texto: string,
@@ -300,7 +300,7 @@ const TERMOS_NAO_TITULARES = new Set([
 ]);
 
 /**
- * Extrai titular explícito do pedido ("do Thomaz", "da Delta", "do Menegazzo", etc.).
+ * Extrai titular explícito do pedido ("do Fulano", "da Empresa", "do Titular", etc.).
  * REGRA RIGOROSA: Uma palavra só é considerada titular se casar com um titular cadastrado
  * no Supabase (nome completo, primeiro nome, parte relevante de PJ ou apelido). NUNCA extrair palavras por posição na frase.
  */
@@ -312,18 +312,8 @@ export function extrairTitularExplicito(texto: string, titularesDisponiveis?: st
     ? titularesDisponiveis
     : obterNomesTitularesCadastrados();
 
-  const titulares = Array.from(
-    new Set([
-      ...cadastrados,
-      'Thomaz Lustri Fabre',
-      'Thomaz',
-      'Serviços Menegazzo',
-      'Menegazzo',
-      'RENG ENGENHARIA',
-      'Delta Plan',
-      'Delta',
-    ])
-  ).filter(Boolean);
+  // Procura estritamente por correspondência com titulares cadastrados no Supabase
+  const titulares = Array.from(new Set(cadastrados)).filter(Boolean);
 
   const textoNorm = normalizarTexto(texto);
 
@@ -340,14 +330,11 @@ export function extrairTitularExplicito(texto: string, titularesDisponiveis?: st
     // Casamento exato por fronteira de palavra
     const regex = new RegExp(`\\b${titNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
     if (regex.test(textoNorm)) {
-      if (titNorm.startsWith('delta')) return 'Delta Plan';
-      if (titNorm.includes('menegazzo')) return 'Serviços Menegazzo';
-      const primeiro = extrairPrimeiroNome(titular) || titular;
-      return primeiro.charAt(0).toUpperCase() + primeiro.slice(1);
+      return titular;
     }
   }
 
-  // Verifica palavras significativas de titulares cadastrados (ex.: Menegazzo em "Serviços Menegazzo")
+  // Verifica palavras significativas de titulares cadastrados (ex.: sobrenome ou termo significativo da PJ)
   for (const titular of titulares) {
     const partes = titular.split(/\s+/).filter(
       (p) =>
@@ -359,7 +346,6 @@ export function extrairTitularExplicito(texto: string, titularesDisponiveis?: st
       const parteNorm = normalizarTexto(parte);
       const regexParte = new RegExp(`\\b${parteNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
       if (regexParte.test(textoNorm)) {
-        if (titular.toLowerCase().includes('menegazzo')) return 'Serviços Menegazzo';
         return titular;
       }
     }
@@ -581,7 +567,7 @@ export async function buscarDocumentos(
   }
 
   // =========================================================================
-  // CENÁRIO B: Pedido com TITULAR EXPLÍCITO ("da Delta", "do Thomaz", etc.)
+  // CENÁRIO B: Pedido com TITULAR EXPLÍCITO ("da Empresa", "do Fulano", etc.)
   // =========================================================================
   if (titularExplicito && tipoPedido) {
     const docsCasamTipoETitular = catalogo.filter(

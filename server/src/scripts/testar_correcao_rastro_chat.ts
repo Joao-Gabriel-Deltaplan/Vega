@@ -4,7 +4,8 @@ dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
 dotenv.config();
 
 import { processarMensagemChat } from '../chat/chatOrquestrador.js';
-import { obterDocumentosPorNivelAcesso } from '../storage.js';
+import { obterDocumentosPorNivelAcesso, obterTodosTitulares } from '../storage.js';
+import { extrairPrimeiroNome } from '../utils/nomeUtils.js';
 import { Contato } from '../types.js';
 
 async function main() {
@@ -12,10 +13,14 @@ async function main() {
   console.log('🧪 TESTE COMPARATIVO: TEXTO DO CHAT VS RESPOSTA FINAL DO RASTRO');
   console.log('====================================================================================\n');
 
+  const todosTitulares = await obterTodosTitulares();
+  const titularAlvo = todosTitulares.find(t => t.tipo !== 'PJ') || todosTitulares[0] || { id: 'tit_teste', nome: 'Titular Teste' };
+  const primeiroNome = extrairPrimeiroNome(titularAlvo.nome) || titularAlvo.nome;
+
   const contatoTeste: Contato = {
     id: 'user-teste-rastro-chat',
     nome: 'Titular Teste',
-    telefone: '11989373770',
+    telefone: '5500000000003',
     avatarCor: '#06b6d4',
     nivelAcesso: 'diretoria',
     ficha: {
@@ -29,8 +34,8 @@ async function main() {
   const docsDisponiveis = await obterDocumentosPorNivelAcesso('diretoria');
 
   const casosTeste = [
-    'QUAL A CNH DO THOMAZ?',
-    'qual a cnh do thomaz?',
+    `QUAL A CNH DE ${primeiroNome.toUpperCase()}?`,
+    `qual a cnh de ${primeiroNome.toLowerCase()}?`,
     'qual a CNH do escritório?',
   ];
 

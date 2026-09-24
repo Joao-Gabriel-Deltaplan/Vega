@@ -13,7 +13,7 @@ async function reindexar() {
   const supabase = getSupabaseClient();
 
   console.log('1. Removendo CNH e CREA antigos do Supabase para forçar reindexação com novas regras...');
-  await supabase.from('documentos').delete().eq('arquivo', 'CNH DIGITAL THOMAZ.pdf');
+  await supabase.from('documentos').delete().eq('arquivo', 'CNH_DIGITAL.pdf');
   await supabase.from('documentos').delete().eq('arquivo', 'CREA - SP.pdf');
 
   console.log('2. Executando reindexação da CNH e do CREA...');

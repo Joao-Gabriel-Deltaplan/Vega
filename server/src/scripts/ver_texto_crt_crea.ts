@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 const ARQUIVOS_DIR = path.resolve(__dirname, '../../../arquivos');
 
 async function testar() {
-  const arquivos = ['CRT THOMAZ 2025.pdf', 'CREA - SP.pdf', 'CNH DIGITAL THOMAZ.pdf'];
+  const arquivos = ['CRT_DOCUMENTO.pdf', 'CREA - SP.pdf', 'CNH_DIGITAL.pdf'];
   for (const arq of arquivos) {
     const fullPath = path.join(ARQUIVOS_DIR, arq);
     console.log(`\n========================================`);

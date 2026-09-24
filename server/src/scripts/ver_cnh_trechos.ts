@@ -9,7 +9,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 async function main() {
   const supabase = getSupabaseClient();
-  const { data: doc } = await supabase.from('documentos').select('id, titulo, arquivo').eq('arquivo', 'CNH DIGITAL THOMAZ.pdf').single();
+  const { data: doc } = await supabase.from('documentos').select('id, titulo, arquivo').eq('arquivo', 'CNH_DIGITAL.pdf').single();
   if (!doc) {
     console.log('CNH não encontrada');
     return;

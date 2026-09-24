@@ -291,7 +291,7 @@ export async function processarRespostaPendenciaWhatsApp(
       return `Entendido. De quem é este documento, então?`;
     }
 
-    // Se o usuário já informou outro titular na resposta (ex: "Não, é do Thomaz")
+    // Se o usuário já informou outro titular na resposta (ex: "Não, é do Fulano")
     if (openai) {
       try {
         const titulares = await obterTodosTitulares();

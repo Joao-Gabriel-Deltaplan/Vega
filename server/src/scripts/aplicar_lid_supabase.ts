@@ -35,9 +35,9 @@ async function adicionarLidSupabase() {
     await client.query(`ALTER TABLE public.usuarios ADD COLUMN IF NOT EXISTS lid text;`);
     console.log('Coluna lid adicionada ou já existente com sucesso.');
 
-    console.log('2. Atualizando o usuário Joao Gabriel com lid 176948374462673...');
+    console.log('2. Atualizando o usuário Usuario Teste com lid 176948374462673...');
     const res = await client.query(
-      `UPDATE public.usuarios SET lid = '176948374462673' WHERE id = 'usr-1' OR numero = '5514996863115';`
+      `UPDATE public.usuarios SET lid = '176948374462673' WHERE id = 'usr-1' OR numero = '5500000000000';`
     );
     console.log(`Usuário atualizado! Linhas afetadas: ${res.rowCount}`);
 

@@ -126,7 +126,7 @@ async function rodarTestes() {
       body: JSON.stringify({
         event: 'messages.upsert',
         data: {
-          key: { remoteJid: '5514996863115@s.whatsapp.net', fromMe: false },
+          key: { remoteJid: '5500000000000@s.whatsapp.net', fromMe: false },
           message: { conversation: 'Teste webhook auth' },
         },
       }),

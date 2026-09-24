@@ -18,7 +18,7 @@ async function run() {
   const cnhDoc = docs.find(d => d.titulo.toLowerCase().includes('cnh'));
   const creaDoc = docs.find(d => d.titulo.toLowerCase().includes('crea'));
 
-  console.log('=== 1. CNH DIGITAL THOMAZ ===');
+  console.log('=== 1. CNH DIGITAL ===');
   if (cnhDoc) {
     const caminhoCnh = path.resolve(__dirname, '../../../arquivos', cnhDoc.arquivo);
     console.log('Caminho CNH:', caminhoCnh);

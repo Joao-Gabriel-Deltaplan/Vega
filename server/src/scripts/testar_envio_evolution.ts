@@ -24,10 +24,10 @@ async function rodarTestes() {
   const casos = [
     { entrada: '176948374462673@lid', esperado: '176948374462673@lid' },
     { entrada: '120363044123456789@g.us', esperado: '120363044123456789@g.us' },
-    { entrada: '5514996863115@s.whatsapp.net', esperado: '5514996863115' },
-    { entrada: '5514996863115:0@s.whatsapp.net', esperado: '5514996863115' },
-    { entrada: '+55 (14) 99686-3115', esperado: '5514996863115' },
-    { entrada: '  14996863115  ', esperado: '14996863115' },
+    { entrada: '5500000000000@s.whatsapp.net', esperado: '5500000000000' },
+    { entrada: '5500000000000:0@s.whatsapp.net', esperado: '5500000000000' },
+    { entrada: '+55 (14) 99686-3115', esperado: '5500000000000' },
+    { entrada: '  5500000000000  ', esperado: '5500000000000' },
   ];
 
   for (const c of casos) {
@@ -99,14 +99,14 @@ async function rodarTestes() {
       tipo: 'pdf',
       url: '/arquivos/CARTAO%20DE%20VACINAS.pdf',
       nome: 'CARTAO DE VACINAS.pdf',
-      titulo: 'Cartão de Vacinas - Thomaz Lustri Fabre',
+      titulo: 'Cartão de Vacinas - Titular Teste',
     },
   ];
 
   console.log('Disparando enviarRespostaCompletaWhatsApp para 176948374462673@lid...');
   await enviarRespostaCompletaWhatsApp(
     '176948374462673@lid',
-    'Aqui está o documento solicitado, Joao Gabriel.',
+    'Aqui está o documento solicitado, Usuario Teste.',
     anexosSimulados
   );
   console.log('✅ TESTE 4 PASSOU: Orquestração de texto e documento executada sem falhas de fluxo.\n');

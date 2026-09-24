@@ -61,7 +61,7 @@ async function validar() {
 
   // 7. Supabase Storage: Download de um arquivo para teste de streaming
   console.log('\n--- Testando download do Supabase Storage ---');
-  const arqTeste = 'CNH DIGITAL THOMAZ.pdf';
+  const arqTeste = docs[0]?.arquivo || 'documento.pdf';
   const bufferResult = await obterBufferArquivo(arqTeste);
   if (bufferResult) {
     console.log(`✔ Download via Supabase Storage funcionou! "${arqTeste}" recebido com ${(bufferResult.buffer.length / 1024).toFixed(1)} KB`);

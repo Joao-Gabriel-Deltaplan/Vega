@@ -142,7 +142,7 @@ export function limparTextoCapaVega(texto: string): string {
     .replace(/Documento oficial armazenado no Cofre Delta Plan\.[^\n]*/gi, '')
     .replace(/Emitido em:\s*\d{2}\/\d{2}\/\d{4}[^\n]*/gi, '')
     .replace(/Delta Plan\s*•\s*Documento gerado pela assistente virtual Vega\s*•\s*delta-plan\.com\.br/gi, '')
-    .replace(/CNH Digital Thomaz\s+CNH Digital Thomaz/gi, '')
+    .replace(/CNH\s+Digital[^\n]*\s+CNH\s+Digital[^\n]*/gi, '')
     .replace(/--\s*\d+\s*of\s*\d+\s*--/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
@@ -391,7 +391,7 @@ Analise o texto deste documento (${tipoDoc}) e extraia com exatidão os dados so
 IMPORTANTE PARA CERTIDÃO DE CASAMENTO:
 Uma certidão de casamento possui DOIS cônjuges e a filiação de ambos.
 - Identifique claramente quem é o primeiro cônjuge e quem é o segundo cônjuge.
-- O campo "nomeCompleto" deve ser do titular principal (Thomaz se presente, ou do primeiro cônjuge).
+- O campo "nomeCompleto" deve ser do titular do documento ou do primeiro cônjuge registrado.
 - O campo "nomePai" e "nomeMae" devem corresponder aos pais do titular indicado em "nomeCompleto".
 - O campo "conjuge" deve ser o nome do outro cônjuge.
 
@@ -401,7 +401,7 @@ Retorne ESTRITAMENTE um objeto JSON com as chaves (todas opcionais, preencha ape
   "nomePai": "nome do pai",
   "nomeMae": "nome da mãe",
   "dataNascimento": "DD/MM/AAAA",
-  "cpf": "000.000.000-00",
+  "cpf": "número do CPF",
   "rg": "número do RG",
   "orgaoEmissor": "órgão emissor do RG",
   "cnh": "número de registro da CNH / habilitação",

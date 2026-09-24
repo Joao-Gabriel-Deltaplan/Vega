@@ -7,7 +7,8 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 import { processarMensagemChat, deveMostrarDocumentosCompletos } from '../chat/chatOrquestrador.js';
-import { obterTodosDocumentos } from '../storage.js';
+import { obterTodosDocumentos, obterTodosTitulares } from '../storage.js';
+import { extrairPrimeiroNome } from '../utils/nomeUtils.js';
 import { Contato, Mensagem } from '../types.js';
 
 async function rodarTestes() {
@@ -16,10 +17,14 @@ async function rodarTestes() {
   console.log('CONFIGURAÇÃO MOSTRAR_DOCUMENTOS_COMPLETOS:', deveMostrarDocumentosCompletos());
   console.log('===============================================================\n');
 
+  const todosTitulares = await obterTodosTitulares();
+  const titularAlvo = todosTitulares.find(t => t.tipo !== 'PJ') || todosTitulares[0] || { id: 'tit_teste', nome: 'Titular Teste' };
+  const primeiroNome = extrairPrimeiroNome(titularAlvo.nome) || titularAlvo.nome;
+
   const contatoTeste: Contato = {
     id: 'user-teste',
-    nome: 'João Gabriel Brandini',
-    telefone: '11999999999',
+    nome: 'Usuario Teste',
+    telefone: '5500000000005',
     avatarCor: '#10b981',
     cargo: 'Diretor',
     setor: 'Diretoria',
@@ -35,11 +40,12 @@ async function rodarTestes() {
   const documentosDisponiveis = await obterTodosDocumentos();
 
   // -------------------------------------------------------------------------
-  // TESTE 1: "quem é a mãe do Thomaz" seguido de "sim"
+  // TESTE 1: "quem é a mãe de [titular]" seguido de "sim"
   // -------------------------------------------------------------------------
-  console.log('>>> TESTE 1A: Pergunta "quem é a mãe do Thomaz"');
+  const perguntaMae = `quem é a mãe de ${primeiroNome}`;
+  console.log(`>>> TESTE 1A: Pergunta "${perguntaMae}"`);
   const res1A = await processarMensagemChat({
-    mensagemUsuario: 'quem é a mãe do Thomaz',
+    mensagemUsuario: perguntaMae,
     historicoRecente: [],
     contato: contatoTeste,
     documentosDisponiveis,
@@ -64,7 +70,7 @@ async function rodarTestes() {
   const res1B = await processarMensagemChat({
     mensagemUsuario: 'sim',
     historicoRecente: [
-      { id: 'msg-user-1a', remetente: 'cliente', nomeRemetente: 'João', horario: '09:59', texto: 'quem é a mãe do Thomaz' },
+      { id: 'msg-user-1a', remetente: 'cliente', nomeRemetente: 'Usuario Teste', horario: '09:59', texto: perguntaMae },
       msgAssistente1A,
     ],
     contato: contatoTeste,
@@ -77,13 +83,13 @@ async function rodarTestes() {
   console.log('---------------------------------------------------------------\n');
 
   // -------------------------------------------------------------------------
-  // TESTE 2: "quem é a mãe do Thomaz" seguido de "qual a validade da CNH dele?" (NÃO deve enviar anexo)
+  // TESTE 2: "quem é a mãe de [titular]" seguido de "qual a validade da CNH dele?" (NÃO deve enviar anexo)
   // -------------------------------------------------------------------------
   console.log('>>> TESTE 2: Oferta esquecida -> Pergunta "qual a validade da CNH dele?"');
   const res2 = await processarMensagemChat({
     mensagemUsuario: 'qual a validade da CNH dele?',
     historicoRecente: [
-      { id: 'msg-user-1a', remetente: 'cliente', nomeRemetente: 'João', horario: '09:59', texto: 'quem é a mãe do Thomaz' },
+      { id: 'msg-user-1a', remetente: 'cliente', nomeRemetente: 'Usuario Teste', horario: '09:59', texto: perguntaMae },
       msgAssistente1A,
     ],
     contato: contatoTeste,
@@ -97,11 +103,12 @@ async function rodarTestes() {
 
   // -------------------------------------------------------------------------
   // TESTE 3: Pergunta com vários campos
-  // "me envie esses documentos do thomaz, Endereço, estado civil, RG, profissão."
+  // "me envie esses documentos de [titular], Endereço, estado civil, RG, profissão."
   // -------------------------------------------------------------------------
-  console.log('>>> TESTE 3: "me envie esses documentos do thomaz, Endereço, estado civil, RG, profissão."');
+  const perguntaVarios = `me envie esses documentos de ${primeiroNome}, Endereço, estado civil, RG, profissão.`;
+  console.log(`>>> TESTE 3: "${perguntaVarios}"`);
   const res3 = await processarMensagemChat({
-    mensagemUsuario: 'me envie esses documentos do thomaz, Endereço, estado civil, RG, profissão.',
+    mensagemUsuario: perguntaVarios,
     historicoRecente: [],
     contato: contatoTeste,
     documentosDisponiveis,
@@ -117,11 +124,12 @@ async function rodarTestes() {
   console.log('---------------------------------------------------------------\n');
 
   // -------------------------------------------------------------------------
-  // TESTE 4: "qual o CPF do Thomaz?"
+  // TESTE 4: "qual o CPF de [titular]?"
   // -------------------------------------------------------------------------
-  console.log('>>> TESTE 4: Pergunta "qual o CPF do Thomaz?"');
+  const perguntaCpf = `qual o CPF de ${primeiroNome}?`;
+  console.log(`>>> TESTE 4: Pergunta "${perguntaCpf}"`);
   const res4 = await processarMensagemChat({
-    mensagemUsuario: 'qual o CPF do Thomaz?',
+    mensagemUsuario: perguntaCpf,
     historicoRecente: [],
     contato: contatoTeste,
     documentosDisponiveis,
@@ -136,11 +144,12 @@ async function rodarTestes() {
   console.log('---------------------------------------------------------------\n');
 
   // -------------------------------------------------------------------------
-  // TESTE 5: Pedido explícito de documento ("qual é a CNH do Thomaz")
+  // TESTE 5: Pedido explícito de documento ("qual é a CNH de [titular]")
   // -------------------------------------------------------------------------
-  console.log('>>> TESTE 5: Pedido explícito "qual é a CNH do Thomaz"');
+  const perguntaCnh = `qual é a CNH de ${primeiroNome}`;
+  console.log(`>>> TESTE 5: Pedido explícito "${perguntaCnh}"`);
   const res5 = await processarMensagemChat({
-    mensagemUsuario: 'qual é a CNH do Thomaz',
+    mensagemUsuario: perguntaCnh,
     historicoRecente: [],
     contato: contatoTeste,
     documentosDisponiveis,

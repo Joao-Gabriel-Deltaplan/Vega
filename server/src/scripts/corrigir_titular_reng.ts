@@ -8,14 +8,16 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 import { getSupabaseClient } from '../db/supabaseClient.js';
 
-async function corrigirReng() {
+async function corrigirGrafiaTitular() {
   const supabase = getSupabaseClient();
+  const termoErrado = process.argv[2] || 'engenhgaria';
+  const termoCerto = process.argv[3] || 'engenharia';
 
-  console.log('--- 1. Buscando titular RENG na tabela titulares ---');
+  console.log(`--- 1. Buscando ocorrências de "${termoErrado}" na tabela titulares ---`);
   const { data: titulares, error: titErr } = await supabase
     .from('titulares')
     .select('*')
-    .ilike('nome', '%reng%');
+    .ilike('nome', `%${termoErrado}%`);
 
   if (titErr) {
     console.error('Erro ao buscar titulares:', titErr);
@@ -25,8 +27,8 @@ async function corrigirReng() {
   console.log('Titulares encontrados:', titulares);
 
   for (const t of titulares || []) {
-    if (t.nome.includes('ENGENHGARIA') || t.nome.includes('engenhgaria')) {
-      const nomeCorrigido = 'RENG ENGENHARIA';
+    if (t.nome.toLowerCase().includes(termoErrado.toLowerCase())) {
+      const nomeCorrigido = t.nome.replace(new RegExp(termoErrado, 'gi'), termoCerto);
       console.log(`Atualizando titular ID ${t.id}: "${t.nome}" -> "${nomeCorrigido}"...`);
       
       // Atualizar também na ficha caso exista campo nome
@@ -65,9 +67,10 @@ async function corrigirReng() {
     console.log(`Documentos com engenhgaria encontrados: ${docs?.length || 0}`);
     for (const d of docs || []) {
       console.log(`Atualizando documento ${d.id} (${d.titulo})...`);
+      const novoTitular = d.titular.replace(new RegExp(termoErrado, 'gi'), termoCerto);
       const { error: updDocErr } = await supabase
         .from('documentos')
-        .update({ titular: 'RENG ENGENHARIA' })
+        .update({ titular: novoTitular })
         .eq('id', d.id);
       if (updDocErr) {
         console.error(`Erro ao atualizar documento ${d.id}:`, updDocErr);
@@ -77,18 +80,18 @@ async function corrigirReng() {
     }
   }
 
-  console.log('\n--- 3. Buscando trechos vinculados com engenhgaria ---');
+  console.log(`\n--- 3. Buscando trechos vinculados com "${termoErrado}" ---`);
   const { data: trechos, error: trErr } = await supabase
     .from('trechos')
     .select('id, conteudo')
-    .ilike('conteudo', '%engenhgaria%');
+    .ilike('conteudo', `%${termoErrado}%`);
 
   if (trErr) {
     console.error('Erro ao buscar trechos:', trErr);
   } else {
-    console.log(`Trechos com engenhgaria encontrados: ${trechos?.length || 0}`);
+    console.log(`Trechos encontrados: ${trechos?.length || 0}`);
     for (const tr of trechos || []) {
-      const conteudoCorrigido = tr.conteudo.replace(/engenhgaria/gi, 'engenharia').replace(/ENGENHGARIA/g, 'ENGENHARIA');
+      const conteudoCorrigido = tr.conteudo.replace(new RegExp(termoErrado, 'gi'), termoCerto);
       await supabase
         .from('trechos')
         .update({ conteudo: conteudoCorrigido })
@@ -105,4 +108,4 @@ async function corrigirReng() {
   }
 }
 
-corrigirReng().catch(console.error);
+corrigirGrafiaTitular().catch(console.error);

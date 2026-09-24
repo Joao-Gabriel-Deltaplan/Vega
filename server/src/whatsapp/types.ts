@@ -1,6 +1,6 @@
 export interface UsuarioWhatsApp {
   id: string;
-  numero: string; // Formato canônico: 55 + DDD + número (ex: 5514996863115)
+  numero: string; // Formato canônico: 55 + DDD + número (ex: 5511999999999)
   lid?: string | null; // Identificador @lid do WhatsApp (ex: 176948374462673 ou 176948374462673@lid)
   nome: string;
   perfil: 'admin' | 'comum';
@@ -10,10 +10,10 @@ export interface UsuarioWhatsApp {
 }
 
 export interface EvolutionMessageKey {
-  remoteJid: string; // Ex: "5514996863115@s.whatsapp.net", "1203630...@g.us" ou "176948374462673@lid"
+  remoteJid: string; // Ex: "5511999999999@s.whatsapp.net", "1203630...@g.us" ou "176948374462673@lid"
   fromMe: boolean;
   id: string; // Identificador único da mensagem (ex: "BAE5F1234567890ABCDEF")
-  participant?: string; // Presente em grupos: "5514996863115@s.whatsapp.net"
+  participant?: string; // Presente em grupos: "5511999999999@s.whatsapp.net"
   senderPn?: string; // Número de telefone real quando remoteJid for @lid
   participantPn?: string;
   remoteJidAlt?: string;

@@ -22,8 +22,8 @@ async function testarIntegridade() {
 
   const contatoTeste: Contato = {
     id: 'user_teste',
-    nome: 'João Gabriel Brandini',
-    telefone: '5514996863115',
+    nome: 'Usuario Teste',
+    telefone: '5500000000000',
     setor: 'Diretoria',
     nivelAcesso: 'diretoria',
     avatarCor: '#10b981',

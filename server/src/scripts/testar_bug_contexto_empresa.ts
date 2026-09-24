@@ -2,7 +2,8 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { processarMensagemChat } from '../chat/chatOrquestrador.js';
-import { obterTodosDocumentos } from '../storage.js';
+import { obterTodosDocumentos, obterTodosTitulares } from '../storage.js';
+import { extrairPrimeiroNome } from '../utils/nomeUtils.js';
 import { Contato, Mensagem } from '../types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -12,7 +13,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 const contatoTeste: Contato = {
   id: 'cont-teste-contexto',
   nome: 'Titular Teste',
-  telefone: '11999998888',
+  telefone: '5500000000004',
   avatarCor: '#10b981',
   cargo: 'Diretor',
   setor: 'Diretoria',
@@ -31,14 +32,19 @@ async function main() {
   console.log('===============================================================\n');
 
   const documentosDisponiveis = await obterTodosDocumentos();
+  const todosTitulares = await obterTodosTitulares();
+  const titularAlvo = todosTitulares.find(t => t.tipo !== 'PJ') || todosTitulares[0] || { id: 'tit_teste', nome: 'Titular Teste' };
+  const primeiroNomeTit = extrairPrimeiroNome(titularAlvo.nome) || titularAlvo.nome;
+
   const historicoConversa: Mensagem[] = [];
 
   // -------------------------------------------------------------------------
-  // PASSO 1: "qual o CPF do Thomaz?"
+  // PASSO 1: "qual o CPF de [titular]?"
   // -------------------------------------------------------------------------
-  console.log('>>> PASSO 1: "qual o CPF do Thomaz?"');
+  const perguntaPasso1 = `qual o CPF de ${primeiroNomeTit}?`;
+  console.log(`>>> PASSO 1: "${perguntaPasso1}"`);
   const res1 = await processarMensagemChat({
-    mensagemUsuario: 'qual o CPF do Thomaz?',
+    mensagemUsuario: perguntaPasso1,
     historicoRecente: [...historicoConversa],
     contato: contatoTeste,
     documentosDisponiveis,
@@ -52,7 +58,7 @@ async function main() {
   console.log('---------------------------------------------------------------\n');
 
   historicoConversa.push(
-    { id: 'msg-1', remetente: 'cliente', nomeRemetente: 'Carlos', horario: '10:00', texto: 'qual o CPF do Thomaz?' },
+    { id: 'msg-1', remetente: 'cliente', nomeRemetente: 'Usuario Teste', horario: '10:00', texto: perguntaPasso1 },
     {
       id: 'msg-2',
       remetente: 'assistente',
@@ -83,7 +89,7 @@ async function main() {
   console.log('---------------------------------------------------------------\n');
 
   historicoConversa.push(
-    { id: 'msg-3', remetente: 'cliente', nomeRemetente: 'Carlos', horario: '10:01', texto: 'endereço delta' },
+    { id: 'msg-3', remetente: 'cliente', nomeRemetente: 'Usuario Teste', horario: '10:01', texto: 'endereço delta' },
     {
       id: 'msg-4',
       remetente: 'assistente',
@@ -114,7 +120,7 @@ async function main() {
   console.log('---------------------------------------------------------------\n');
 
   historicoConversa.push(
-    { id: 'msg-5', remetente: 'cliente', nomeRemetente: 'Carlos', horario: '10:02', texto: 'endereço deltaplan' },
+    { id: 'msg-5', remetente: 'cliente', nomeRemetente: 'Usuario Teste', horario: '10:02', texto: 'endereço deltaplan' },
     {
       id: 'msg-6',
       remetente: 'assistente',
@@ -127,9 +133,9 @@ async function main() {
   );
 
   // -------------------------------------------------------------------------
-  // PASSO 4: "e o RG dele?" (deve voltar ao Thomaz)
+  // PASSO 4: "e o RG dele?" (deve voltar à pessoa física pelo contexto)
   // -------------------------------------------------------------------------
-  console.log('>>> PASSO 4: "e o RG dele?" (deve voltar ao Thomaz via contexto)');
+  console.log(`>>> PASSO 4: "e o RG dele?" (deve voltar a ${primeiroNomeTit} via contexto)`);
   const res4 = await processarMensagemChat({
     mensagemUsuario: 'e o RG dele?',
     historicoRecente: [...historicoConversa],

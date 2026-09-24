@@ -191,7 +191,7 @@ export function formatarRespostaConsultaCampos(dados: {
       ? camposPedidos
       : ['rg', 'cpf', 'estadoCivil', 'profissao', 'endereco'];
 
-  // Caso especial: pedido de UM ÚNICO campo específico (ex: "nome do pai do Thomaz")
+  // Caso especial: pedido de UM ÚNICO campo específico (ex: "nome do pai do Fulano")
   if (camposAListar.length === 1) {
     const campoId = camposAListar[0];
     const label = LABELS_CAMPOS[campoId] || campoId;

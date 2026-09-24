@@ -83,8 +83,8 @@ export async function salvarUsuariosWhatsApp(usuarios: UsuarioWhatsApp[]): Promi
  * Gera as variantes normalizadas de um número de telefone brasileiro
  * Aceita números com ou sem o nono dígito (9), com ou sem DDI 55, e com sufixos do WhatsApp (@s.whatsapp.net, :1, etc).
  * 
- * Exemplo para (14) 99686-3115:
- * Retorna: ['5514996863115', '551496863115']
+ * Exemplo para (11) 99999-9999:
+ * Retorna: ['5511999999999', '551199999999']
  */
 export function gerarVariantesNumeroBrasil(numeroRaw: string): string[] {
   if (!numeroRaw) return [];
@@ -100,11 +100,11 @@ export function gerarVariantesNumeroBrasil(numeroRaw: string): string[] {
   let numeroLocal = '';
 
   if (limpo.startsWith('55') && (limpo.length === 12 || limpo.length === 13)) {
-    // Ex: 5514996863115 (13) ou 551496863115 (12)
+    // Ex: 5511999999999 (13) ou 551199999999 (12)
     ddd = limpo.slice(2, 4);
     numeroLocal = limpo.slice(4);
   } else if (!limpo.startsWith('55') && (limpo.length === 10 || limpo.length === 11)) {
-    // Ex: 14996863115 (11) ou 1496863115 (10)
+    // Ex: 11999999999 (11) ou 1199999999 (10)
     ddd = limpo.slice(0, 2);
     numeroLocal = limpo.slice(2);
   } else {

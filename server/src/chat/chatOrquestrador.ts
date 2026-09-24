@@ -14,6 +14,7 @@ import {
   isConfirmacaoSimples,
   identificarMultiplosDocumentosNoTexto,
   identificarTipoPedido,
+  extrairTitularExplicito,
 } from '../busca/motor.js';
 import {
   registrarOuIncrementarDocumentoFaltante,
@@ -179,7 +180,7 @@ export function montarPrefixoSaudacao(msg: string, primeiroNome?: string): strin
 }
 
 /**
- * Formata a pergunta de ambiguidade de titulares ("Encontrei certidões de: 1) Thomaz, 2) André. Qual delas?")
+ * Formata a pergunta de ambiguidade de titulares ("Encontrei certidões de: 1) Titular A, 2) Titular B. Qual delas?")
  */
 export function formatarPerguntaAmbiguoTitular(
   tipoPedido: string,
@@ -214,6 +215,62 @@ export function formatarPerguntaAmbiguoTitular(
   }
 
   return `${prefixoSaudacao}Encontrei ${termo} de: ${lista}. ${pronome}`;
+}
+
+/**
+ * Formata a pergunta ao usuário quando um dado pessoal é solicitado sem especificar titular
+ * e sem titular identificado no histórico recente.
+ * Regra rígida: Nunca assume ninguém nem lista todos os titulares; pergunta diretamente: "De quem você precisa do [campo]?"
+ */
+export function formatarPerguntaDadoPessoalSemTitular(
+  campos?: string[],
+  mensagem?: string,
+  prefixoSaudacao: string = ''
+): string {
+  const msgNorm = (mensagem || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const camposNorm = (campos || []).map((c) => c.toLowerCase());
+
+  // Se forem múltiplos campos solicitados
+  if (camposNorm.length > 1) {
+    return `${prefixoSaudacao}De quem você precisa dessas informações?`;
+  }
+
+  const c = camposNorm.length > 0 ? camposNorm[0] : '';
+
+  if (c === 'cpf' || /\bcpf\b/i.test(msgNorm)) {
+    return `${prefixoSaudacao}De quem você precisa do CPF?`;
+  }
+  if (c === 'rg' || /\b(rg|identidade)\b/i.test(msgNorm)) {
+    return `${prefixoSaudacao}De quem você precisa do RG?`;
+  }
+  if (c === 'endereco' || /\b(endere[cç]o|mora|resid[eê]ncia)\b/i.test(msgNorm)) {
+    return `${prefixoSaudacao}De quem você precisa do endereço?`;
+  }
+  if (c === 'filiacao' || /\b(m[aã]e|pai|pais|filia[cç][aã]o)\b/i.test(msgNorm)) {
+    if (/\b(m[aã]e)\b/i.test(msgNorm)) return `${prefixoSaudacao}De quem você precisa do nome da mãe?`;
+    if (/\b(pai)\b/i.test(msgNorm)) return `${prefixoSaudacao}De quem você precisa do nome do pai?`;
+    return `${prefixoSaudacao}De quem você precisa da filiação?`;
+  }
+  if (c === 'datanascimento' || /\b(nascimento|data\s*(de\s*)?nascimento|idade)\b/i.test(msgNorm)) {
+    return `${prefixoSaudacao}De quem você precisa da data de nascimento?`;
+  }
+  if (c === 'profissao' || /\b(profiss[aã]o|cargo|ocupa[cç][aã]o)\b/i.test(msgNorm)) {
+    return `${prefixoSaudacao}De quem você precisa da profissão?`;
+  }
+  if (c === 'estadocivil' || /\b(estado\s*civil|casad[oa]|solteir[oa])\b/i.test(msgNorm)) {
+    return `${prefixoSaudacao}De quem você precisa do estado civil?`;
+  }
+  if (c === 'validadecnh' || (/\bvalidade\b/i.test(msgNorm) && /\bcnh\b/i.test(msgNorm))) {
+    return `${prefixoSaudacao}De quem você precisa da validade da CNH?`;
+  }
+  if (c === 'categoriacnh' || (/\bcategoria\b/i.test(msgNorm) && /\bcnh\b/i.test(msgNorm))) {
+    return `${prefixoSaudacao}De quem você precisa da categoria da CNH?`;
+  }
+  if (c === 'cnh' || /\b(cnh|habilita[cç][aã]o)\b/i.test(msgNorm)) {
+    return `${prefixoSaudacao}De quem você precisa da CNH?`;
+  }
+
+  return `${prefixoSaudacao}De quem você precisa dessa informação?`;
 }
 
 /**
@@ -464,7 +521,7 @@ function resolverDocumentoOrigem(
         const tipoNorm = normalizarParaBusca(doc.tipo || '');
         const ehCnh = titNorm.includes('cnh') || arqNorm.includes('cnh') || tipoNorm.includes('cnh');
         const ehDoTitular = titularNome
-          ? titNorm.includes(normalizarParaBusca(titularNome)) || doc.titular?.toLowerCase().includes('thomaz')
+          ? titNorm.includes(normalizarParaBusca(titularNome)) || (doc.titular ? normalizarParaBusca(doc.titular).includes(normalizarParaBusca(titularNome)) : false)
           : true;
         return ehCnh && ehDoTitular;
       });
@@ -845,12 +902,16 @@ function extrairUltimoTitularDoHistorico(historicoRecente: Mensagem[]): string |
   if (!historicoRecente || historicoRecente.length === 0) return undefined;
   for (let i = historicoRecente.length - 1; i >= 0; i--) {
     const msg = historicoRecente[i];
+    // Se a mensagem for de saudação pura ou apresentação padrão da VEGA, ignorar para não contaminar o contexto
+    if (msg.rastro?.intencaoDetectada === 'saudacao_ou_vago') continue;
+    if (msg.remetente === 'assistente' && /sou a vega/i.test(msg.texto || '')) continue;
+
     if (msg.rastro?.pessoa) {
       return msg.rastro.pessoa;
     }
-    const textoNorm = normalizarParaBusca(msg.texto || '');
-    if (textoNorm.includes('thomaz') || textoNorm.includes('tomas')) {
-      return 'Thomaz';
+    const titularEncontrado = extrairTitularExplicito(msg.texto || '');
+    if (titularEncontrado) {
+      return titularEncontrado;
     }
   }
   return undefined;
@@ -879,13 +940,13 @@ export async function classificarEReescreverMensagem(
 
   const systemPrompt = `Você é o classificador de intenções da VEGA, assistente corporativa da Delta Plan.
 Titulares cadastrados: ${nomesTitularesConhecidos || 'Nenhum titular cadastrado'}.
-Base de Conhecimento: ${titulosConhecimento || '"Escritório Deltaplan", "testes jg", "Regra de Negócio: Proposta Comercial e Orçamentos"'}.
-Documentos no cofre: ${titulosDocs || '"CNH Thomaz", "Crea", "CRT", "Certidão de Casamento", "Cartão Vacinas"'}.
+Base de Conhecimento: ${titulosConhecimento || '"Escritório Deltaplan", "Regra de Negócio: Proposta Comercial e Orçamentos"'}.
+Documentos no cofre: ${titulosDocs || '"CNH", "Crea", "CRT", "Certidão de Casamento", "Cartão Vacinas"'}.
 
 Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
 {
   "intencao": "saudacao_ou_vago" | "pedir_arquivo" | "listar_documentos" | "dado_pessoal" | "pergunta_conteudo" | "corrigir_dado" | "consultar_vencimentos" | "silenciar_alerta" | "fora_de_escopo",
-  "pessoa": "nome do titular (ex: Thomaz) ou vazio",
+  "pessoa": "nome do titular (ex: Fulano) ou vazio",
   "campos": ["lista de campos cadastrais solicitados ou vazio (valores padronizados: endereco, estadoCivil, rg, profissao, cpf, filiacao, dataNascimento, cnh, validadeCnh, categoriaCnh, orgaoEmissor)"],
   "campo_corrigir": "nome do campo a ser corrigido (ex: profissao, cpf, rg, etc.) ou vazio",
   "valor_novo": "novo valor correto informado pelo usuário ou vazio",
@@ -904,13 +965,13 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
      * NUNCA coloque frases de comando, cortesias ou gírias em "documento_citado" ou "termo_busca"!
    - ATENÇÃO CRÍTICA: Só é "pedir_arquivo" quando a pessoa pede o DOCUMENTO EM SI para envio ("me manda", "me envia", "preciso do arquivo", "quero o PDF", "solta esse arquivo").
    - Pedidos de RESUMO, EXPLICAÇÃO, INTERPRETAÇÃO ou PERGUNTAS sobre o que está escrito ("resuma esse documento", "o que esse documento fala sobre X?", "explique o documento", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?") são SEMPRE "pergunta_conteudo", NUNCA "pedir_arquivo"!
-3. "listar_documentos": Quando o usuário solicitar listar, ver ou consultar quais documentos existem no Cofre ou de uma pessoa ("quais documentos você tem?", "o que tem no cofre?", "quais documentos do Thomaz você tem?", "o que você tem do Thomaz?", "preciso de mais alguns documentos do Thomaz", "me mostra os documentos"). Preencha "pessoa" se citada.
+3. "listar_documentos": Quando o usuário solicitar listar, ver ou consultar quais documentos existem no Cofre ou de uma pessoa ("quais documentos você tem?", "o que tem no cofre?", "quais documentos do Fulano você tem?", "o que você tem do Fulano?", "preciso de mais alguns documentos do Fulano", "me mostra os documentos"). Preencha "pessoa" se citada.
 4. "dado_pessoal": Perguntas sobre dados cadastrais básicos de titulares (RG, CPF, filiação/mãe/pai, profissão, estado civil, validade da CNH etc.).
-5. "pergunta_conteudo": Perguntas sobre o conteúdo de documentos ("resuma esse documento em 10 linhas", "o que esse documento fala sobre águas fluviais?", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?", "qual o endereço do Thomaz?", "o que diz na página 2?").
+5. "pergunta_conteudo": Perguntas sobre o conteúdo de documentos ("resuma esse documento em 10 linhas", "o que esse documento fala sobre águas fluviais?", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?", "qual o endereço do Fulano?", "o que diz na página 2?").
    - Quando o usuário disser "esse documento" ou "o documento acima" logo após a VEGA entregar um anexo, a pergunta DEVE ser respondida com base estrita no texto daquele documento!
-6. "corrigir_dado": Quando o usuário afirmar que uma informação cadastral de titular está errada, incorreta ou precisar ser corrigida (ex.: "a profissão do Thomaz está errada, é Técnico em Eletrotécnica").
+6. "corrigir_dado": Quando o usuário afirmar que uma informação cadastral de titular está errada, incorreta ou precisar ser corrigida (ex.: "a profissão do Fulano está errada, é Técnico em Eletrotécnica").
 7. "consultar_vencimentos": Perguntas sobre prazos de validade ou vencimento de documentos do cofre ("tem algum documento vencendo?", "o que vence este mês?", "quais documentos estão vencidos?").
-8. "silenciar_alerta": Quando o usuário solicitar para parar de alertar sobre o vencimento de um documento (ex: "pare de alertar o CRT do Thomaz").
+8. "silenciar_alerta": Quando o usuário solicitar para parar de alertar sobre o vencimento de um documento (ex: "pare de alertar o CRT do Fulano").
 9. "fora_de_escopo": Apenas assuntos que NÃO TÊM NENHUMA relação com documentos ou informações da empresa (ex: receitas culinárias, futebol, piadas).
 
 REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
@@ -926,32 +987,35 @@ EXEMPLOS OBRIGATÓRIOS:
 - "solta esse documento" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
 - "contrato de locação" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "contrato de locação", "documentos_citados": ["contrato de locação"], "pergunta_completa": "Enviar documento contrato de locação", "termo_busca": "contrato de locação"}
 - "me manda a certidão de óbito" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "certidão de óbito", "documentos_citados": ["certidão de óbito"], "pergunta_completa": "Enviar documento certidão de óbito", "termo_busca": "certidão de óbito"}
-- "me envia o crea e a certidão de casamento do thomaz por favor" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CREA, Certidão de Casamento", "documentos_citados": ["CREA", "Certidão de Casamento"], "pergunta_completa": "Enviar documentos CREA e Certidão de Casamento do Thomaz", "termo_busca": "CREA, Certidão de Casamento"}
-- "quero a certidão e o crea do thomaz" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "Certidão de Casamento, CREA", "documentos_citados": ["Certidão de Casamento", "CREA"], "pergunta_completa": "Enviar documentos Certidão de Casamento e CREA do Thomaz", "termo_busca": "Certidão de Casamento, CREA"}
-- "esses 2 documentos, preciso do anexo dos 2" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Confirmar envio dos dois documentos oferecidos", "termo_busca": ""}
+- "me envia o crea e a certidão de casamento do fulano por favor" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CREA, Certidão de Casamento", "documentos_citados": ["CREA", "Certidão de Casamento"], "pergunta_completa": "Enviar documentos CREA e Certidão de Casamento do Fulano", "termo_busca": "CREA, Certidão de Casamento"}
+- "quero a certidão e o crea do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "Certidão de Casamento, CREA", "documentos_citados": ["Certidão de Casamento", "CREA"], "pergunta_completa": "Enviar documentos Certidão de Casamento e CREA do Fulano", "termo_busca": "Certidão de Casamento, CREA"}
+- "esses 2 documentos, preciso do anexo dos 2" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Confirmar envio dos dois documentos oferecidos", "termo_busca": ""}
 - "pode mandar" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Confirmar envio dos documentos oferecidos", "termo_busca": ""}
 - "os dois" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Confirmar envio dos dois documentos oferecidos", "termo_busca": ""}
-- "me manda o conselho do thomaz" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "conselho", "documentos_citados": [], "pergunta_completa": "Enviar documento do conselho do Thomaz", "termo_busca": "conselho Thomaz"}
-- "me envia o registro profissional do thomaz" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "registro profissional", "documentos_citados": [], "pergunta_completa": "Enviar registro profissional do Thomaz", "termo_busca": "registro profissional Thomaz"}
-- "pare de alertar o CRT do Thomaz" -> {"intencao": "silenciar_alerta", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CRT", "pergunta_completa": "Desativar alertas de vencimento do documento CRT do Thomaz", "termo_busca": "CRT"}
-- "não alerte mais sobre o CRT" -> {"intencao": "silenciar_alerta", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CRT", "pergunta_completa": "Desativar alertas de vencimento do documento CRT", "termo_busca": "CRT"}
-- "qual o CPF do Thomaz?" -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["cpf"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o CPF do Thomaz?", "termo_busca": "Thomaz"}
+- "me manda o conselho do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "conselho", "documentos_citados": [], "pergunta_completa": "Enviar documento do conselho do Fulano", "termo_busca": "conselho Fulano"}
+- "me envia o registro profissional do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "registro profissional", "documentos_citados": [], "pergunta_completa": "Enviar registro profissional do Fulano", "termo_busca": "registro profissional Fulano"}
+- "pare de alertar o CRT do fulano" -> {"intencao": "silenciar_alerta", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CRT", "pergunta_completa": "Desativar alertas de vencimento do documento CRT do Fulano", "termo_busca": "CRT"}
+- "não alerte mais sobre o CRT" -> {"intencao": "silenciar_alerta", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CRT", "pergunta_completa": "Desativar alertas de vencimento do documento CRT", "termo_busca": "CRT"}
+- "qual o CPF do fulano?" -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["cpf"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o CPF do Fulano?", "termo_busca": "Fulano"}
 - "endereço delta" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o endereço da Delta Plan?", "termo_busca": "Escritorio Deltaplan"}
 - "endereço deltaplan" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o endereço do escritório da Deltaplan?", "termo_busca": "Escritorio Deltaplan"}
-- "e o endereço dele?" (após falar do Thomaz) -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["endereco"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o endereço do Thomaz?", "termo_busca": "Thomaz"}
-- "e o RG dele?" (após falar do Thomaz) -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["rg"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o RG do Thomaz?", "termo_busca": "Thomaz"}
-- "me envie esses documentos do thomaz, Endereço, estado civil, RG, profissão." -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["endereco", "estadoCivil", "rg", "profissao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Quais são o endereço, estado civil, RG e profissão do Thomaz?", "termo_busca": "Thomaz"}
+- "e o endereço dele?" (após falar de um titular) -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["endereco"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o endereço do Fulano?", "termo_busca": "Fulano"}
+- "e o RG dele?" (após falar de um titular) -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["rg"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o RG do Fulano?", "termo_busca": "Fulano"}
+- "me envie esses documentos do fulano, Endereço, estado civil, RG, profissão." -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["endereco", "estadoCivil", "rg", "profissao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Quais são o endereço, estado civil, RG e profissão do Fulano?", "termo_busca": "Fulano"}
 - "tem algum documento vencendo?" -> {"intencao": "consultar_vencimentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Consultar documentos com vencimento próximo no cofre", "termo_busca": ""}
 - "o que vence este mês?" -> {"intencao": "consultar_vencimentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Consultar documentos que vencem este mês", "termo_busca": ""}
 - "quais documentos estão vencidos?" -> {"intencao": "consultar_vencimentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Consultar documentos vencidos no cofre", "termo_busca": ""}
-- "a validade da CNH do Thomaz é 10/05/2030" -> {"intencao": "corrigir_dado", "pessoa": "Thomaz", "campo_corrigir": "validadeCnh", "valor_novo": "10/05/2030", "campos": ["validadeCnh"], "documento_citado": "", "pergunta_completa": "Corrigir validade da CNH do Thomaz para 10/05/2030", "termo_busca": ""}
-- "a validade da CNH do Thomaz está errada, é 10/05/2030" -> {"intencao": "corrigir_dado", "pessoa": "Thomaz", "campo_corrigir": "validadeCnh", "valor_novo": "10/05/2030", "campos": ["validadeCnh"], "documento_citado": "", "pergunta_completa": "Corrigir validade da CNH do Thomaz para 10/05/2030", "termo_busca": ""}
-- "a profissão do Thomaz está errada, é Técnico em Eletrotécnica" -> {"intencao": "corrigir_dado", "pessoa": "Thomaz", "campo_corrigir": "profissao", "valor_novo": "Técnico em Eletrotécnica", "campos": ["profissao"], "documento_citado": "", "pergunta_completa": "Corrigir profissão do Thomaz para Técnico em Eletrotécnica", "termo_busca": ""}
-- "está errado, é Técnico em Eletrotécnica" (após VEGA responder profissão) -> {"intencao": "corrigir_dado", "pessoa": "Thomaz", "campo_corrigir": "profissao", "valor_novo": "Técnico em Eletrotécnica", "campos": ["profissao"], "documento_citado": "", "pergunta_completa": "Corrigir profissão do Thomaz para Técnico em Eletrotécnica", "termo_busca": ""}
-- "está errado" (após VEGA responder profissão) -> {"intencao": "corrigir_dado", "pessoa": "Thomaz", "campo_corrigir": "profissao", "valor_novo": "", "campos": ["profissao"], "documento_citado": "", "pergunta_completa": "Informar que o dado do Thomaz está errado", "termo_busca": ""}
-- "quem é a mãe do Thomaz" -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["filiacao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Quem é a mãe do Thomaz?", "termo_busca": "filiacao Thomaz"}
-- "qual é a CNH do Thomaz" -> {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CNH Thomaz", "pergunta_completa": "Enviar documento CNH Thomaz", "termo_busca": "CNH Thomaz"}
-- "o que tem em testes jg" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o conteúdo do documento ou instrução testes jg?", "termo_busca": "testes jg"}
+- "a validade da CNH do fulano é 10/05/2030" -> {"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "validadeCnh", "valor_novo": "10/05/2030", "campos": ["validadeCnh"], "documento_citado": "", "pergunta_completa": "Corrigir validade da CNH do Fulano para 10/05/2030", "termo_busca": ""}
+- "a validade da CNH do fulano está errada, é 10/05/2030" -> {"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "validadeCnh", "valor_novo": "10/05/2030", "campos": ["validadeCnh"], "documento_citado": "", "pergunta_completa": "Corrigir validade da CNH do Fulano para 10/05/2030", "termo_busca": ""}
+- "a profissão do fulano está errada, é Técnico em Eletrotécnica" -> {"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "profissao", "valor_novo": "Técnico em Eletrotécnica", "campos": ["profissao"], "documento_citado": "", "pergunta_completa": "Corrigir profissão do Fulano para Técnico em Eletrotécnica", "termo_busca": ""}
+- "está errado, é Técnico em Eletrotécnica" (após VEGA responder profissão) -> {"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "profissao", "valor_novo": "Técnico em Eletrotécnica", "campos": ["profissao"], "documento_citado": "", "pergunta_completa": "Corrigir profissão do Fulano para Técnico em Eletrotécnica", "termo_busca": ""}
+- "está errado" (após VEGA responder profissão) -> {"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "profissao", "valor_novo": "", "campos": ["profissao"], "documento_citado": "", "pergunta_completa": "Informar que o dado do Fulano está errado", "termo_busca": ""}
+- "quem é a mãe do fulano" -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["filiacao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Quem é a mãe do Fulano?", "termo_busca": "filiacao Fulano"}
+- "qual cpf?" -> {"intencao": "dado_pessoal", "pessoa": "", "campos": ["cpf"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o CPF?", "termo_busca": "cpf"}
+- "qual rg?" -> {"intencao": "dado_pessoal", "pessoa": "", "campos": ["rg"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o RG?", "termo_busca": "rg"}
+- "qual endereço?" -> {"intencao": "dado_pessoal", "pessoa": "", "campos": ["endereco"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o endereço?", "termo_busca": "endereco"}
+- "qual é a CNH do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CNH", "pergunta_completa": "Enviar documento CNH do Fulano", "termo_busca": "CNH Fulano"}
+- "o que tem em Regra de Negócio: Proposta Comercial" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o conteúdo do documento ou instrução Regra de Negócio: Proposta Comercial?", "termo_busca": "Proposta Comercial"}
 - "sim" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Confirmar envio do documento oferecido", "termo_busca": ""}
 `;
 
@@ -1029,7 +1093,7 @@ EXEMPLOS OBRIGATÓRIOS:
     // Detecção expressa de sujeitos na mensagem atual
     const REGEX_EMPRESA = /\b(delta|deltaplan|delta\s*plan|empresa|escrit[oó]rio|escritorio|construtora)\b/i;
     const citaEmpresaNaMensagem = REGEX_EMPRESA.test(msgNorm);
-    const citaThomazNaMensagem = /\b(thomaz|tomas)\b/i.test(msgNorm);
+    const titularExplicitoMsg = extrairTitularExplicito(msgNorm);
 
     // Detecção de intenção de correção de dado cadastral
     const REGEX_CORRECAO = /\b(est[aá]\s*errad[oa]|t[aá]\s*errad[oa]|n[aã]o\s*[eé]|incorret[oa]|corrija|corrigir|alterar|mudar\s*para|o\s*certo\s*[eé]|o\s*correto\s*[eé])\b/i;
@@ -1042,7 +1106,7 @@ EXEMPLOS OBRIGATÓRIOS:
     const REGEX_CONSULTA_VENCIMENTO = /\b(tem\s*algum\s*documento\s*vencendo|o\s*que\s*vence|quais\s*documentos?\s*est[aã]o\s*vencidos?|documentos?\s*vencidos?|documentos?\s*a\s*vencer|vencimento\s*de\s*documentos?|validade\s*dos?\s*documentos?)\b/i;
     const ehConsultaVencimento = REGEX_CONSULTA_VENCIMENTO.test(msgNorm) || parsed.intencao === 'consultar_vencimentos';
 
-    // Detecção de parar de alertar / silenciar alertas ("pare de alertar o CRT do Thomaz")
+    // Detecção de parar de alertar / silenciar alertas
     const REGEX_SILENCIAR = /\b(pare\s*de\s*alerta(r)?|n[aã]o\s*alerte(\s*mais)?|desative(\s*os)?\s*alerta(s)?|desativar\s*alerta(s)?|silenciar\s*alerta(s)?|parar\s*de\s*alerta(r)?)\b/i;
     const ehSilenciarAlerta = REGEX_SILENCIAR.test(msgNorm) || parsed.intencao === 'silenciar_alerta';
 
@@ -1050,8 +1114,8 @@ EXEMPLOS OBRIGATÓRIOS:
 
     if (ehSilenciarAlerta) {
       parsed.intencao = 'silenciar_alerta';
-      if (!parsed.pessoa && citaThomazNaMensagem) {
-        parsed.pessoa = 'Thomaz';
+      if (!parsed.pessoa && titularExplicitoMsg) {
+        parsed.pessoa = titularExplicitoMsg;
       }
       if (!parsed.documento_citado) {
         if (/\bcrt\b/i.test(msgNorm)) parsed.documento_citado = 'CRT';
@@ -1074,9 +1138,9 @@ EXEMPLOS OBRIGATÓRIOS:
         parsed.termo_busca = 'Escritório Deltaplan';
         parsed.pergunta_completa = 'Qual é o endereço do escritório da Deltaplan?';
       }
-    } else if (citaThomazNaMensagem) {
-      // Citou expressamente o titular na mensagem atual
-      parsed.pessoa = 'Thomaz';
+    } else if (titularExplicitoMsg) {
+      // Citou expressamente um titular cadastrado na mensagem atual
+      parsed.pessoa = titularExplicitoMsg;
       origemPessoa = 'mensagem_atual';
     } else {
       // Mensagem atual NÃO cita nem a empresa nem pessoa explicitamente
@@ -1146,8 +1210,10 @@ EXEMPLOS OBRIGATÓRIOS:
       parsed.intencao = 'pergunta_conteudo';
       if (!parsed.pessoa) {
         const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
-        parsed.pessoa = titularDoHistorico || 'Thomaz';
-        origemPessoa = 'contexto';
+        if (titularDoHistorico) {
+          parsed.pessoa = titularDoHistorico;
+          origemPessoa = 'contexto';
+        }
       }
     }
 
@@ -1214,9 +1280,10 @@ EXEMPLOS OBRIGATÓRIOS:
             parsed.termo_busca = '';
           }
         }
-        if (msgNorm.includes('thomaz') || (parsed.pessoa && parsed.pessoa.toLowerCase().includes('thomaz'))) {
-          if (parsed.termo_busca && !parsed.termo_busca.toLowerCase().includes('thomaz')) {
-            parsed.termo_busca = `${parsed.termo_busca} Thomaz`.trim();
+        const titularDetectado = parsed.pessoa || extrairTitularExplicito(mensagemUsuario, titulares.map((t) => t.nome));
+        if (titularDetectado) {
+          if (parsed.termo_busca && !parsed.termo_busca.toLowerCase().includes(titularDetectado.toLowerCase())) {
+            parsed.termo_busca = `${parsed.termo_busca} ${titularDetectado}`.trim();
           }
         }
       }
@@ -1259,7 +1326,7 @@ EXEMPLOS OBRIGATÓRIOS:
     return {
       intencao: parsed.intencao || 'pergunta_conteudo',
       pessoa: parsed.pessoa || undefined,
-      origemPessoa: parsed.pessoa ? (origemPessoa || (citaThomazNaMensagem ? 'mensagem_atual' : 'contexto')) : undefined,
+      origemPessoa: parsed.pessoa ? (origemPessoa || (titularExplicitoMsg ? 'mensagem_atual' : 'contexto')) : undefined,
       campos: parsed.campos && parsed.campos.length > 0 ? parsed.campos : undefined,
       campo_corrigir: parsed.campo_corrigir || undefined,
       valor_novo: parsed.valor_novo || undefined,
@@ -1355,7 +1422,7 @@ REGRAS OBRIGATÓRIAS:
 1. Se a informação NÃO estiver contida nem mencionada nos trechos, responda exatamente: "Não encontrei nos documentos."
 2. Nunca invente ou use conhecimento externo que não esteja nos trechos.
 3. Sempre cite o documento de origem da resposta (ex: "De acordo com a *Política de Agendamento*...", ou "...conforme *Certidão de Casamento*", ou "De acordo com o documento *testes jg*...").
-4. Considere que variações de nomes de titulares nos documentos (ex: Thomaz / Thomaz Lustri Fabre) referem-se à mesma pessoa.
+4. Considere que variações de nomes de titulares nos documentos referem-se à mesma pessoa quando corresponderem ao titular cadastrado no Supabase.
 5. Respostas curtas, diretas e profissionais em português do Brasil, mantendo o tom da persona.
 6. Se o trecho contiver um termo, anotação ou frase curta da base de conhecimento (ex: regras ou limites), use essa informação para responder o que consta no documento respectivo.
 7. FORMATAÇÃO OBRIGATÓRIA (PADRÃO WHATSAPP): Use exclusivamente a formatação do WhatsApp:
@@ -1413,11 +1480,12 @@ export async function processarMensagemChat(dados: {
   mensagemUsuario: string;
   historicoRecente: Mensagem[];
   contato: Contato;
-  documentosDisponiveis: DocumentoRegistro[];
+  documentosDisponiveis?: DocumentoRegistro[];
   documentoIdDireto?: string;
 }): Promise<ResultadoChatOrquestrador> {
   const inicioTotal = Date.now();
-  const { mensagemUsuario, historicoRecente, contato, documentosDisponiveis, documentoIdDireto } = dados;
+  const { mensagemUsuario, historicoRecente, contato, documentoIdDireto } = dados;
+  const documentosDisponiveis = dados.documentosDisponiveis || [];
   const primeiroNome = extrairPrimeiroNome(contato.nome);
   const vocativo = primeiroNome ? `, ${primeiroNome}` : '';
 
@@ -1720,13 +1788,13 @@ export async function processarMensagemChat(dados: {
       todosTitulares[0];
 
     let respostaDado = '';
-    const nomeTit = titularAlvo ? extrairPrimeiroNome(titularAlvo.nome) : 'Thomaz';
+    const nomeTit = titularAlvo ? extrairPrimeiroNome(titularAlvo.nome) : '';
     if (textoAntigo.includes('data de nascimento')) {
-      const dataNasc = titularAlvo?.campos?.dataNascimento?.valor || '06/10/1984';
-      respostaDado = `A data de nascimento do ${nomeTit} é *${dataNasc}*.`;
+      const dataNasc = titularAlvo?.campos?.dataNascimento?.valor || '';
+      respostaDado = dataNasc ? `A data de nascimento do ${nomeTit} é *${dataNasc}*.` : '';
     } else if (textoAntigo.includes('endereço')) {
-      const end = titularAlvo?.campos?.endereco?.valor || 'Rua Benedito Fonseca Rodrigues, 195';
-      respostaDado = `O endereço do ${nomeTit} é *${end}*.`;
+      const end = titularAlvo?.campos?.endereco?.valor || '';
+      respostaDado = end ? `O endereço do ${nomeTit} é *${end}*.` : '';
     } else if (textoAntigo.includes('título de eleitor')) {
       const titEl = (titularAlvo?.campos as any)?.tituloEleitor?.valor || '';
       respostaDado = titEl ? `O número do título de eleitor é *${titEl}*.` : 'Não encontrei o número do título de eleitor registrado.';
@@ -2007,11 +2075,10 @@ export async function processarMensagemChat(dados: {
 
     let titularFiltro = classificacao.pessoa || pessoa;
     if (!titularFiltro) {
-      const msgL = mensagemUsuario.toLowerCase();
-      if (msgL.includes('thomaz')) titularFiltro = 'Thomaz';
-      else if (msgL.includes('menegazzo')) titularFiltro = 'Serviços Menegazzo';
-      else if (msgL.includes('reng')) titularFiltro = 'RENG ENGENHARIA';
-      else if (msgL.includes('delta')) titularFiltro = 'Delta Plan';
+      const titularExtraido = extrairTitularExplicito(mensagemUsuario, todosTitulares.map((t) => t.nome));
+      if (titularExtraido) {
+        titularFiltro = titularExtraido;
+      }
     }
 
     let textoResposta = '';
@@ -2578,7 +2645,8 @@ export async function processarMensagemChat(dados: {
     if (tipoPedidoDetectado && buscaDoc.status === 'nenhum') {
       const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
       const todosTitulares = await obterTodosTitulares();
-      const titularRef = buscaDoc.titularEncontrado || pessoa || classificacao.pessoa || (mensagemUsuario.toLowerCase().includes('thomaz') ? 'Thomaz' : null);
+      const titularExtraidoMsg = extrairTitularExplicito(mensagemUsuario, todosTitulares.map((t) => t.nome));
+      const titularRef = buscaDoc.titularEncontrado || pessoa || classificacao.pessoa || titularExtraidoMsg || null;
       const titularResolvido = titularRef ? resolverTitularCadastrado(titularRef, todosTitulares) : null;
       const primeiroNomeTit = titularResolvido ? (extrairPrimeiroNome(titularResolvido.nome) || titularResolvido.nome) : (titularRef ? (extrairPrimeiroNome(titularRef) || titularRef) : '');
 
@@ -2586,7 +2654,7 @@ export async function processarMensagemChat(dados: {
       const artigo = obterArtigoDefinido(tipoFormatado);
       const prep = primeiroNomeTit ? obterPreposicaoTitular(primeiroNomeTit) : '';
 
-      // 1. "Não encontrei a *Certidão de Nascimento* do *Thomaz* no Cofre."
+      // 1. "Não encontrei [artigo] *[Tipo]* d[prep] *[Titular]* no Cofre."
       const fraseInicial = primeiroNomeTit
         ? `Não encontrei ${artigo} *${tipoFormatado}* ${prep} *${primeiroNomeTit}* no Cofre.`
         : `Não encontrei ${artigo} *${tipoFormatado}* no Cofre.`;
@@ -2717,7 +2785,8 @@ export async function processarMensagemChat(dados: {
 
     const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
     const todosTitulares = await obterTodosTitulares();
-    const titularRef = buscaDoc.titularEncontrado || pessoa || classificacao.pessoa || (mensagemUsuario.toLowerCase().includes('thomaz') ? 'Thomaz' : null);
+    const titularExtraidoMsg = extrairTitularExplicito(mensagemUsuario, todosTitulares.map((t) => t.nome));
+    const titularRef = buscaDoc.titularEncontrado || pessoa || classificacao.pessoa || titularExtraidoMsg || null;
     const titularResolvido = titularRef ? resolverTitularCadastrado(titularRef, todosTitulares) : null;
     const primeiroNomeTit = titularResolvido ? (extrairPrimeiroNome(titularResolvido.nome) || titularResolvido.nome) : (titularRef ? (extrairPrimeiroNome(titularRef) || titularRef) : '');
 
@@ -2801,9 +2870,28 @@ export async function processarMensagemChat(dados: {
   if (intencao === 'corrigir_dado') {
     const inicioCorrecao = Date.now();
     const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
-    const nomePessoa = classificacao.pessoa || pessoa || titularDoHistorico || 'Thomaz';
-    const titular = await obterTitularPorNome(nomePessoa);
-    const primeiroNomeTitular = titular ? (extrairPrimeiroNome(titular.nome) || titular.nome) : nomePessoa;
+    const nomePessoa = classificacao.pessoa || pessoa || titularDoHistorico || null;
+    const titular = nomePessoa ? await obterTitularPorNome(nomePessoa) : null;
+
+    if (!titular) {
+      const textoPerguntaTitular = 'De qual titular você deseja corrigir esse dado?';
+      const rastro = criarRastroFinal({
+        tipoBusca: 'ficha',
+        docsEncontrados: [],
+        enviouAnexo: false,
+        respostaFinal: textoPerguntaTitular,
+        modelo: 'Motor Interno',
+      });
+      return {
+        textoResposta: textoPerguntaTitular,
+        origem: 'motor',
+        intencaoDetectada: 'corrigir_dado',
+        perguntaReescrita: classificacao.pergunta_completa || pergunta_reescrita || mensagemUsuario,
+        rastro,
+      };
+    }
+
+    const primeiroNomeTitular = extrairPrimeiroNome(titular.nome) || titular.nome;
 
     // Mapeamento de termos para campos e labels amigáveis
     const MAPA_CAMPOS_LABELS: Record<string, { id: CampoTitularId; label: string }> = {
@@ -2938,7 +3026,7 @@ export async function processarMensagemChat(dados: {
       intencaoDetectada: 'corrigir_dado',
       perguntaReescrita: `Alterar ${labelCampo} do ${primeiroNomeTitular} para ${valorNovo}`,
       correcaoPendente: {
-        titularId: titular?.id || `tit_${nomePessoa.toLowerCase()}`,
+        titularId: titular.id,
         titularNome: primeiroNomeTitular,
         campoId,
         campoLabel: labelCampo,
@@ -3181,9 +3269,33 @@ export async function processarMensagemChat(dados: {
   if (intencao === 'dado_pessoal') {
     const inicioFicha = Date.now();
     const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
-    const nomePessoa = classificacao.pessoa || pessoa || titularDoHistorico || 'Thomaz';
-    const titular = await obterTitularPorNome(nomePessoa);
-    const primeiroNomeTitular = titular ? (extrairPrimeiroNome(titular.nome) || titular.nome) : nomePessoa;
+    const nomePessoa = classificacao.pessoa || pessoa || titularDoHistorico || null;
+    const titular = nomePessoa ? await obterTitularPorNome(nomePessoa) : null;
+
+    if (!titular) {
+      const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+      const textoPerguntaTitular = formatarPerguntaDadoPessoalSemTitular(
+        classificacao.campos,
+        mensagemUsuario,
+        prefixoSaudacao
+      );
+      const rastro = criarRastroFinal({
+        tipoBusca: 'ficha',
+        docsEncontrados: [],
+        enviouAnexo: false,
+        respostaFinal: textoPerguntaTitular,
+        modelo: 'Motor Interno',
+      });
+      return {
+        textoResposta: textoPerguntaTitular,
+        origem: 'motor',
+        intencaoDetectada: 'dado_pessoal',
+        perguntaReescrita: classificacao.pergunta_completa || pergunta_reescrita || mensagemUsuario,
+        rastro,
+      };
+    }
+
+    const primeiroNomeTitular = extrairPrimeiroNome(titular.nome) || titular.nome;
     const todosDocs = documentosDisponiveis.length > 0 ? documentosDisponiveis : await obterTodosDocumentos();
 
     // 1. Identifica a lista de campos solicitados
@@ -3332,7 +3444,7 @@ export async function processarMensagemChat(dados: {
         let valorAchadoVetorial: string | null = null;
         let docOrigemVetorial: DocumentoRegistro | undefined = undefined;
 
-        const idTitularAlvo = titular?.id || (primeiroNomeTitular.toLowerCase().includes('thomaz') ? 'tit_thomaz' : null);
+        const idTitularAlvo = titular?.id || null;
         if (idTitularAlvo) {
           const termoBuscaCampo = `${label} ${primeiroNomeTitular}`;
           const trechosTitular = await executarBuscaVetorial(termoBuscaCampo, idTitularAlvo, 3);
@@ -3620,15 +3732,47 @@ DIRETRIZES OBRIGATÓRIAS:
     }
 
     let pessoaIdAlvo: string | null = null;
+    const todosTitulares = await obterTodosTitulares();
     const titularHist = extrairUltimoTitularDoHistorico(historicoRecente);
+    const titularDoContato = todosTitulares.find(
+      (t) => contato.nome && t.nome.toLowerCase().includes(contato.nome.toLowerCase().trim())
+    )?.nome;
     const pessoaIdentificada =
-      classificacao.pessoa || pessoa || titularHist || (contato.nome.toLowerCase().includes('thomaz') ? 'Thomaz' : null);
+      classificacao.pessoa || pessoa || titularHist || titularDoContato || null;
     if (pessoaIdentificada) {
-      const todosTitulares = await obterTodosTitulares();
       const titResolvido = resolverTitularCadastrado(pessoaIdentificada, todosTitulares);
       if (titResolvido) {
         pessoaIdAlvo = titResolvido.id;
       }
+    }
+
+    // 0.5. Blindagem de dado pessoal sem titular na busca de conteúdo/vetorial:
+    // Se não há pessoa titular definida explicitamente nem no histórico recente da conversa,
+    // e a pergunta solicita dado pessoal (CPF, RG, CNH, data de nascimento, filiação, endereço residencial),
+    // a VEGA NUNCA assume ninguém nem busca trechos de titular arbitrário: pergunta diretamente o titular.
+    const regexDadoPessoalSensivel = /\b(cpf|rg|identidade|endere[cç]o|mora|resid[eê]ncia|m[aã]e|pai|filia[cç][aã]o|nascimento|data\s*(de\s*)?nascimento)\b/i;
+    const ehTemaCorporativo = /\b(delta|deltaplan|empresa|escrit[oó]rio|sede|obra|proposta|contrato|or[cç]amento)\b/i.test(mensagemUsuario);
+    if (!pessoaIdAlvo && regexDadoPessoalSensivel.test(mensagemUsuario) && !ehTemaCorporativo) {
+      const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+      const textoPerguntaTitular = formatarPerguntaDadoPessoalSemTitular(
+        classificacao.campos,
+        mensagemUsuario,
+        prefixoSaudacao
+      );
+      const rastro = criarRastroFinal({
+        tipoBusca: 'vetorial',
+        docsEncontrados: [],
+        enviouAnexo: false,
+        respostaFinal: textoPerguntaTitular,
+        modelo: 'Motor Interno',
+      });
+      return {
+        textoResposta: textoPerguntaTitular,
+        origem: 'motor',
+        intencaoDetectada: 'dado_pessoal',
+        perguntaReescrita: classificacao.pergunta_completa || pergunta_reescrita || mensagemUsuario,
+        rastro,
+      };
     }
 
     // 1. Busca por nome no Conhecimento caso a mensagem seja o título direto/termo exato

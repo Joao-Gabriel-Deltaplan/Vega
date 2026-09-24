@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { processarMensagemChat } from '../chat/chatOrquestrador.js';
 import { obterTodosDocumentos, obterTodosTitulares } from '../storage.js';
+import { extrairPrimeiroNome } from '../utils/nomeUtils.js';
 import { getSupabaseClient } from '../db/supabaseClient.js';
 import { marcarDocumentoFaltanteComoProvidenciado } from '../documentosFaltantesService.js';
 import { Contato } from '../types.js';
@@ -18,11 +19,15 @@ async function rodarTestesDocumentosFaltantes() {
 
   const supabase = getSupabaseClient();
   const todosDocs = await obterTodosDocumentos();
+  const todosTitulares = await obterTodosTitulares();
+  const titularAlvo = todosTitulares[0] || { id: 'tit_teste', nome: 'Titular Teste' };
+  const primeiroNomeAlvo = extrairPrimeiroNome(titularAlvo.nome) || titularAlvo.nome;
+  const primeiroNomeNorm = primeiroNomeAlvo.toLowerCase();
 
   const contatoTeste: Contato = {
     id: 'user_teste_diretoria',
-    nome: 'João Gabriel Brandini',
-    telefone: '5514996863115',
+    nome: 'Usuario Teste',
+    telefone: '5500000000000',
     setor: 'Diretoria',
     nivelAcesso: 'diretoria',
     avatarCor: '#10b981',
@@ -38,16 +43,16 @@ async function rodarTestesDocumentosFaltantes() {
   await supabase
     .from('documentos_faltantes')
     .delete()
-    .eq('pessoa_id', 'tit_thomaz');
+    .eq('pessoa_id', titularAlvo.id);
 
   // --------------------------------------------------------------------------
   // TESTE 1: Documento Inexistente com Dado Disponível em Outro Documento
   // --------------------------------------------------------------------------
   console.log('--- TESTE 1: Pedido de documento inexistente com dado disponível em outro documento ---');
-  console.log('Pergunta: "certidão de nascimento do Thomaz"');
+  console.log(`Pergunta: "certidão de nascimento do ${primeiroNomeAlvo}"`);
 
   const res1 = await processarMensagemChat({
-    mensagemUsuario: 'certidão de nascimento do Thomaz',
+    mensagemUsuario: `certidão de nascimento do ${primeiroNomeAlvo}`,
     historicoRecente: [],
     contato: contatoTeste,
     documentosDisponiveis: todosDocs,
@@ -62,7 +67,7 @@ async function rodarTestesDocumentosFaltantes() {
   const t1_disseNaoEncontrou =
     texto1Norm.includes('não encontrei') &&
     texto1Norm.includes('certidão de nascimento') &&
-    texto1Norm.includes('thomaz');
+    texto1Norm.includes(primeiroNomeNorm);
 
   const t1_anotouPendentes = texto1Norm.includes('anotei na lista de documentos pendentes');
   const t1_ofereceuCNH =
@@ -70,7 +75,7 @@ async function rodarTestesDocumentosFaltantes() {
     texto1Norm.includes('cnh') &&
     texto1Norm.includes('quer que eu informe?');
   const t1_semAnexo = !res1.anexos || res1.anexos.length === 0;
-  const t1_semDespejoLista = !texto1Norm.includes('estes são os documentos disponíveis do *thomaz*');
+  const t1_semDespejoLista = !texto1Norm.includes(`estes são os documentos disponíveis de *${primeiroNomeNorm}*`);
 
   const passou1 =
     t1_disseNaoEncontrou &&
@@ -93,10 +98,11 @@ async function rodarTestesDocumentosFaltantes() {
   // TESTE 2: Documento Inexistente SEM Dado Equivalente
   // --------------------------------------------------------------------------
   console.log('--- TESTE 2: Pedido de documento inexistente sem dado equivalente ---');
-  console.log('Pergunta: "alvará de reforma do Thomaz"');
+  const perguntaAlvara = `alvará de reforma de ${primeiroNomeAlvo}`;
+  console.log(`Pergunta: "${perguntaAlvara}"`);
 
   const res2 = await processarMensagemChat({
-    mensagemUsuario: 'alvará de reforma do Thomaz',
+    mensagemUsuario: perguntaAlvara,
     historicoRecente: [],
     contato: contatoTeste,
     documentosDisponiveis: todosDocs,
@@ -109,7 +115,7 @@ async function rodarTestesDocumentosFaltantes() {
   const t2_disseNaoEncontrou =
     texto2Norm.includes('não encontrei') &&
     texto2Norm.includes('alvará') &&
-    texto2Norm.includes('thomaz');
+    texto2Norm.includes(primeiroNomeNorm);
 
   const t2_anotouPendentes = texto2Norm.includes('anotei na lista de documentos pendentes');
   const t2_naoOfereceuDadoFalso =
@@ -136,10 +142,10 @@ async function rodarTestesDocumentosFaltantes() {
   // TESTE 3: Pedido Repetido (Contagem Somando no Supabase sem Duplicar)
   // --------------------------------------------------------------------------
   console.log('--- TESTE 3: Pedido repetido somando na contagem ---');
-  console.log('Repetindo pedido de "certidão de nascimento do Thomaz"...');
+  console.log(`Repetindo pedido de "certidão de nascimento de ${primeiroNomeAlvo}"...`);
 
   const res3 = await processarMensagemChat({
-    mensagemUsuario: 'certidão de nascimento do Thomaz',
+    mensagemUsuario: `certidão de nascimento de ${primeiroNomeAlvo}`,
     historicoRecente: [],
     contato: contatoTeste,
     documentosDisponiveis: todosDocs,
@@ -149,7 +155,7 @@ async function rodarTestesDocumentosFaltantes() {
   const { data: registros, error } = await supabase
     .from('documentos_faltantes')
     .select('*')
-    .eq('pessoa_id', 'tit_thomaz')
+    .eq('pessoa_id', titularAlvo.id)
     .ilike('tipo_documento', '%certid%nascimento%');
 
   console.log('Registros retornados do Supabase:', registros);
@@ -170,12 +176,12 @@ async function rodarTestesDocumentosFaltantes() {
   // TESTE 4: Baixa Automática ao Adicionar Documento no Cofre
   // --------------------------------------------------------------------------
   console.log('--- TESTE 4: Baixa automática de documento faltante providenciado ---');
-  console.log('Simulando upload de "Certidão de Nascimento" do Thomaz...');
+  console.log(`Simulando upload de "Certidão de Nascimento" de ${primeiroNomeAlvo}...`);
 
   const baixados = await marcarDocumentoFaltanteComoProvidenciado(
     'Certidão de Nascimento',
-    'tit_thomaz',
-    'Thomaz Lustri Fabre'
+    titularAlvo.id,
+    titularAlvo.nome
   );
 
   const { data: registroAtualizado } = await supabase

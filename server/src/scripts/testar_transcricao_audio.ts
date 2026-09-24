@@ -37,14 +37,14 @@ async function executarTestes() {
   // TESTE 1: Identificação de mensagem de áudio (audioMessage / PTT)
   console.log('--- TESTE 1: Identificação e extração de áudio ---');
   const eventoTexto = {
-    key: { id: 'msg-texto-1', remoteJid: '5514996863115@s.whatsapp.net' },
+    key: { id: 'msg-texto-1', remoteJid: '5500000000000@s.whatsapp.net' },
     message: { conversation: 'Olá VEGA' },
   };
   const infoTexto = extrairInfoAudio(eventoTexto);
   assert(!infoTexto.isAudio, 'Mensagem de texto não deve ser identificada como áudio');
 
   const eventoAudioPayload = {
-    key: { id: 'msg-audio-1', remoteJid: '5514996863115@s.whatsapp.net' },
+    key: { id: 'msg-audio-1', remoteJid: '5500000000000@s.whatsapp.net' },
     messageType: 'audioMessage',
     message: {
       audioMessage: {
@@ -97,7 +97,7 @@ async function executarTestes() {
   const eventoNaoAutorizado = {
     key: {
       id: `test-recusado-${Date.now()}`,
-      remoteJid: '5511999998888@s.whatsapp.net',
+      remoteJid: '555500000000004@s.whatsapp.net',
       fromMe: false,
     },
     messageType: 'audioMessage',
@@ -149,7 +149,7 @@ async function executarTestes() {
   // TESTE 7: Fallback para rota /chat/getBase64FromMediaMessage quando NÃO há base64 no payload
   console.log('\n--- TESTE 7: Fallback para rota /chat/getBase64FromMediaMessage ---');
   const eventoSemBase64 = {
-    key: { id: 'msg-audio-api-1', remoteJid: '5514996863115@s.whatsapp.net' },
+    key: { id: 'msg-audio-api-1', remoteJid: '5500000000000@s.whatsapp.net' },
     messageType: 'audioMessage',
     message: {
       audioMessage: {
@@ -245,7 +245,7 @@ async function executarTestes() {
   console.log('\n--- TESTE 9: Verificação de enriquecimento de Rastro ---');
   const rastroMock: any = {
     mensagemId: 'msg-1',
-    usuarioNome: 'João Gabriel',
+    usuarioNome: 'Usuario Teste',
     mensagemOriginal: 'Qual o meu RG?',
     custoEstimadoUsd: 0.0012,
     tempoTotalMs: 850,

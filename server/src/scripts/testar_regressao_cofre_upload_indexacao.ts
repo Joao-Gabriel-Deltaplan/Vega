@@ -63,16 +63,27 @@ async function testarRegressaoCofre() {
 
     // 2. OBTENÇÃO E UPLOAD DA IMAGEM DE TESTE
     console.log(`\n2️⃣ Preparando e enviando Imagem de teste: "${nomeImg}"...`);
-    const imgBase = await obterBufferArquivo('DADOS THOMAZ.jpeg');
-    if (!imgBase?.buffer) {
-      throw new Error('Não foi possível obter a imagem base de referência para teste.');
+    const todosDocsExistentes = await obterTodosDocumentos();
+    const docImgExistente = todosDocsExistentes.find((d) =>
+      /\.(jpe?g|png|webp)$/i.test(d.arquivo || '')
+    );
+    let bufferImg: Buffer | null = null;
+    if (docImgExistente) {
+      const resImg = await obterBufferArquivo(docImgExistente.arquivo);
+      if (resImg?.buffer) bufferImg = resImg.buffer;
+    }
+    if (!bufferImg) {
+      bufferImg = Buffer.from(
+        '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=',
+        'base64'
+      );
     }
 
-    await uploadArquivoStorage(nomeImg, imgBase.buffer);
+    await uploadArquivoStorage(nomeImg, bufferImg);
     const caminhoImgLocal = path.join(ARQUIVOS_DIR, nomeImg);
     try {
       if (!fs.existsSync(ARQUIVOS_DIR)) fs.mkdirSync(ARQUIVOS_DIR, { recursive: true });
-      fs.writeFileSync(caminhoImgLocal, imgBase.buffer);
+      fs.writeFileSync(caminhoImgLocal, bufferImg);
     } catch {}
 
     const docImgRegistro: DocumentoRegistro = {
@@ -80,10 +91,10 @@ async function testarRegressaoCofre() {
       titulo: 'Imagem de Teste de Regressão',
       arquivo: nomeImg,
       tipo: 'Documento Pessoal',
-      titular: 'Thomaz',
+      titular: 'Titular Teste',
       descricao: 'Imagem de validação de regressão do indexador com visão.',
       visibilidade: 'diretoria',
-      tamanho: `${(imgBase.buffer.length / 1024).toFixed(1)} KB`,
+      tamanho: `${(bufferImg.length / 1024).toFixed(1)} KB`,
       statusIndexacao: 'pendente',
       storagePath: nomeImg,
     };

@@ -137,7 +137,7 @@ export async function limparAudiosExpirados(diasRetencao = 30): Promise<number> 
     const limiteMs = diasRetencao * 24 * 60 * 60 * 1000;
     let totalApagados = 0;
 
-    // 1. Lista as pastas do bucket (cada pasta corresponde a um contato, ex: wa-5514996863115)
+    // 1. Lista as pastas do bucket (cada pasta corresponde a um contato, ex: wa-5511999999999)
     const { data: pastas, error: errPastas } = await supabase.storage
       .from(BUCKET_AUDIOS)
       .list('', { limit: 100 });

@@ -8,7 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function main() {
-  const caminhoCnh = path.resolve(__dirname, '../../../arquivos/CNH DIGITAL THOMAZ.pdf');
+  const caminhoCnh = path.resolve(__dirname, '../../../arquivos/CNH_DIGITAL.pdf');
   console.log('Tamanho do arquivo:', fs.statSync(caminhoCnh).size, 'bytes');
 
   const buf = fs.readFileSync(caminhoCnh);

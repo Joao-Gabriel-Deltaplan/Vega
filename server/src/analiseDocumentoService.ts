@@ -199,16 +199,16 @@ REGRAS DE CLASSIFICAÇÃO:
    - Se não constar nenhum nome de pessoa ou empresa, retorne null.
 
 3. RECONHECIMENTO DE TITULAR (titularIdentificado):
-   - Se o "nomeNoDocumento" pertencer claramente a um titular cadastrado (ex: "THOMAZ LUSTRI FABRE" ou "Thomaz Fabre" corresponde ao titular cadastrado "Thomaz" ou "Thomaz Lustri Fabre"), retorne exatamente o nome do titular cadastrado.
+   - Se o "nomeNoDocumento" pertencer claramente a um titular cadastrado (ex: "FULANO DA SILVA" corresponde ao titular cadastrado "Fulano da Silva"), retorne exatamente o nome do titular cadastrado.
    - Se o documento for comprovadamente da própria empresa (ex: Contrato Social da Delta Plan, Alvará da Delta Plan), retorne "Delta Plan".
    - Se o documento for pessoal ou de outra empresa e o nome NÃO bater com nenhum titular cadastrado, retorne null e marque "novoTitularSugerido": true.
    - NUNCA assuma "Delta Plan" como padrão para documentos de pessoas físicas ou quando o titular for desconhecido! Campo não identificado deve ser null.
 
 4. DADOS COMPLEMENTARES:
-   - "titulo": Título limpo e claro (ex: "Passaporte Thomaz Lustri Fabre", "CNH Thomaz", "Contrato Social Delta Plan").
+   - "titulo": Título limpo e claro (ex: "Passaporte Fulano da Silva", "CNH Fulano", "Contrato Social Delta Plan").
    - "descricao": Resumo informativo factual em 1 frase.
    - "visibilidade": "diretoria" para documentos pessoais, societários ou financeiros; "geral" para normas ou regimentos.
-   - "apelidos": 2 a 4 termos/sinônimos úteis para busca (ex: ["passaporte", "passaporte thomaz"]).
+   - "apelidos": 2 a 4 termos/sinônimos úteis para busca (ex: ["passaporte", "passaporte pessoal"]).
    - "dataValidade": Data de validade/expiração no formato DD/MM/AAAA, ou null se não tiver validade.
    - "camposTitular": { "cpf": string|null, "rg": string|null, "orgaoEmissor": string|null, "dataNascimento": string|null, "validadeCnh": string|null }
 

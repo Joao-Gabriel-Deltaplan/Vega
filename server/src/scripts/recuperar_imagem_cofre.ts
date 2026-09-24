@@ -13,7 +13,7 @@ import { indexarDocumentoBackground } from '../indexador/indexadorAutomatico.js'
 import { DocumentoRegistro } from '../types.js';
 
 async function main() {
-  console.log('--- RECUPERAÇÃO E INDEXAÇÃO DE DADOS THOMAZ.jpeg ---');
+  console.log('--- RECUPERAÇÃO E INDEXAÇÃO DE DADOS_CADASTRADOS.jpeg ---');
   const supabase = getSupabaseClient();
 
   // Verifica se o arquivo está no Storage
@@ -23,9 +23,9 @@ async function main() {
     return;
   }
 
-  const arquivoStorage = listaStorage?.find((f) => f.name === 'DADOS THOMAZ.jpeg');
+  const arquivoStorage = listaStorage?.find((f) => f.name === 'DADOS_CADASTRADOS.jpeg');
   if (!arquivoStorage) {
-    console.error('Arquivo "DADOS THOMAZ.jpeg" não encontrado no bucket documentos!');
+    console.error('Arquivo "DADOS_CADASTRADOS.jpeg" não encontrado no bucket documentos!');
     return;
   }
   const tamanhoKb = arquivoStorage.metadata?.size ? (arquivoStorage.metadata.size / 1024).toFixed(1) : '27.7';
@@ -34,16 +34,16 @@ async function main() {
   // Insere ou obtém registro na tabela documentos
   const docRegistro: DocumentoRegistro = {
     id: `doc-recuperado-${Date.now()}`,
-    titulo: 'Dados Thomaz',
-    arquivo: 'DADOS THOMAZ.jpeg',
+    titulo: 'Dados Cadastrais Teste',
+    arquivo: 'DADOS_CADASTRADOS.jpeg',
     tipo: 'Documento Pessoal',
-    titular: 'Thomaz',
-    descricao: 'Documento com dados pessoais de Thomaz recuperado no cofre.',
+    titular: 'Titular Teste',
+    descricao: 'Documento com dados pessoais de titular de teste recuperado no cofre.',
     visibilidade: 'diretoria',
     tamanho: `${tamanhoKb} KB`,
     statusIndexacao: 'pendente',
-    storagePath: 'DADOS THOMAZ.jpeg',
-    apelidos: ['dados thomaz', 'thomaz', 'documento pessoal'],
+    storagePath: 'DADOS_CADASTRADOS.jpeg',
+    apelidos: ['dados cadastrais', 'dados pessoais', 'documento pessoal'],
   };
 
   const docSalvo = await adicionarDocumento(docRegistro);
@@ -58,7 +58,7 @@ async function main() {
   for (let i = 0; i < 20; i++) {
     await new Promise((r) => setTimeout(r, 1000));
     const todos = await obterTodosDocumentos();
-    const docAtualizado = todos.find((d) => d.arquivo === 'DADOS THOMAZ.jpeg');
+    const docAtualizado = todos.find((d) => d.arquivo === 'DADOS_CADASTRADOS.jpeg');
     if (docAtualizado && docAtualizado.statusIndexacao !== 'pendente') {
       console.log(`\n🎉 Indexação finalizada! Status: "${docAtualizado.statusIndexacao}"`);
       if (docAtualizado.erroIndexacao) {

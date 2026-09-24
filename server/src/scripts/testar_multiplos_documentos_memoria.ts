@@ -7,7 +7,8 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 import { processarMensagemChat } from '../chat/chatOrquestrador.js';
-import { obterTodosDocumentos } from '../storage.js';
+import { obterTodosDocumentos, obterTodosTitulares } from '../storage.js';
+import { extrairPrimeiroNome } from '../utils/nomeUtils.js';
 import { Contato, Mensagem } from '../types.js';
 
 async function rodarTestes() {
@@ -16,23 +17,27 @@ async function rodarTestes() {
   console.log('===============================================================\n');
 
   const todosDocs = await obterTodosDocumentos();
+  const todosTitulares = await obterTodosTitulares();
+  const titularAlvo = todosTitulares.find(t => t.tipo !== 'PJ') || todosTitulares[0] || { id: 'tit_teste', nome: 'Titular Teste' };
+  const primeiroNome = extrairPrimeiroNome(titularAlvo.nome) || titularAlvo.nome;
+
   const contato: Contato = {
     id: 'user_teste',
-    nome: 'Joao Gabriel',
+    nome: titularAlvo.nome,
     telefone: '176948374462673',
     nivelAcesso: 'diretoria',
   } as Contato;
 
   // ---------------------------------------------------------------------------
   // TESTE 1: PEDIDO DE VÁRIOS DOCUMENTOS (Exigências 1 e 4)
-  // "me envia o crea e a certidão de casamento do thomaz por favor"
-  // Deve enviar exatamente os dois anexos (Crea e Certidão) sem perguntar nada.
+  // Deve enviar exatamente os dois anexos sem perguntar nada.
   // ---------------------------------------------------------------------------
   console.log('>>> TESTE 1: Pedido de múltiplos documentos direto');
-  console.log('Mensagem: "me envia o crea e a certidão de casamento do thomaz por favor"');
+  const msg1 = `me envia o crea e a certidão de casamento de ${primeiroNome} por favor`;
+  console.log(`Mensagem: "${msg1}"`);
 
   const res1 = await processarMensagemChat({
-    mensagemUsuario: 'me envia o crea e a certidão de casamento do thomaz por favor',
+    mensagemUsuario: msg1,
     historicoRecente: [],
     contato,
     documentosDisponiveis: todosDocs,
@@ -61,16 +66,17 @@ async function rodarTestes() {
   // ---------------------------------------------------------------------------
   // TESTE 2: PEDIDO AMBÍGUO DE VERDADE (Exigência 3)
   // Mensagem com termo ambíguo que corresponde a mais de um documento (CREA e CRT):
-  // "me manda o conselho do thomaz"
+  // "me manda o conselho do titular"
   // Deve listar as opções enumeradas: "1) *CRT*, 2) *Crea*. Quer os dois ou algum específico?"
   // e retornar documentoOferecidoId guardado na conversa.
   // ---------------------------------------------------------------------------
   console.log('---------------------------------------------------------------');
   console.log('>>> TESTE 2: Pedido ambíguo de verdade');
-  console.log('Mensagem: "me manda o conselho do thomaz"');
+  const msgAmbigua = `me manda o conselho de ${primeiroNome}`;
+  console.log(`Mensagem: "${msgAmbigua}"`);
 
   const res2 = await processarMensagemChat({
-    mensagemUsuario: 'me manda o conselho do thomaz',
+    mensagemUsuario: msgAmbigua,
     historicoRecente: [],
     contato,
     documentosDisponiveis: todosDocs,
@@ -111,7 +117,7 @@ async function rodarTestes() {
       remetente: 'cliente',
       nomeRemetente: contato.nome,
       horario: '10:00',
-      texto: 'me manda o conselho do thomaz',
+      texto: msgAmbigua,
     },
     {
       id: 'msg-2',

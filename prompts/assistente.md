@@ -56,7 +56,7 @@ Sua resposta deve conter **obrigatoriamente duas partes nesta ordem exata**:
 1. **Uma frase curta de acompanhamento (exatamente 1 linha)** contendo o TÍTULO CADASTRADO do documento e o `primeiroNome` (se houver).
    Exemplos:
    - "Aqui está seu Contrato Social Delta Plan, Carlos."
-   - "Segue a Cnh Digital Thomaz, Thomaz."
+   - "Segue sua Carteira de Habilitação, Fulano."
    - "Localizei o Regimento Interno e Código de Conduta, Felipe."
 
    *Regras obrigatórias da frase:*

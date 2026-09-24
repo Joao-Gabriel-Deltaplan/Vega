@@ -158,7 +158,7 @@ export const UsuariosView: React.FC = () => {
 
     const numeroLimpo = formNumero.replace(/\D/g, '');
     if (numeroLimpo.length < 10) {
-      setFormErro('Informe um número válido com DDD (mínimo 10 dígitos). Ex: 5514996863115');
+      setFormErro('Informe um número válido com DDD (mínimo 10 dígitos). Ex: 5511999999999');
       return;
     }
 
@@ -686,7 +686,7 @@ export const UsuariosView: React.FC = () => {
                 <input
                   type="text"
                   required
-                  placeholder="Ex: Thomaz Fabre"
+                  placeholder="Ex: Fulano de Tal"
                   value={formNome}
                   onChange={(e) => setFormNome(e.target.value)}
                   className="w-full px-3 py-2 bg-[#0b0f14] rounded-xl text-xs text-slate-100 border border-[#202937] focus:border-emerald-500 focus:outline-none transition-colors"
@@ -701,13 +701,13 @@ export const UsuariosView: React.FC = () => {
                 <input
                   type="text"
                   required
-                  placeholder="Ex: 5514996863115"
+                  placeholder="Ex: 5511999999999"
                   value={formNumero}
                   onChange={(e) => setFormNumero(e.target.value)}
                   className="w-full px-3 py-2 bg-[#0b0f14] rounded-xl text-xs font-mono text-slate-100 border border-[#202937] focus:border-emerald-500 focus:outline-none transition-colors"
                 />
                 <span className="text-[11px] text-slate-500 mt-1 block">
-                  Exemplo: 5514996863115 (sem traços ou parênteses).
+                  Exemplo: 5511999999999 (sem traços ou parênteses).
                 </span>
               </div>
 

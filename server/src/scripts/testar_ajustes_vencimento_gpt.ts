@@ -9,8 +9,9 @@ import {
   silenciarAlertasDocumento,
   sincronizarValidadesDocumentosExistentes,
 } from '../vencimentos/alertaVencimentoService.js';
-import { obterTodosDocumentos, atualizarDocumento } from '../storage.js';
+import { obterTodosDocumentos, atualizarDocumento, obterTodosTitulares } from '../storage.js';
 import { processarMensagemChat } from '../chat/chatOrquestrador.js';
+import { extrairPrimeiroNome } from '../utils/nomeUtils.js';
 import { DocumentoRegistro, Contato, Mensagem } from '../types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -52,12 +53,20 @@ async function main() {
     );
   }
 
-  // 3. Teste pelo chat: "pare de alertar o CRT do Thomaz"
-  console.log('\n--- 3. TESTANDO NO CHAT: "pare de alertar o CRT do Thomaz" ---');
+  // 3. Teste pelo chat: silenciar documento
+  const docsIniciais = await obterTodosDocumentos();
+  const todosTitulares = await obterTodosTitulares();
+  const crtPosChat = docsIniciais.find((d) => d.titulo.includes('CRT') || d.tipo === 'CRT') || docsIniciais[0];
+  const titularDoc = todosTitulares.find(t => t.id === crtPosChat?.titularId);
+  const primeiroNomeTit = titularDoc ? extrairPrimeiroNome(titularDoc.nome) : '';
+  const tipoOuTitulo = crtPosChat?.tipo || crtPosChat?.titulo || 'Documento';
+  const msg1 = primeiroNomeTit ? `pare de alertar ${tipoOuTitulo} de ${primeiroNomeTit}` : `pare de alertar ${tipoOuTitulo}`;
+
+  console.log(`\n--- 3. TESTANDO NO CHAT: "${msg1}" ---`);
   const contatoAdmin: Contato = {
     id: 'user-admin-teste',
-    nome: 'João Gabriel Brandini',
-    telefone: '11999999999',
+    nome: 'Usuario Teste',
+    telefone: '5500000000005',
     avatarCor: '#10b981',
     cargo: 'Diretor',
     setor: 'Diretoria',
@@ -71,7 +80,6 @@ async function main() {
   };
 
   const historico: Mensagem[] = [];
-  const msg1 = 'pare de alertar o CRT do Thomaz';
   console.log(`>>> MENSAGEM: "${msg1}"`);
 
   const res1 = await processarMensagemChat({
@@ -109,26 +117,26 @@ async function main() {
   console.log(`RESPOSTA APÓS CONFIRMAÇÃO:\n${res2.textoResposta}`);
 
   const docsPosChat = await obterTodosDocumentos();
-  const crtPosChat = docsPosChat.find((d) => d.titulo.includes('CRT') || d.arquivo.includes('CRT'));
-  console.log(`\nStatus CRT após confirmação no chat: silenciarAlertas = ${crtPosChat?.silenciarAlertas}`);
+  const docAtualizado = docsPosChat.find((d) => d.id === crtPosChat?.id);
+  console.log(`\nStatus documento após confirmação no chat: silenciarAlertas = ${docAtualizado?.silenciarAlertas}`);
 
   // 4. Teste de substituição de documento: se o documento for substituído, silenciarAlertas volta a false
   console.log('\n--- 4. TESTANDO SUBSTITUIÇÃO DE DOCUMENTO (ALERTAS VOLTAM A FUNCIONAR) ---');
   if (crtPosChat) {
     console.log(`Simulando substituição de arquivo no documento "${crtPosChat.titulo}"...`);
-    // Simulando PATCH /api/documentos/:id com novo arquivo
+    const nomeOriginal = crtPosChat.arquivo;
     await atualizarDocumento(crtPosChat.id, {
-      arquivo: 'CRT_THOMAZ_NOVA_VERSAO.pdf',
+      arquivo: 'DOCUMENTO_TESTE_NOVA_VERSAO.pdf',
       silenciarAlertas: false, // Regra: se o documento for substituído, alertas voltam a funcionar
     });
 
     const docsPosSubstituicao = await obterTodosDocumentos();
-    const crtPosSub = docsPosSubstituicao.find((d) => d.id === crtPosChat.id);
-    console.log(`✓ Status CRT após substituição: silenciarAlertas = ${crtPosSub?.silenciarAlertas} (Alertas reativados!)`);
+    const docPosSub = docsPosSubstituicao.find((d) => d.id === crtPosChat.id);
+    console.log(`✓ Status documento após substituição: silenciarAlertas = ${docPosSub?.silenciarAlertas} (Alertas reativados!)`);
 
     // Restaura nome do arquivo original
     await atualizarDocumento(crtPosChat.id, {
-      arquivo: 'CRT THOMAZ 2025.pdf',
+      arquivo: nomeOriginal,
       silenciarAlertas: false,
     });
   }

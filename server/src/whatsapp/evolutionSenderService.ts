@@ -45,7 +45,7 @@ export function obterConfigEvolution(): EvolutionConfig | null {
  * Normaliza o identificador do destinatário para o formato esperado pela Evolution API.
  * - Se terminar em @lid, mantém o JID @lid para responder na mesma conversa do WhatsApp.
  * - Se for grupo (@g.us), mantém o JID do grupo.
- * - Se for número de telefone (com @s.whatsapp.net, formatação com traços, etc), extrai apenas os dígitos numéricos com DDI (ex: 5514996863115).
+ * - Se for número de telefone (com @s.whatsapp.net, formatação com traços, etc), extrai apenas os dígitos numéricos com DDI (ex: 5511999999999).
  */
 export function normalizarDestinatarioEvolution(destinatarioRaw: string): string {
   if (!destinatarioRaw) return '';

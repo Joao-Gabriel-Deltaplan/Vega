@@ -87,7 +87,7 @@ async function testar() {
             event: 'messages.upsert',
             data: {
               key: {
-                remoteJid: '5514996863115@s.whatsapp.net',
+                remoteJid: '5500000000000@s.whatsapp.net',
                 fromMe: false,
                 id: `TESTE_RAILWAY_${Date.now()}_${Math.random()}`,
               },

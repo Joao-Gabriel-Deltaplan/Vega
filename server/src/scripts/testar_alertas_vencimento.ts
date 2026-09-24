@@ -14,6 +14,7 @@ import {
   atualizarValidadeDocumento,
 } from '../vencimentos/alertaVencimentoService.js';
 import { obterTodosDocumentos } from '../storage.js';
+import { extrairPrimeiroNome } from '../utils/nomeUtils.js';
 import { processarMensagemChat } from '../chat/chatOrquestrador.js';
 import { DocumentoRegistro, Contato, Mensagem } from '../types.js';
 
@@ -113,8 +114,8 @@ async function main() {
     console.log('\n--- 4. TESTANDO PERGUNTAS NO CHAT COM A VEGA ---');
     const contatoAdmin: Contato = {
       id: 'user-admin-teste',
-      nome: 'João Gabriel Brandini',
-      telefone: '11999999999',
+      nome: 'Usuario Teste',
+      telefone: '5500000000005',
       avatarCor: '#10b981',
       cargo: 'Diretor',
       setor: 'Diretoria',
@@ -150,11 +151,17 @@ async function main() {
     // 5. Testar correção de validade pelo chat com confirmação
     console.log('\n==================================================');
     console.log('--- 5. TESTANDO CORREÇÃO DE VALIDADE PELO CHAT ---');
-    const msgCorrecao = 'a validade da CNH do Thomaz é 10/05/2030';
+    const docsAntes = await obterTodosDocumentos();
+    const todosTitulares = await obterTodosTitulares();
+    const docAlvo = docsAntes.find(d => d.dataValidade && d.titularId) || docsAntes[0];
+    const titularAlvo = todosTitulares.find(t => t.id === docAlvo?.titularId) || { id: 'tit_teste', nome: docAlvo?.titular || 'Titular Teste' };
+    const primeiroNomeTitular = extrairPrimeiroNome(titularAlvo.nome) || titularAlvo.nome;
+    const validadeOriginal = docAlvo?.dataValidade || '26/08/2034';
+    const tipoDoc = docAlvo?.tipo || docAlvo?.titulo || 'Documento';
+    const msgCorrecao = `a validade de ${tipoDoc} de ${primeiroNomeTitular} é 10/05/2030`;
     console.log(`>>> MENSAGEM: "${msgCorrecao}"`);
 
     const historicoCorrecao: Mensagem[] = [];
-    const docsAntes = await obterTodosDocumentos();
     const res1 = await processarMensagemChat({
       mensagemUsuario: msgCorrecao,
       historicoRecente: historicoCorrecao,
@@ -191,15 +198,15 @@ async function main() {
     });
     console.log(`\nRESPOSTA APÓS CONFIRMAÇÃO:\n${res2.textoResposta}`);
 
-    // Verificar se atualizou em documentos.json
+    // Verificar se atualizou em documentos
     const docsAposCorrecao = await obterTodosDocumentos();
-    const cnhAposCorrecao = docsAposCorrecao.find(d => d.tipo === 'CNH' && d.titular?.includes('Thomaz'));
-    console.log(`\n✓ Verificação pós-correção: CNH Thomaz = ${cnhAposCorrecao?.dataValidade}, Origem = ${cnhAposCorrecao?.origemValidade}`);
+    const docApos = docsAposCorrecao.find(d => d.id === docAlvo?.id);
+    console.log(`\n✓ Verificação pós-correção: ${tipoDoc} = ${docApos?.dataValidade}, Origem = ${docApos?.origemValidade}`);
 
-    // Restaurar validade original da CNH (26/08/2034)
-    console.log('Restaurando validade original da CNH para 26/08/2034...');
-    if (cnhAposCorrecao) {
-      await atualizarValidadeDocumento(cnhAposCorrecao.id, '26/08/2034', 'corrigido pelo chat', 'Restaurado após teste');
+    // Restaurar validade original
+    console.log(`Restaurando validade original para ${validadeOriginal}...`);
+    if (docApos && docAlvo) {
+      await atualizarValidadeDocumento(docAlvo.id, validadeOriginal, 'corrigido pelo chat', 'Restaurado após teste');
     }
   } finally {
     // 6. Limpar documentos de teste temporários e seus alertas

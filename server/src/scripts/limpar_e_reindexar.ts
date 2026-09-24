@@ -11,7 +11,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 async function main() {
   const supabase = getSupabaseClient();
   console.log('1. Removendo duplicatas e limpando documentos CNH e CREA...');
-  await supabase.from('documentos').delete().eq('arquivo', 'CNH DIGITAL THOMAZ.pdf');
+  await supabase.from('documentos').delete().eq('arquivo', 'CNH_DIGITAL.pdf');
   await supabase.from('documentos').delete().eq('arquivo', 'CREA - SP.pdf');
 
   console.log('2. Reindexando CNH e CREA...');

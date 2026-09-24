@@ -46,25 +46,25 @@ async function executarTestesWebhookWhatsApp() {
   const variantes1 = gerarVariantesNumeroBrasil('(14) 99686-3115');
   console.log(`Variantes de "(14) 99686-3115":`, variantes1);
   assert(
-    variantes1.includes('5514996863115') && variantes1.includes('551496863115'),
+    variantes1.includes('5500000000000') && variantes1.includes('5500000000000'),
     'Gera variantes com 9 (13 dígitos) e sem 9 (12 dígitos)'
   );
 
-  const variantesJid = gerarVariantesNumeroBrasil('551496863115@s.whatsapp.net');
-  console.log(`Variantes de JID sem 9 ("551496863115@s.whatsapp.net"):`, variantesJid);
+  const variantesJid = gerarVariantesNumeroBrasil('5500000000000@s.whatsapp.net');
+  console.log(`Variantes de JID sem 9 ("5500000000000@s.whatsapp.net"):`, variantesJid);
   assert(
-    variantesJid.includes('5514996863115') && variantesJid.includes('551496863115'),
+    variantesJid.includes('5500000000000') && variantesJid.includes('5500000000000'),
     'Reconhece número que chega sem o 9 no WhatsApp e gera versão com 9'
   );
 
-  const usuarioAutorizado = await buscarUsuarioPorNumero('551496863115@s.whatsapp.net');
+  const usuarioAutorizado = await buscarUsuarioPorNumero('5500000000000@s.whatsapp.net');
   console.log(`Busca do número (14) 99686-3115 (enviado sem 9):`, usuarioAutorizado?.nome, `| Perfil:`, usuarioAutorizado?.perfil);
   assert(
-    usuarioAutorizado !== null && usuarioAutorizado.perfil === 'admin' && usuarioAutorizado.nome === 'Joao Gabriel',
-    'Usuário cadastrado identificado com sucesso como "Joao Gabriel" (admin)'
+    usuarioAutorizado !== null && usuarioAutorizado.perfil === 'admin' && usuarioAutorizado.nome === 'Usuario Teste',
+    'Usuário cadastrado identificado com sucesso como "Usuario Teste" (admin)'
   );
 
-  const usuarioDesconhecido = await buscarUsuarioPorNumero('5511988887777@s.whatsapp.net');
+  const usuarioDesconhecido = await buscarUsuarioPorNumero('5500000000006@s.whatsapp.net');
   assert(usuarioDesconhecido === null, 'Número não cadastrado (11 98888-7777) retorna null');
 
   // ---------------------------------------------------------------------------
@@ -126,13 +126,13 @@ async function executarTestesWebhookWhatsApp() {
   console.log('\n--- 3. TESTE DE MENSAGEM DE NÚMERO NÃO AUTORIZADO ---');
   const eventoNaoAutorizado = {
     key: {
-      remoteJid: '5511977776666@s.whatsapp.net',
+      remoteJid: '5500000000007@s.whatsapp.net',
       fromMe: false,
       id: `TESTE-NAO-AUTORIZADO-${Date.now()}`,
     },
     pushName: 'Estranho',
     message: {
-      conversation: 'Olá, qual é o CPF do Thomaz?',
+      conversation: 'Olá, qual é o CPF do titular?',
     },
   };
 
@@ -152,11 +152,11 @@ async function executarTestesWebhookWhatsApp() {
   const idMensagemDuplicada = `TESTE-DUPLICADO-${Date.now()}`;
   const eventoOriginal = {
     key: {
-      remoteJid: '5514996863115@s.whatsapp.net',
+      remoteJid: '5500000000000@s.whatsapp.net',
       fromMe: false,
       id: idMensagemDuplicada,
     },
-    pushName: 'Thomaz',
+    pushName: 'Usuario Teste',
     message: {
       conversation: 'Oi VEGA',
     },
@@ -178,7 +178,7 @@ async function executarTestesWebhookWhatsApp() {
   // Mensagem com fromMe = true: deve ignorar imediatamente
   const eventoFromMe = {
     key: {
-      remoteJid: '5514996863115@s.whatsapp.net',
+      remoteJid: '5500000000000@s.whatsapp.net',
       fromMe: true,
       id: `TESTE-FROM-ME-${Date.now()}`,
     },
@@ -197,11 +197,11 @@ async function executarTestesWebhookWhatsApp() {
   // 5.1 Chat Direto perguntando dados cadastrais
   const eventoAutorizadoDireto = {
     key: {
-      remoteJid: '551496863115@s.whatsapp.net', // Enviado na forma sem 9 pelo WhatsApp
+      remoteJid: '5500000000000@s.whatsapp.net', // Enviado na forma sem 9 pelo WhatsApp
       fromMe: false,
       id: `TESTE-AUTORIZADO-${Date.now()}`,
     },
-    pushName: 'Joao Gabriel',
+    pushName: 'Usuario Teste',
     message: {
       conversation: 'Oi VEGA, tudo bem?',
     },
@@ -211,8 +211,8 @@ async function executarTestesWebhookWhatsApp() {
   console.log(`Resposta da VEGA: "${resDireto.resposta}"`);
   assert(resDireto.status === 'processado', 'Mensagem direta autorizada processada com sucesso');
   assert(
-    Boolean(resDireto.resposta && resDireto.usuario?.nome === 'Joao Gabriel'),
-    'Usuário associado à conversa é "Joao Gabriel"'
+    Boolean(resDireto.resposta && resDireto.usuario?.nome === 'Usuario Teste'),
+    'Usuário associado à conversa é "Usuario Teste"'
   );
 
   // 5.2 Em Grupo WhatsApp (@g.us) com RESPONDER_EM_GRUPOS=false (deve ignorar)
@@ -220,11 +220,11 @@ async function executarTestesWebhookWhatsApp() {
   const eventoGrupoBloqueado = {
     key: {
       remoteJid: '120363028392819283@g.us', // JID do grupo
-      participant: '5514996863115@s.whatsapp.net', // Quem enviou dentro do grupo
+      participant: '5500000000000@s.whatsapp.net', // Quem enviou dentro do grupo
       fromMe: false,
       id: `TESTE-GRUPO-BLOQUEADO-${Date.now()}`,
     },
-    pushName: 'Joao Gabriel',
+    pushName: 'Usuario Teste',
     message: {
       conversation: 'Tem algum documento vencendo?',
     },
@@ -242,11 +242,11 @@ async function executarTestesWebhookWhatsApp() {
   const eventoGrupoLiberado = {
     key: {
       remoteJid: '120363028392819283@g.us', // JID do grupo
-      participant: '5514996863115@s.whatsapp.net', // Quem enviou dentro do grupo
+      participant: '5500000000000@s.whatsapp.net', // Quem enviou dentro do grupo
       fromMe: false,
       id: `TESTE-GRUPO-LIBERADO-${Date.now()}`,
     },
-    pushName: 'Joao Gabriel',
+    pushName: 'Usuario Teste',
     message: {
       conversation: 'Tem algum documento vencendo?',
     },

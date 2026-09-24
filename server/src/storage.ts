@@ -41,8 +41,8 @@ function normalizarSetor(setor?: string): SetorUsuario {
   return 'Administrativo';
 }
 
-// Cache síncrono para intenções e buscas rápidas em memória
-let cacheNomesTitulares: string[] = ['Thomaz Lustri Fabre', 'Thomaz', 'RENG ENGENHARIA'];
+// Cache síncrono para intenções e buscas rápidas em memória (populado dinamicamente pelo Supabase)
+let cacheNomesTitulares: string[] = [];
 
 function atualizarCacheNomes(nomes: string[]): void {
   if (nomes && nomes.length > 0) {
@@ -362,7 +362,7 @@ export function resolverTitularCadastrado(
   });
   if (porNomeExato) return porNomeExato;
 
-  // 3. Match por primeiro nome de pessoa física (ex: "Thomaz" -> "Thomaz Lustri Fabre")
+  // 3. Match por primeiro nome de pessoa física (ex: "Fulano" -> "Fulano de Tal")
   for (const t of titulares) {
     const partes = t.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/\s+/);
     const primeiro = partes[0];
@@ -371,7 +371,7 @@ export function resolverTitularCadastrado(
     }
   }
 
-  // 4. Match por partes significativas de pessoas jurídicas (ex: "Menegazzo" -> "Serviços Menegazzo", "RENG" -> "RENG ENGENHARIA")
+  // 4. Match por partes significativas de pessoas jurídicas (ex: "Empresa" -> "Serviços Empresa Ltda")
   for (const t of titulares) {
     const tNomeNorm = t.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     if (tNomeNorm.includes(norm) || norm.includes(tNomeNorm)) {

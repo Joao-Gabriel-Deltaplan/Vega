@@ -7,6 +7,7 @@ import { getSupabaseClient } from '../db/supabaseClient.js';
 import {
   obterTodosDocumentos,
   obterTodosConhecimentos,
+  obterTitularPorNomeOuApelido,
 } from '../storage.js';
 import {
   extrairTextoDocumento,
@@ -149,7 +150,11 @@ export async function rodarIndexacao(idsAlvo: string[]) {
 
       // 1.5 Gravação no Supabase (documentos e trechos)
       const ehCorporativo = doc.titular?.toLowerCase().includes('delta') || !doc.titular;
-      const pessoaId = ehCorporativo ? null : (doc.titular?.toLowerCase().includes('thomaz') ? 'tit_thomaz' : `tit_${doc.titular?.toLowerCase()}`);
+      let pessoaId: string | null = null;
+      if (!ehCorporativo && doc.titular) {
+        const titularCadastrado = await obterTitularPorNomeOuApelido(doc.titular);
+        pessoaId = titularCadastrado?.id || null;
+      }
 
       const { data: novoDoc, error: errDoc } = await supabase
         .from('documentos')

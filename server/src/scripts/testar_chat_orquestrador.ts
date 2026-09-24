@@ -2,7 +2,8 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { processarMensagemChat } from '../chat/chatOrquestrador.js';
-import { obterTodosDocumentos, obterConversaPorId } from '../storage.js';
+import { obterTodosDocumentos, obterTodosTitulares } from '../storage.js';
+import { extrairPrimeiroNome } from '../utils/nomeUtils.js';
 import { Contato, Mensagem } from '../types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -15,10 +16,14 @@ async function executarTestesChat() {
   console.log('================================================================\n');
 
   const todosDocs = await obterTodosDocumentos();
+  const todosTitulares = await obterTodosTitulares();
+  const titularAlvo = todosTitulares.find(t => t.tipo !== 'PJ') || todosTitulares[0] || { id: 'tit_teste', nome: 'Titular Teste' };
+  const primeiroNome = extrairPrimeiroNome(titularAlvo.nome) || titularAlvo.nome;
+
   const contatoTeste: Contato = {
     id: 'contato_diretoria',
-    nome: 'João Gabriel',
-    telefone: '11999999999',
+    nome: 'Usuario Teste',
+    telefone: '5500000000005',
     avatarCor: '#22c55e',
     nivelAcesso: 'diretoria',
     cargo: 'Diretor',
@@ -38,22 +43,22 @@ async function executarTestesChat() {
     },
     {
       titulo: 'Cenário 2: Pedir arquivo (Download de PDF)',
-      mensagem: 'Me manda a CNH do Thomaz por favor',
+      mensagem: `Me manda a CNH de ${primeiroNome} por favor`,
       historico: [] as Mensagem[],
     },
     {
       titulo: 'Cenário 3a: Dado pessoal conferido na ficha (CPF)',
-      mensagem: 'Qual o CPF do Thomaz?',
+      mensagem: `Qual o CPF de ${primeiroNome}?`,
       historico: [] as Mensagem[],
     },
     {
       titulo: 'Cenário 3b: Dado pessoal pendente de conferência na ficha (Pai)',
-      mensagem: 'Qual o nome do pai do Thomaz?',
+      mensagem: `Qual o nome do pai de ${primeiroNome}?`,
       historico: [] as Mensagem[],
     },
     {
       titulo: 'Cenário 3c: Dado pessoal não na ficha -> cai na busca vetorial da pessoa (CREA)',
-      mensagem: 'Qual o número de registro do Thomaz no CREA?',
+      mensagem: `Qual o número de registro de ${primeiroNome} no CREA?`,
       historico: [] as Mensagem[],
     },
     {
@@ -68,7 +73,7 @@ async function executarTestesChat() {
     },
     {
       titulo: 'Cenário 6: Pergunta de conteúdo não encontrada nos documentos',
-      mensagem: 'Qual é a cor preferida e o signo do Thomaz?',
+      mensagem: `Qual é a cor preferida e o signo de ${primeiroNome}?`,
       historico: [] as Mensagem[],
     },
   ];

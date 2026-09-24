@@ -15,7 +15,7 @@ async function rodarTestes() {
   const contatoTeste: Contato = {
     id: 'ct-colaborador',
     nome: 'Colaborador Teste',
-    telefone: '5511999999999',
+    telefone: '5500000000005',
     avatarCor: '#25D366',
     setor: 'Diretoria',
     nivelAcesso: 'diretoria',

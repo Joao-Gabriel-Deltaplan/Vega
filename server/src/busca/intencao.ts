@@ -52,25 +52,16 @@ const PALAVRAS_IGNORADAS_TITULAR = new Set([
 ]);
 
 /**
- * Extrai nome de titular mencionado na mensagem (ex: "do Thomaz", "da Maria", etc.).
+ * Extrai nome de titular mencionado na mensagem (ex: "do Fulano", "da Maria", etc.).
  * REGRA RIGOROSA: Uma palavra só é considerada titular se casar com um titular cadastrado
  * no Supabase (nome completo, primeiro nome ou apelido). NUNCA extrair palavras por posição na frase.
  */
 export function extrairNomeTitularDaMensagem(texto: string): string | null {
   if (!texto) return null;
 
-  // 1. Procura estritamente por correspondência com titulares cadastrados no sistema
+  // 1. Procura estritamente por correspondência com titulares cadastrados no Supabase
   const titularesCadastrados = obterNomesTitularesCadastrados();
-  const titulares = Array.from(
-    new Set([
-      ...titularesCadastrados,
-      'Thomaz Lustri Fabre',
-      'Thomaz',
-      'RENG ENGENHARIA',
-      'Delta Plan',
-      'Delta',
-    ])
-  ).filter(Boolean);
+  const titulares = Array.from(new Set(titularesCadastrados)).filter(Boolean);
 
   const textoNorm = removerAcentos(texto.toLowerCase());
 
@@ -120,7 +111,7 @@ export function classificarIntencao(textoUsuario: string, nomeContato?: string):
       };
     }
 
-    // Se pediu documento sem campo específico (ex: "qual é a CNH do Thomaz", "a CNH do Thomaz", "CNH do Thomaz")
+    // Se pediu documento sem campo específico (ex: "qual é a CNH do Fulano", "a CNH do Fulano", "CNH do Fulano")
     const ehDocSemCampoEspecifico =
       /\b(cnh|crea|crt|certidao|certidão|cartao vacinas|cartão vacinas)\b/i.test(normalizado) &&
       !/\b(numero|número|validade|vencimento|categoria|data|emissao|emissão|expedicao|expedição)\b/i.test(normalizado);

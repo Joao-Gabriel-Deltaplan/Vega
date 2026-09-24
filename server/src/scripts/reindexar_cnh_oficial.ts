@@ -44,7 +44,7 @@ async function main() {
 
   // 1. Localiza o documento no cofre
   const docs = await obterTodosDocumentos();
-  const docsCnh = docs.filter((d) => d.arquivo === 'CNH DIGITAL THOMAZ.pdf' || d.titulo.toLowerCase().includes('cnh'));
+  const docsCnh = docs.filter((d) => d.arquivo === 'CNH_DIGITAL.pdf' || d.titulo.toLowerCase().includes('cnh'));
 
   console.log(`Documentos de CNH encontrados no Cofre: ${docsCnh.length}`);
   if (docsCnh.length === 0) {
@@ -104,7 +104,7 @@ async function main() {
   const textosEmbedding = trechos.map((t) => t.conteudo);
   const embeddings = await gerarEmbeddingsEmLote(textosEmbedding, openai);
 
-  const pessoaId = 'tit_thomaz';
+  const pessoaId = 'tit_teste';
   const { data: novoDocSupabase, error: errInsertDoc } = await supabase
     .from('documentos')
     .insert({
@@ -154,11 +154,11 @@ async function main() {
   const camposSugeridos = await extrairCamposSugeridosFicha(textoCompleto, 'CNH', openai);
   console.log('Campos sugeridos extraídos:', JSON.stringify(camposSugeridos, null, 2));
 
-  await salvarCamposSugeridosNoTitular('Thomaz', camposSugeridos, docAlvo.id, docAlvo.titulo);
+  await salvarCamposSugeridosNoTitular('Titular Teste', camposSugeridos, docAlvo.id, docAlvo.titulo);
 
-  // 7. Teste de Busca Vetorial: "qual a validade da CNH do Thomaz?"
-  console.log('\n7. Testando busca vetorial para: "qual a validade da CNH do Thomaz?"');
-  const perguntaTeste = 'qual a validade da CNH do Thomaz?';
+  // 7. Teste de Busca Vetorial: "qual a validade da CNH do titular?"
+  console.log('\n7. Testando busca vetorial para: "qual a validade da CNH do titular?"');
+  const perguntaTeste = 'qual a validade da CNH do titular?';
   const trechosEncontrados = await executarBuscaVetorial(perguntaTeste, pessoaId, 5);
 
   console.log(`Trechos encontrados (${trechosEncontrados.length}):`);
@@ -173,8 +173,8 @@ async function main() {
     historicoRecente: [],
     contato: {
       id: 'contato_diretoria',
-      nome: 'João Gabriel',
-      telefone: '11999999999',
+      nome: 'Usuario Teste',
+      telefone: '5500000000005',
       avatarCor: '#22c55e',
       nivelAcesso: 'diretoria',
       cargo: 'Diretor',
@@ -189,10 +189,10 @@ async function main() {
 
   // 9. Auditoria de Duplicatas
   console.log('\n9. Verificando ausência de duplicatas:');
-  const docsCofreFinais = (await obterTodosDocumentos()).filter((d) => d.arquivo === 'CNH DIGITAL THOMAZ.pdf');
+  const docsCofreFinais = (await obterTodosDocumentos()).filter((d) => d.arquivo === 'CNH_DIGITAL.pdf');
   console.log(`- No Cofre: ${docsCofreFinais.length} registro(s)`);
 
-  const { data: docsSupabaseFinais } = await supabase.from('documentos').select('id, titulo, arquivo').eq('arquivo', 'CNH DIGITAL THOMAZ.pdf');
+  const { data: docsSupabaseFinais } = await supabase.from('documentos').select('id, titulo, arquivo').eq('arquivo', 'CNH_DIGITAL.pdf');
   console.log(`- No Supabase: ${docsSupabaseFinais?.length} registro(s)`);
 
   // 10. Mostra os primeiros 300 caracteres extraídos com CPF/RG mascarados
