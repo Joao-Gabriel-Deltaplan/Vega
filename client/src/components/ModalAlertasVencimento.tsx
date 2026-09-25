@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Bell,
   BellOff,
@@ -12,8 +12,10 @@ import {
   Building2,
   RefreshCw,
   FileText,
+  ShieldAlert,
 } from 'lucide-react';
-import { AlertaVencimento } from '../types/chat.js';
+import { AlertaVencimento, AvisoSistemaRegistro } from '../types/chat.js';
+import { AvisosSistemaTab } from './AvisosSistemaTab.js';
 
 interface ModalAlertasVencimentoProps {
   aberto: boolean;
@@ -24,20 +26,50 @@ interface ModalAlertasVencimentoProps {
   onMarcarTodosLidos: () => Promise<void>;
   onRecarregar: () => Promise<void>;
   onSilenciarDocumento?: (documentoId: string) => Promise<void>;
+  // Propriedades para Avisos do Sistema
+  avisosSistema?: AvisoSistemaRegistro[];
+  onMarcarAvisoLido?: (id: string) => Promise<void>;
+  onMarcarTodosAvisosLidos?: () => Promise<void>;
 }
 
 export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
   aberto,
   onFechar,
   alertas,
-  totalNaoLidos,
+  totalNaoLidos: totalNaoLidosProp,
   onMarcarLido,
   onMarcarTodosLidos,
   onRecarregar,
   onSilenciarDocumento,
+  avisosSistema = [],
+  onMarcarAvisoLido = async () => {},
+  onMarcarTodosAvisosLidos = async () => {},
 }) => {
+  const [abaPrincipal, setAbaPrincipal] = useState<'vencimentos' | 'avisos'>('vencimentos');
   const [filtro, setFiltro] = useState<'todos' | 'nao_lidos' | 'vencidos' | 'a_vencer'>('todos');
   const [atualizando, setAtualizando] = useState(false);
+
+  // Deduplicação defensiva por documentoId para garantir que nenhum documento apareça repetido
+  const alertasUnicos = useMemo(() => {
+    const mapa = new Map<string, AlertaVencimento>();
+    for (const a of alertas) {
+      if (!a.documentoId) continue;
+      const existente = mapa.get(a.documentoId);
+      if (!existente || new Date(a.dataGeracao).getTime() > new Date(existente.dataGeracao).getTime()) {
+        mapa.set(a.documentoId, a);
+      }
+    }
+    return Array.from(mapa.values());
+  }, [alertas]);
+
+  const totalNaoLidosAtual = useMemo(() => {
+    const calculados = alertasUnicos.filter((a) => !a.lido).length;
+    return typeof totalNaoLidosProp === 'number' ? Math.min(totalNaoLidosProp, calculados) : calculados;
+  }, [alertasUnicos, totalNaoLidosProp]);
+
+  const totalAvisosNaoLidos = useMemo(() => {
+    return avisosSistema.filter((a) => a.status !== 'lido').length;
+  }, [avisosSistema]);
 
   if (!aberto) return null;
 
@@ -50,7 +82,7 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
     }
   };
 
-  const alertasFiltrados = alertas.filter((a) => {
+  const alertasFiltrados = alertasUnicos.filter((a) => {
     if (filtro === 'nao_lidos') return !a.lido;
     if (filtro === 'vencidos') return a.status === 'vencido';
     if (filtro === 'a_vencer') return a.status === 'a_vencer' || a.status === 'vence_hoje';
@@ -69,16 +101,16 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-sm font-semibold text-slate-100">
-                  Alertas de Vencimento de Documentos
+                  Central de Notificações
                 </h2>
-                {totalNaoLidos > 0 && (
+                {(totalNaoLidosAtual > 0 || totalAvisosNaoLidos > 0) && (
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                    {totalNaoLidos} novo(s)
+                    {totalNaoLidosAtual + totalAvisosNaoLidos} pendente(s)
                   </span>
                 )}
               </div>
               <p className="text-xs text-slate-400">
-                Monitoramento contínuo de prazos de validade do Cofre Delta Plan
+                Prazos de validade do Cofre e monitoramento de serviços da VEGA
               </p>
             </div>
           </div>
@@ -89,7 +121,7 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
               onClick={handleRecarregar}
               disabled={atualizando}
               className="p-2 rounded-xl bg-[#121820] hover:bg-[#202937] text-slate-400 hover:text-slate-100 border border-[#263345] transition-colors cursor-pointer disabled:opacity-50"
-              title="Verificar validades agora"
+              title="Atualizar agora"
             >
               <RefreshCw className={`w-4 h-4 ${atualizando ? 'animate-spin text-emerald-400' : ''}`} />
             </button>
@@ -104,8 +136,58 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
           </div>
         </div>
 
-        {/* Barra de Filtros e Ações em Lote */}
-        <div className="px-4 py-2.5 bg-[#0f141c] border-b border-[#1e2633] flex flex-wrap items-center justify-between gap-2 text-xs">
+        {/* Abas Principais: Vencimentos vs Avisos do Sistema */}
+        <div className="flex border-b border-[#1e2633] bg-[#0d1218] px-4 pt-2">
+          <button
+            type="button"
+            onClick={() => setAbaPrincipal('vencimentos')}
+            className={`flex items-center gap-2 py-2.5 px-4 text-xs font-semibold border-b-2 transition-all cursor-pointer ${
+              abaPrincipal === 'vencimentos'
+                ? 'border-amber-400 text-amber-300 bg-[#121820]/60 rounded-t-lg'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <FileText className="w-4 h-4" />
+            <span>Vencimento de Documentos</span>
+            {totalNaoLidosAtual > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300">
+                {totalNaoLidosAtual}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setAbaPrincipal('avisos')}
+            className={`flex items-center gap-2 py-2.5 px-4 text-xs font-semibold border-b-2 transition-all cursor-pointer ${
+              abaPrincipal === 'avisos'
+                ? 'border-rose-400 text-rose-300 bg-[#121820]/60 rounded-t-lg'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <ShieldAlert className="w-4 h-4" />
+            <span>Avisos do Sistema</span>
+            {totalAvisosNaoLidos > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-300">
+                {totalAvisosNaoLidos}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {/* Conteúdo da Aba Ativa */}
+        {abaPrincipal === 'avisos' ? (
+          <AvisosSistemaTab
+            avisos={avisosSistema}
+            carregando={atualizando}
+            onMarcarLido={onMarcarAvisoLido}
+            onMarcarTodosLidos={onMarcarTodosAvisosLidos}
+            onRecarregar={onRecarregar}
+          />
+        ) : (
+          <>
+            {/* Barra de Filtros e Ações em Lote */}
+            <div className="px-4 py-2.5 bg-[#0f141c] border-b border-[#1e2633] flex flex-wrap items-center justify-between gap-2 text-xs">
           <div className="flex items-center gap-1.5">
             <button
               type="button"
@@ -116,7 +198,7 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
                   : 'text-slate-400 hover:text-slate-200 bg-[#18202b]'
               }`}
             >
-              Todos ({alertas.length})
+              Todos ({alertasUnicos.length})
             </button>
             <button
               type="button"
@@ -127,7 +209,7 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
                   : 'text-slate-400 hover:text-slate-200 bg-[#18202b]'
               }`}
             >
-              Não lidos ({totalNaoLidos})
+              Não lidos ({totalNaoLidosAtual})
             </button>
             <button
               type="button"
@@ -138,7 +220,7 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
                   : 'text-slate-400 hover:text-rose-300 bg-[#18202b]'
               }`}
             >
-              Vencidos ({alertas.filter((a) => a.status === 'vencido').length})
+              Vencidos ({alertasUnicos.filter((a) => a.status === 'vencido').length})
             </button>
             <button
               type="button"
@@ -149,11 +231,11 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
                   : 'text-slate-400 hover:text-amber-300 bg-[#18202b]'
               }`}
             >
-              A vencer ({alertas.filter((a) => a.status === 'a_vencer' || a.status === 'vence_hoje').length})
+              A vencer ({alertasUnicos.filter((a) => a.status === 'a_vencer' || a.status === 'vence_hoje').length})
             </button>
           </div>
 
-          {totalNaoLidos > 0 && (
+          {totalNaoLidosAtual > 0 && (
             <button
               type="button"
               onClick={onMarcarTodosLidos}
@@ -188,10 +270,11 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
 
               let corBorda = 'border-[#202937]';
               let corFundo = alerta.lido ? 'bg-[#121820]/60' : 'bg-[#121820]';
+              const textoAVencer = alerta.diasRestantes === 1 ? '1 DIA (AMANHÃ)' : `${alerta.diasRestantes} DIAS`;
               let badgeStatus = (
                 <span className="px-2 py-0.5 rounded text-[10px] font-medium tracking-wider uppercase bg-amber-500/10 text-amber-300 border border-amber-500/20 flex items-center gap-1">
                   <Clock className="w-3 h-3 text-amber-400" />
-                  <span>A VENCER EM {alerta.diasRestantes} DIAS</span>
+                  <span>A VENCER EM {textoAVencer}</span>
                 </span>
               );
 
@@ -199,10 +282,11 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
                 corBorda = alerta.lido ? 'border-rose-500/20' : 'border-rose-500/40';
                 corFundo = alerta.lido ? 'bg-rose-950/10' : 'bg-rose-950/20';
                 const diasPos = Math.abs(alerta.diasRestantes);
+                const textoVencido = diasPos === 1 ? '1 DIA' : `${diasPos} DIAS`;
                 badgeStatus = (
                   <span className="px-2 py-0.5 rounded text-[10px] font-medium tracking-wider uppercase bg-rose-500/15 text-rose-300 border border-rose-500/30 flex items-center gap-1">
                     <AlertTriangle className="w-3 h-3 text-rose-400" />
-                    <span>VENCIDO HÁ {diasPos} DIA(S)</span>
+                    <span>VENCIDO HÁ {textoVencido}</span>
                   </span>
                 );
               } else if (ehVenceHoje) {
@@ -308,6 +392,8 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
           <span>Alertas automáticos: 60, 30 e 7 dias antes do vencimento.</span>
           <span className="font-mono text-[10px]">Delta Plan • VEGA</span>
         </div>
+        </>
+        )}
       </div>
     </div>
   );

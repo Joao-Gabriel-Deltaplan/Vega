@@ -1,6 +1,7 @@
 import path from 'path';
 import { Anexo } from '../types.js';
 import { obterBufferArquivo, gerarSignedUrlArquivo } from '../utils/storageUtils.js';
+import { registrarAviso, notificarRecuperacaoServico } from '../avisos/avisosFalhaService.js';
 
 export interface EvolutionConfig {
   apiUrl: string;
@@ -115,6 +116,7 @@ export async function enviarTextoEvolution(
       console.log(
         `[Evolution API 📤] Texto enviado com sucesso para ${numeroNormalizado} | Status: ${response.status}`
       );
+      notificarRecuperacaoServico('evolution').catch(() => {});
       return {
         sucesso: true,
         statusHttp: response.status,
@@ -130,6 +132,18 @@ export async function enviarTextoEvolution(
           `- URL: ${url}\n` +
           `- Motivo retornado pela Evolution: ${motivo}\n`
       );
+
+      registrarAviso({
+        tipo: 'evolution_falha',
+        origem: 'Evolution API (Envio Texto)',
+        titulo: 'Falha ao enviar mensagem pelo WhatsApp',
+        mensagemTecnica: `HTTP ${response.status}: ${motivo}`,
+        severidade: 'alta',
+        chaveAgrupamento: 'evolution_falha_texto',
+      }).catch((errAviso) => {
+        console.warn('[Avisos ⚠️] Falha ao registrar aviso Evolution:', errAviso);
+      });
+
       return {
         sucesso: false,
         statusHttp: response.status,
@@ -139,14 +153,27 @@ export async function enviarTextoEvolution(
     }
   } catch (erro: any) {
     const dataHora = new Date().toLocaleString('pt-BR');
+    const msgErro = erro?.message || String(erro);
     console.error(
       `\n❌ [Evolution API ERRO DE CONEXÃO/REDE] ${dataHora}\n` +
         `- Destinatário: ${numeroNormalizado}\n` +
-        `- Mensagem de erro: ${erro?.message || erro}\n`
+        `- Mensagem de erro: ${msgErro}\n`
     );
+
+    registrarAviso({
+      tipo: 'evolution_falha',
+      origem: 'Evolution API (Conexão)',
+      titulo: 'Erro de conexão/rede com a Evolution API (WhatsApp)',
+      mensagemTecnica: msgErro,
+      severidade: 'alta',
+      chaveAgrupamento: 'evolution_erro_conexao',
+    }).catch((errAviso) => {
+      console.warn('[Avisos ⚠️] Falha ao registrar aviso Evolution:', errAviso);
+    });
+
     return {
       sucesso: false,
-      motivoFalha: erro?.message || String(erro),
+      motivoFalha: msgErro,
     };
   }
 }
@@ -232,6 +259,7 @@ export async function enviarMediaEvolution(
       console.log(
         `[Evolution API 📎] Documento "${nomeLimpo}" enviado com sucesso para ${numeroNormalizado} via [${metodo}] | Status: ${response.status}`
       );
+      notificarRecuperacaoServico('evolution').catch(() => {});
       return {
         sucesso: true,
         statusHttp: response.status,
@@ -250,6 +278,18 @@ export async function enviarMediaEvolution(
           `- URL: ${url}\n` +
           `- Motivo retornado pela Evolution: ${motivo}\n`
       );
+
+      registrarAviso({
+        tipo: 'evolution_falha',
+        origem: 'Evolution API (Envio Mídia)',
+        titulo: `Falha ao enviar arquivo "${nomeLimpo}" pelo WhatsApp`,
+        mensagemTecnica: `HTTP ${response.status}: ${motivo}`,
+        severidade: 'alta',
+        chaveAgrupamento: 'evolution_falha_media',
+      }).catch((errAviso) => {
+        console.warn('[Avisos ⚠️] Falha ao registrar aviso Evolution:', errAviso);
+      });
+
       return {
         sucesso: false,
         statusHttp: response.status,
@@ -260,15 +300,28 @@ export async function enviarMediaEvolution(
     }
   } catch (erro: any) {
     const dataHora = new Date().toLocaleString('pt-BR');
+    const msgErro = erro?.message || String(erro);
     console.error(
       `\n❌ [Evolution API ERRO DE CONEXÃO/REDE AO ENVIAR MÍDIA] ${dataHora}\n` +
         `- Documento: ${nomeArquivo}\n` +
         `- Destinatário: ${numeroNormalizado}\n` +
-        `- Mensagem de erro: ${erro?.message || erro}\n`
+        `- Mensagem de erro: ${msgErro}\n`
     );
+
+    registrarAviso({
+      tipo: 'evolution_falha',
+      origem: 'Evolution API (Conexão Mídia)',
+      titulo: 'Erro de conexão/rede com a Evolution API ao enviar arquivo',
+      mensagemTecnica: msgErro,
+      severidade: 'alta',
+      chaveAgrupamento: 'evolution_erro_conexao',
+    }).catch((errAviso) => {
+      console.warn('[Avisos ⚠️] Falha ao registrar aviso Evolution:', errAviso);
+    });
+
     return {
       sucesso: false,
-      motivoFalha: erro?.message || String(erro),
+      motivoFalha: msgErro,
     };
   }
 }

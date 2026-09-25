@@ -1,6 +1,12 @@
 import OpenAI from 'openai';
-import { adicionarRegistroUsoIA } from '../storage.js';
+import { adicionarRegistroUsoIA, obterRegistrosUsoIA } from '../storage.js';
 import { RegistroUsoIA } from '../types.js';
+import {
+  registrarAviso,
+  notificarRecuperacaoServico,
+  verificarLimitesConsumoMensal,
+  obterConfiguracoesAvisos,
+} from '../avisos/avisosFalhaService.js';
 
 /**
  * Preços oficiais OpenAI homologados no projeto:
@@ -37,6 +43,54 @@ export interface MetadadosTelemetria {
   contatoNome?: string;
 }
 
+let ultimaChecagemConsumoTimestamp = 0;
+
+/**
+ * Checa o gasto acumulado no mês atual no fuso de Brasília e compara com o limite configurado.
+ */
+async function verificarConsumoMesAtual(): Promise<void> {
+  const agora = Date.now();
+  // Limita checagem a no máximo 1 vez a cada 30 segundos
+  if (agora - ultimaChecagemConsumoTimestamp < 30_000) {
+    return;
+  }
+  ultimaChecagemConsumoTimestamp = agora;
+
+  try {
+    const configAvisos = await obterConfiguracoesAvisos();
+    const limiteUsd = configAvisos.limiteMensalUsd || 0;
+    if (limiteUsd <= 0) return;
+
+    const registros = await obterRegistrosUsoIA();
+    const mesAtual = new Intl.DateTimeFormat('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      year: 'numeric',
+      month: '2-digit',
+    }).format(new Date());
+
+    const registrosMes = registros.filter((r) => {
+      try {
+        const mesReg = new Intl.DateTimeFormat('pt-BR', {
+          timeZone: 'America/Sao_Paulo',
+          year: 'numeric',
+          month: '2-digit',
+        }).format(new Date(r.data));
+        return mesReg === mesAtual;
+      } catch {
+        return false;
+      }
+    });
+
+    const gastoMesUsd = Number(
+      registrosMes.reduce((acc, r) => acc + (r.custoEstimado || 0), 0).toFixed(4)
+    );
+
+    await verificarLimitesConsumoMensal(gastoMesUsd);
+  } catch (err) {
+    console.warn('[Telemetria IA ⚠️] Erro ao checar consumo mensal:', err);
+  }
+}
+
 /**
  * Registra uma chamada na tabela uso_ia do Supabase de forma assíncrona (não-bloqueante).
  */
@@ -71,9 +125,51 @@ export function registrarUsoIaAsync(dados: {
     erro: dados.erro,
   };
 
-  adicionarRegistroUsoIA(registro).catch((err) => {
-    console.warn('[Telemetria IA ⚠️] Falha ao gravar uso_ia no Supabase:', err?.message || err);
-  });
+  adicionarRegistroUsoIA(registro)
+    .then(() => {
+      if (dados.sucesso) {
+        verificarConsumoMesAtual().catch(() => {});
+      }
+    })
+    .catch((err) => {
+      console.warn('[Telemetria IA ⚠️] Falha ao gravar uso_ia no Supabase:', err?.message || err);
+    });
+}
+
+function classificarErroOpenAI(erro: any): { titulo: string; severidade: 'baixa' | 'media' | 'alta' | 'critica'; chave: string } {
+  const msg = erro?.message || String(erro);
+  const msgLower = msg.toLowerCase();
+
+  if (
+    msgLower.includes('api key') ||
+    msgLower.includes('incorrect api key') ||
+    msgLower.includes('invalid_api_key') ||
+    msgLower.includes('authentication')
+  ) {
+    return { titulo: 'Chave da OpenAI inválida ou ausente', severidade: 'critica', chave: 'openai_chave_invalida' };
+  }
+
+  if (
+    msgLower.includes('quota') ||
+    msgLower.includes('rate limit') ||
+    msgLower.includes('insufficient_quota') ||
+    msgLower.includes('exceeded your current quota')
+  ) {
+    return { titulo: 'Cota da OpenAI excedida ou limite de requisições atingido', severidade: 'critica', chave: 'openai_cota_excedida' };
+  }
+
+  if (
+    msgLower.includes('model') &&
+    (msgLower.includes('does not exist') || msgLower.includes('not permitted') || msgLower.includes('access'))
+  ) {
+    return { titulo: 'Modelo da OpenAI não permitido ou inacessível', severidade: 'alta', chave: 'openai_modelo_nao_permitido' };
+  }
+
+  if (msgLower.includes('timeout') || msgLower.includes('timed out') || msgLower.includes('etimedout')) {
+    return { titulo: 'Timeout de comunicação com a OpenAI', severidade: 'alta', chave: 'openai_timeout' };
+  }
+
+  return { titulo: 'Instabilidade ou erro na OpenAI', severidade: 'alta', chave: 'openai_instabilidade' };
 }
 
 /**
@@ -85,7 +181,6 @@ export async function chamarChatComTelemetria(
   meta: MetadadosTelemetria
 ): Promise<OpenAI.Chat.ChatCompletion> {
   const modelo = params.model || 'gpt-5.4-mini';
-  const inicio = Date.now();
 
   try {
     const resposta = await openai.chat.completions.create(params);
@@ -104,8 +199,12 @@ export async function chamarChatComTelemetria(
       sucesso: true,
     });
 
+    // Notifica recuperação se houver aviso de erro ativo para a OpenAI
+    notificarRecuperacaoServico('openai').catch(() => {});
+
     return resposta;
   } catch (erro: any) {
+    const msgErro = erro?.message || String(erro);
     registrarUsoIaAsync({
       motivo: meta.motivo,
       modelo,
@@ -115,8 +214,21 @@ export async function chamarChatComTelemetria(
       contatoId: meta.contatoId,
       contatoNome: meta.contatoNome,
       sucesso: false,
-      erro: erro?.message || String(erro),
+      erro: msgErro,
     });
+
+    const infoErro = classificarErroOpenAI(erro);
+    registrarAviso({
+      tipo: 'openai_erro',
+      origem: `OpenAI Chat (${modelo})`,
+      titulo: infoErro.titulo,
+      mensagemTecnica: msgErro,
+      severidade: infoErro.severidade,
+      chaveAgrupamento: infoErro.chave,
+    }).catch((errAviso) => {
+      console.warn('[Avisos ⚠️] Falha ao registrar aviso de erro OpenAI:', errAviso);
+    });
+
     throw erro;
   }
 }
@@ -147,8 +259,12 @@ export async function chamarEmbeddingsComTelemetria(
       sucesso: true,
     });
 
+    // Notifica recuperação se houver aviso de erro ativo para a OpenAI
+    notificarRecuperacaoServico('openai').catch(() => {});
+
     return resposta;
   } catch (erro: any) {
+    const msgErro = erro?.message || String(erro);
     registrarUsoIaAsync({
       motivo: meta.motivo,
       modelo,
@@ -158,8 +274,21 @@ export async function chamarEmbeddingsComTelemetria(
       contatoId: meta.contatoId,
       contatoNome: meta.contatoNome,
       sucesso: false,
-      erro: erro?.message || String(erro),
+      erro: msgErro,
     });
+
+    const infoErro = classificarErroOpenAI(erro);
+    registrarAviso({
+      tipo: 'openai_erro',
+      origem: `OpenAI Embeddings (${modelo})`,
+      titulo: infoErro.titulo,
+      mensagemTecnica: msgErro,
+      severidade: infoErro.severidade,
+      chaveAgrupamento: infoErro.chave,
+    }).catch((errAviso) => {
+      console.warn('[Avisos ⚠️] Falha ao registrar aviso de erro OpenAI:', errAviso);
+    });
+
     throw erro;
   }
 }

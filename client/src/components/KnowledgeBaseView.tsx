@@ -31,6 +31,7 @@ import {
   Phone,
   Mail,
   FileQuestion,
+  ClipboardCheck,
   Lock,
   Unlock,
   KeyRound,
@@ -49,9 +50,10 @@ import {
 } from '../types/chat.js';
 import { obterPaletaAvatar, obterIniciais } from '../utils/avatarUtils.js';
 import { DocumentosFaltantesView } from './DocumentosFaltantesView.js';
+import { SugestoesDocumentosView } from './SugestoesDocumentosView.js';
 
 interface KnowledgeBaseViewProps {
-  subAbaInicial?: 'conhecimento' | 'documentos' | 'faltantes';
+  subAbaInicial?: 'conhecimento' | 'documentos' | 'faltantes' | 'sugestoes';
 }
 
 const FUSO_HORARIO_PADRAO = 'America/Sao_Paulo';
@@ -103,7 +105,7 @@ function obterSituacaoValidade(
 export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   subAbaInicial = 'documentos',
 }) => {
-  const [subAba, setSubAba] = useState<'conhecimento' | 'documentos' | 'faltantes'>(subAbaInicial);
+  const [subAba, setSubAba] = useState<'conhecimento' | 'documentos' | 'faltantes' | 'sugestoes'>(subAbaInicial);
   const [totalFaltantesPendentes, setTotalFaltantesPendentes] = useState<number>(0);
 
   const carregarTotalFaltantes = async () => {
@@ -1058,6 +1060,21 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
             )}
             {subAba === 'faltantes' && (
               <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-amber-500 rounded-full" />
+            )}
+          </button>
+
+          <button
+            onClick={() => setSubAba('sugestoes')}
+            className={`flex items-center gap-2 pb-3 text-xs sm:text-sm font-medium transition-all relative cursor-pointer ${
+              subAba === 'sugestoes'
+                ? 'text-emerald-400 font-semibold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <ClipboardCheck className="w-4 h-4" />
+            <span>Sugestões de Documentos</span>
+            {subAba === 'sugestoes' && (
+              <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500 rounded-full" />
             )}
           </button>
         </div>
@@ -2512,6 +2529,21 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
         {subAba === 'faltantes' && (
           <div className="animate-fadeIn">
             <DocumentosFaltantesView onIrParaCofre={() => setSubAba('documentos')} />
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* ABA 4: SUGESTÕES DE DOCUMENTOS (CHECKLIST DO COFRE)                       */}
+        {/* ========================================================================= */}
+        {subAba === 'sugestoes' && (
+          <div className="animate-fadeIn">
+            <SugestoesDocumentosView
+              onDocumentoAdicionado={() => {
+                carregarDocumentos(true);
+                carregarTitulares();
+                carregarTotalFaltantes();
+              }}
+            />
           </div>
         )}
       </div>

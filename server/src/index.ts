@@ -42,6 +42,17 @@ import {
   obterDocumentosFaltantes,
   atualizarStatusObservacaoFaltante,
 } from './documentosFaltantesService.js';
+import {
+  obterDocumentosEsperados,
+  salvarDocumentoEsperado,
+  atualizarDocumentoEsperado,
+  excluirDocumentoEsperado,
+  reordenarDocumentosEsperados,
+  calcularChecklistTitular,
+  obterChecklistTodosTitulares,
+  marcarNaoSeAplica,
+  removerNaoSeAplica,
+} from './documentosEsperadosService.js';
 import { classificarIntencao } from './busca/intencao.js';
 import {
   interpretarComIA,
@@ -81,6 +92,16 @@ import {
   zerarAlertasDocumento,
   silenciarAlertasDocumento,
 } from './vencimentos/alertaVencimentoService.js';
+import {
+  listarAvisosSistema,
+  contarAvisosAtivos,
+  marcarAvisoComoLido,
+  marcarTodosAvisosLidos,
+  obterConfiguracoesAvisos,
+  salvarConfiguracoesAvisos,
+  limparAvisosAntigos30Dias,
+  simularFalhaParaTeste,
+} from './avisos/avisosFalhaService.js';
 import {
   detectarBlocoPdf,
   gerarPdfDeMarkdown,
@@ -947,6 +968,103 @@ app.post('/api/vencimentos/executar-verificacao', async (req, res) => {
   }
 });
 
+// ==========================================
+// ROTAS DE AVISOS DE FALHA E CONSUMO DO SISTEMA
+// ==========================================
+
+// GET /api/avisos - Lista os avisos do sistema com detalhes e contagem
+app.get('/api/avisos', async (req, res) => {
+  try {
+    const apenasAtivos = req.query.apenasAtivos === 'true';
+    const limite = req.query.limite ? parseInt(String(req.query.limite), 10) : 50;
+    const avisos = await listarAvisosSistema({ apenasAtivos, limite });
+    const contagem = await contarAvisosAtivos();
+
+    res.json({
+      avisos,
+      total: avisos.length,
+      ativos: contagem.totalAtivos,
+      naoLidos: contagem.naoLidos,
+    });
+  } catch (erro) {
+    console.error('Erro ao listar avisos do sistema:', erro);
+    res.status(500).json({ erro: 'Erro ao listar avisos do sistema.' });
+  }
+});
+
+// GET /api/avisos/total-ativos - Retorna contagem para o sino de notificações
+app.get('/api/avisos/total-ativos', async (_req, res) => {
+  try {
+    const contagem = await contarAvisosAtivos();
+    res.json(contagem);
+  } catch (erro) {
+    console.error('Erro ao contar avisos ativos:', erro);
+    res.status(500).json({ totalAtivos: 0, naoLidos: 0 });
+  }
+});
+
+// POST /api/avisos/:id/lido - Marca um aviso específico como lido
+app.post('/api/avisos/:id/lido', async (req, res) => {
+  try {
+    const sucesso = await marcarAvisoComoLido(req.params.id);
+    if (!sucesso) {
+      return res.status(404).json({ erro: 'Aviso não encontrado.' });
+    }
+    res.json({ sucesso: true });
+  } catch (erro) {
+    console.error('Erro ao marcar aviso como lido:', erro);
+    res.status(500).json({ erro: 'Erro ao marcar aviso como lido.' });
+  }
+});
+
+// POST /api/avisos/marcar-todos-lidos - Marca todos os avisos como lidos
+app.post('/api/avisos/marcar-todos-lidos', async (_req, res) => {
+  try {
+    const total = await marcarTodosAvisosLidos();
+    res.json({ sucesso: true, alterados: total });
+  } catch (erro) {
+    console.error('Erro ao marcar todos os avisos como lidos:', erro);
+    res.status(500).json({ erro: 'Erro ao marcar todos os avisos como lidos.' });
+  }
+});
+
+// GET /api/avisos/config - Retorna configuração de avisos
+app.get('/api/avisos/config', async (_req, res) => {
+  try {
+    const config = await obterConfiguracoesAvisos();
+    res.json(config);
+  } catch (erro) {
+    console.error('Erro ao obter configurações de avisos:', erro);
+    res.status(500).json({ erro: 'Erro ao obter configurações de avisos.' });
+  }
+});
+
+// POST /api/avisos/config - Salva configurações de avisos
+app.post('/api/avisos/config', async (req, res) => {
+  try {
+    const novaConfig = await salvarConfiguracoesAvisos(req.body);
+    res.json({ sucesso: true, config: novaConfig });
+  } catch (erro: any) {
+    console.error('Erro ao salvar configurações de avisos:', erro);
+    res.status(400).json({ erro: erro?.message || 'Falha ao salvar configurações de avisos.' });
+  }
+});
+
+// POST /api/avisos/simular-teste - Simula falha para validação de testes sem quebrar o sistema
+app.post('/api/avisos/simular-teste', async (req, res) => {
+  try {
+    const { tipo } = req.body;
+    if (!tipo) {
+      return res.status(400).json({ erro: 'O parâmetro "tipo" é obrigatório.' });
+    }
+    const resultado = await simularFalhaParaTeste(tipo);
+    res.json({ sucesso: true, resultado });
+  } catch (erro: any) {
+    console.error('Erro ao simular teste de aviso:', erro);
+    res.status(500).json({ erro: erro?.message || 'Erro ao simular teste de aviso.' });
+  }
+});
+
 // GET /api/conhecimento (Lista todos os itens cadastrados na base de conhecimento)
 app.get('/api/conhecimento', async (req, res) => {
   try {
@@ -1127,6 +1245,131 @@ app.patch('/api/documentos-faltantes/:id', async (req, res) => {
   }
 });
 
+// ==========================================
+// ROTAS DE DOCUMENTOS ESPERADOS (CHECKLIST DO COFRE)
+// ==========================================
+
+// GET /api/documentos-esperados (Lista todos os documentos esperados)
+app.get('/api/documentos-esperados', async (req, res) => {
+  try {
+    const apenasAtivos = req.query.ativos === 'true';
+    const lista = await obterDocumentosEsperados(apenasAtivos);
+    res.json(lista);
+  } catch (erro) {
+    console.error('Erro ao listar documentos esperados:', erro);
+    res.status(500).json({ erro: 'Erro ao listar documentos esperados.' });
+  }
+});
+
+// POST /api/documentos-esperados (Cria novo documento esperado)
+app.post('/api/documentos-esperados', async (req, res) => {
+  try {
+    const novo = await salvarDocumentoEsperado(req.body);
+    if (!novo) {
+      return res.status(400).json({ erro: 'Falha ao salvar documento esperado.' });
+    }
+    res.json(novo);
+  } catch (erro) {
+    console.error('Erro ao criar documento esperado:', erro);
+    res.status(500).json({ erro: 'Erro ao criar documento esperado.' });
+  }
+});
+
+// PUT /api/documentos-esperados/:id (Atualiza documento esperado existente)
+app.put('/api/documentos-esperados/:id', async (req, res) => {
+  try {
+    const atualizado = await atualizarDocumentoEsperado(req.params.id, req.body);
+    if (!atualizado) {
+      return res.status(404).json({ erro: 'Documento esperado não encontrado.' });
+    }
+    res.json(atualizado);
+  } catch (erro) {
+    console.error('Erro ao atualizar documento esperado:', erro);
+    res.status(500).json({ erro: 'Erro ao atualizar documento esperado.' });
+  }
+});
+
+// DELETE /api/documentos-esperados/:id (Exclui documento esperado)
+app.delete('/api/documentos-esperados/:id', async (req, res) => {
+  try {
+    const sucesso = await excluirDocumentoEsperado(req.params.id);
+    if (!sucesso) {
+      return res.status(404).json({ erro: 'Documento esperado não encontrado.' });
+    }
+    res.json({ sucesso: true });
+  } catch (erro) {
+    console.error('Erro ao excluir documento esperado:', erro);
+    res.status(500).json({ erro: 'Erro ao excluir documento esperado.' });
+  }
+});
+
+// POST /api/documentos-esperados/reordenar (Reordena documentos esperados)
+app.post('/api/documentos-esperados/reordenar', async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids)) {
+      return res.status(400).json({ erro: 'Array de IDs obrigatório.' });
+    }
+    const sucesso = await reordenarDocumentosEsperados(ids);
+    res.json({ sucesso });
+  } catch (erro) {
+    console.error('Erro ao reordenar documentos esperados:', erro);
+    res.status(500).json({ erro: 'Erro ao reordenar documentos esperados.' });
+  }
+});
+
+// GET /api/documentos-esperados/checklist (Retorna o checklist consolidado)
+app.get('/api/documentos-esperados/checklist', async (req, res) => {
+  try {
+    const titularId = req.query.titularId as string | undefined;
+    const categoriaForcada = req.query.categoria as ('PF' | 'PJ') | undefined;
+
+    if (titularId) {
+      const checklist = await calcularChecklistTitular(titularId, categoriaForcada);
+      if (!checklist) {
+        return res.status(404).json({ erro: 'Titular não encontrado.' });
+      }
+      return res.json(checklist);
+    }
+
+    const todos = await obterChecklistTodosTitulares();
+    res.json(todos);
+  } catch (erro) {
+    console.error('Erro ao calcular checklist de documentos:', erro);
+    res.status(500).json({ erro: 'Erro ao carregar checklist de documentos.' });
+  }
+});
+
+// POST /api/documentos-esperados/dispensar (Marca item como não se aplica para titular)
+app.post('/api/documentos-esperados/dispensar', async (req, res) => {
+  try {
+    const { titularId, documentoEsperadoId, motivo } = req.body;
+    if (!titularId || !documentoEsperadoId) {
+      return res.status(400).json({ erro: 'titularId e documentoEsperadoId são obrigatórios.' });
+    }
+    const dispensa = await marcarNaoSeAplica(titularId, documentoEsperadoId, motivo);
+    if (!dispensa) {
+      return res.status(500).json({ erro: 'Falha ao registrar dispensa.' });
+    }
+    res.json({ sucesso: true, dispensa });
+  } catch (erro) {
+    console.error('Erro ao registrar dispensa:', erro);
+    res.status(500).json({ erro: 'Erro ao registrar dispensa de documento.' });
+  }
+});
+
+// DELETE /api/documentos-esperados/dispensar/:titularId/:documentoEsperadoId (Remove marcação de não se aplica)
+app.delete('/api/documentos-esperados/dispensar/:titularId/:documentoEsperadoId', async (req, res) => {
+  try {
+    const { titularId, documentoEsperadoId } = req.params;
+    const sucesso = await removerNaoSeAplica(titularId, documentoEsperadoId);
+    res.json({ sucesso });
+  } catch (erro) {
+    console.error('Erro ao remover dispensa:', erro);
+    res.status(500).json({ erro: 'Erro ao remover dispensa de documento.' });
+  }
+});
+
 // GET /api/status-ia (Informa se está em modo simulador e qual provedor está ativo)
 app.get('/api/status-ia', (req, res) => {
   res.json({
@@ -1186,7 +1429,12 @@ function classificarOrigem(
   if (m.startsWith('teste') || m.startsWith('script') || m.includes('diagnostico')) {
     return 'testes';
   }
-  if (m.startsWith('indexacao') || m.includes('resumo_documento') || m.includes('estruturacao')) {
+  if (
+    m.startsWith('indexacao') ||
+    m.includes('resumo_documento') ||
+    m.includes('estruturacao') ||
+    m.includes('analise')
+  ) {
     return 'indexacao';
   }
   if (
@@ -1499,6 +1747,9 @@ app.get('/api/uso-ia/metricas', async (req, res) => {
 
       // Cotação Fixa do Dólar
       cotacaoDolar: configIA.cotacaoDolar,
+
+      // Marco inicial da telemetria 100% unificada
+      dataInicioRegistroCompleto: '25/09/2026',
 
       // Custo Médio por Mensagem Respondida e por Requisição
       totalMensagensRespondidasMes,
@@ -1854,7 +2105,7 @@ app.post('/api/mensagens', async (req, res) => {
     res.end();
   } catch (erro: any) {
     console.error('Erro fatal no processamento da mensagem:', erro);
-    res.write(`data: ${JSON.stringify({ tipo: 'erro', mensagem: 'Falha no servidor ao processar mensagem.' })}\n\n`);
+    res.write(`data: ${JSON.stringify({ tipo: 'erro', mensagem: 'Estou com um problema técnico no momento, tente novamente em alguns minutos.' })}\n\n`);
     res.end();
   }
 });
@@ -1938,12 +2189,15 @@ app.listen(PORT, '0.0.0.0', () => {
     console.warn('[Startup ⚠️] Erro na inicialização das configurações da VEGA:', erro);
   });
 
-  // Limpeza automática de rastros e áudios com mais de 30 dias ao iniciar o servidor
+  // Limpeza automática de rastros, áudios e avisos do sistema com mais de 30 dias ao iniciar o servidor
   limparRastrosAntigos().catch((erro) => {
     console.warn('[Startup ⚠️] Erro na limpeza de rastros antigos:', erro);
   });
   limparAudiosExpirados(30).catch((erro) => {
     console.warn('[Startup ⚠️] Erro na limpeza inicial de áudios expirados:', erro);
+  });
+  limparAvisosAntigos30Dias().catch((erro) => {
+    console.warn('[Startup ⚠️] Erro na limpeza inicial de avisos antigos:', erro);
   });
 
   // Sincronização de validades de documentos e rotina diária de alertas de vencimento ao iniciar
@@ -1958,7 +2212,7 @@ app.listen(PORT, '0.0.0.0', () => {
     console.warn('[Worker Segundo Plano ⚠️] Erro ao retomar documentos pendentes no boot:', erro);
   });
 
-  // Executa a limpeza de rastros e áudios com mais de 30 dias uma vez por dia (a cada 24 horas)
+  // Executa a limpeza de rastros, áudios e avisos com mais de 30 dias uma vez por dia (a cada 24 horas)
   const INTERVALO_DIARIO_MS = 24 * 60 * 60 * 1000;
   setInterval(() => {
     limparRastrosAntigos().catch((erro) => {
@@ -1966,6 +2220,9 @@ app.listen(PORT, '0.0.0.0', () => {
     });
     limparAudiosExpirados(30).catch((erro) => {
       console.warn('[Storage Áudios ⚠️] Erro na rotina diária de limpeza de áudios expirados:', erro);
+    });
+    limparAvisosAntigos30Dias().catch((erro) => {
+      console.warn('[Avisos ⚠️] Erro na rotina diária de limpeza de avisos antigos:', erro);
     });
   }, INTERVALO_DIARIO_MS);
 

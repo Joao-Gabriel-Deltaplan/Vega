@@ -6,6 +6,7 @@ import {
   obterTodosTitulares,
   obterTodosDocumentos,
 } from '../storage.js';
+import { registrarAviso, notificarRecuperacaoServico } from '../avisos/avisosFalhaService.js';
 
 /**
  * Limites operacionais para mensagens de áudio
@@ -445,6 +446,18 @@ export async function transcreverAudioOpenAI(
       motivoExato
     );
 
+    // Registra aviso de falha na transcrição de áudio
+    registrarAviso({
+      tipo: 'transcricao_falha',
+      origem: `Transcrição de Áudio (${modelo})`,
+      titulo: 'Falha na transcrição de áudio pela OpenAI',
+      mensagemTecnica: motivoExato,
+      severidade: 'media',
+      chaveAgrupamento: 'transcricao_audio_falha',
+    }).catch((errAviso) => {
+      console.warn('[Avisos ⚠️] Falha ao registrar aviso de transcrição:', errAviso);
+    });
+
     const erroRecusa = new Error(
       `A OpenAI recusou o modelo "${modelo}" ou não conseguiu processar o áudio: ${motivoExato}`
     );
@@ -452,6 +465,9 @@ export async function transcreverAudioOpenAI(
     (erroRecusa as any).modeloRecusado = true;
     throw erroRecusa;
   }
+
+  // Notifica recuperação se havia aviso ativo de falha de transcrição
+  notificarRecuperacaoServico('transcricao').catch(() => {});
 
   const tempoMs = Date.now() - inicio;
   const textoTranscrito = (resposta?.text || '').trim();

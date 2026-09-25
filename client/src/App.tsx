@@ -6,7 +6,7 @@ import { KnowledgeBaseView } from './components/KnowledgeBaseView.js';
 import { AdminView } from './components/AdminView.js';
 import { UsuariosView } from './components/UsuariosView.js';
 import { ModalAlertasVencimento } from './components/ModalAlertasVencimento.js';
-import { Conversa, Anexo, Mensagem, AlertaVencimento } from './types/chat.js';
+import { Conversa, Anexo, Mensagem, AlertaVencimento, AvisoSistemaRegistro } from './types/chat.js';
 import { LoginView } from './components/LoginView.js';
 import { LogoDeltaPlan } from './components/LogoDeltaPlan.js';
 import { ConfiguracoesVegaView } from './components/ConfiguracoesVegaView.js';
@@ -19,7 +19,7 @@ export function App() {
 
   // Navegação: 'whatsapp' é a aba principal
   const [abaAtiva, setAbaAtiva] = useState<AbaNavegacao>('whatsapp');
-  const [subAbaBaseVega, setSubAbaBaseVega] = useState<'conhecimento' | 'documentos'>('conhecimento');
+  const [subAbaBaseVega, setSubAbaBaseVega] = useState<'conhecimento' | 'documentos' | 'faltantes' | 'sugestoes'>('documentos');
 
   // Conversas do WhatsApp Real
   const [conversas, setConversas] = useState<Conversa[]>([]);
@@ -30,9 +30,16 @@ export function App() {
   const [alertasVencimento, setAlertasVencimento] = useState<AlertaVencimento[]>([]);
   const [modalAlertasAberto, setModalAlertasAberto] = useState(false);
 
+  // Estados de Avisos de Falha e Consumo do Sistema
+  const [avisosSistema, setAvisosSistema] = useState<AvisoSistemaRegistro[]>([]);
+
   const totalAlertasNaoLidos = useMemo(() => {
     return alertasVencimento.filter((a) => !a.lido).length;
   }, [alertasVencimento]);
+
+  const totalAvisosNaoLidos = useMemo(() => {
+    return avisosSistema.filter((a) => a.status !== 'lido').length;
+  }, [avisosSistema]);
 
   const carregarAlertasVencimento = useCallback(async () => {
     try {
@@ -49,6 +56,31 @@ export function App() {
       console.error('Erro ao carregar alertas de vencimento:', err);
     }
   }, []);
+
+  const carregarAvisosSistema = useCallback(async () => {
+    try {
+      const res = await fetch('/api/avisos?limite=100');
+      if (res.status === 401) {
+        setAutenticado(false);
+        return;
+      }
+      if (res.ok) {
+        const dados = await res.json();
+        setAvisosSistema(dados.avisos || []);
+      }
+    } catch (err) {
+      console.error('Erro ao carregar avisos do sistema:', err);
+    }
+  }, []);
+
+  const executarVerificacaoAlertas = useCallback(async () => {
+    try {
+      await fetch('/api/vencimentos/executar-verificacao', { method: 'POST' });
+      await Promise.all([carregarAlertasVencimento(), carregarAvisosSistema()]);
+    } catch (err) {
+      console.error('Erro ao executar verificação de alertas e avisos:', err);
+    }
+  }, [carregarAlertasVencimento, carregarAvisosSistema]);
 
   // Checagem inicial de status de autenticação
   useEffect(() => {
@@ -71,14 +103,18 @@ export function App() {
     checarAutenticacao();
   }, []);
 
-  // Atualiza alertas periodicamente se autenticado
+  // Atualiza alertas e avisos periodicamente se autenticado
   useEffect(() => {
     if (autenticado) {
       carregarAlertasVencimento();
-      const timer = setInterval(carregarAlertasVencimento, 60000);
+      carregarAvisosSistema();
+      const timer = setInterval(() => {
+        carregarAlertasVencimento();
+        carregarAvisosSistema();
+      }, 30000);
       return () => clearInterval(timer);
     }
-  }, [autenticado, carregarAlertasVencimento]);
+  }, [autenticado, carregarAlertasVencimento, carregarAvisosSistema]);
 
   // Protege a aba de configurações da VEGA exclusivamente para perfil admin
   useEffect(() => {
@@ -108,6 +144,30 @@ export function App() {
       }
     } catch (err) {
       console.error('Erro ao marcar todos alertas como lidos:', err);
+    }
+  };
+
+  const handleMarcarAvisoLido = async (id: string) => {
+    try {
+      const res = await fetch(`/api/avisos/${id}/lido`, { method: 'POST' });
+      if (res.ok) {
+        setAvisosSistema((prev) =>
+          prev.map((a) => (a.id === id ? { ...a, status: 'lido' } : a))
+        );
+      }
+    } catch (err) {
+      console.error('Erro ao marcar aviso como lido:', err);
+    }
+  };
+
+  const handleMarcarTodosAvisosLidos = async () => {
+    try {
+      const res = await fetch('/api/avisos/marcar-todos-lidos', { method: 'POST' });
+      if (res.ok) {
+        setAvisosSistema((prev) => prev.map((a) => ({ ...a, status: 'lido' })));
+      }
+    } catch (err) {
+      console.error('Erro ao marcar todos avisos como lidos:', err);
     }
   };
 
@@ -461,7 +521,7 @@ export function App() {
         abaAtiva={abaAtiva}
         onSelecionarAba={setAbaAtiva}
         totalNaoLidas={totalNaoLidas}
-        totalAlertasVencimento={totalAlertasNaoLidos}
+        totalAlertasVencimento={totalAlertasNaoLidos + totalAvisosNaoLidos}
         onAbrirAlertas={() => setModalAlertasAberto(true)}
         onLogout={handleLogout}
         nomeUsuario={usuarioLogado?.nome}
@@ -534,7 +594,7 @@ export function App() {
         <ConfiguracoesVegaView />
       )}
 
-      {/* Modal de Alertas de Vencimento de Documentos */}
+      {/* Modal Central de Notificações (Vencimentos & Avisos do Sistema) */}
       <ModalAlertasVencimento
         aberto={modalAlertasAberto}
         onFechar={() => setModalAlertasAberto(false)}
@@ -542,8 +602,11 @@ export function App() {
         totalNaoLidos={totalAlertasNaoLidos}
         onMarcarLido={handleMarcarAlertaLido}
         onMarcarTodosLidos={handleMarcarTodosAlertasLidos}
-        onRecarregar={carregarAlertasVencimento}
+        onRecarregar={executarVerificacaoAlertas}
         onSilenciarDocumento={handleSilenciarDocumentoAlerta}
+        avisosSistema={avisosSistema}
+        onMarcarAvisoLido={handleMarcarAvisoLido}
+        onMarcarTodosAvisosLidos={handleMarcarTodosAvisosLidos}
       />
     </div>
   );

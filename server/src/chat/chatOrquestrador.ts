@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { getSupabaseClient } from '../db/supabaseClient.js';
 import { gerarEmbedding } from '../ai/openaiProvider.js';
 import { chamarChatComTelemetria } from '../ai/telemetriaIaService.js';
+import { checarSeLimiteConsumoEstourado, registrarAviso } from '../avisos/avisosFalhaService.js';
 import {
   obterTitularPorNome,
   obterTodosTitulares,
@@ -94,6 +95,7 @@ import {
   silenciarAlertasDocumento,
   parseDataBr,
 } from '../vencimentos/alertaVencimentoService.js';
+import { calcularChecklistTitular } from '../documentosEsperadosService.js';
 import {
   obterAgoraBrasilia,
   obterAgoraIsoUtc,
@@ -109,6 +111,7 @@ export type IntencaoChat =
   | 'corrigir_dado'
   | 'consultar_vencimentos'
   | 'silenciar_alerta'
+  | 'consultar_checklist_faltantes'
   | 'fora_de_escopo';
 
 export interface ClassificacaoChatResponse {
@@ -1210,7 +1213,7 @@ Tipos de documentos no cofre: ${listaTiposDocs}.
 
 Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
 {
-  "intencao": "saudacao_ou_vago" | "pedir_arquivo" | "listar_documentos" | "dado_pessoal" | "pergunta_conteudo" | "corrigir_dado" | "consultar_vencimentos" | "silenciar_alerta" | "fora_de_escopo",
+  "intencao": "saudacao_ou_vago" | "pedir_arquivo" | "listar_documentos" | "dado_pessoal" | "pergunta_conteudo" | "corrigir_dado" | "consultar_vencimentos" | "silenciar_alerta" | "consultar_checklist_faltantes" | "fora_de_escopo",
   "pessoa": "nome do titular ou pessoa citada na mensagem (ex: Fulano, Nilceia) ou vazio",
   "campos": ["lista de campos ou dados específicos solicitados (ex.: cpf, rg, filiacao, mae, pai, dataNascimento, endereco, estadoCivil, profissao, cnh, validadeCnh, categoriaCnh, orgaoEmissor, titulo_eleitor, pis, carteira_reservista, certidao_nascimento, passaporte ou qualquer outro campo/dado perguntado) ou vazio"],
   "campo_corrigir": "nome do campo a ser corrigido (ex: profissao, cpf, rg, etc.) ou vazio",
@@ -1246,7 +1249,8 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
 6. "corrigir_dado": Quando o usuário afirmar que uma informação cadastral de titular está errada, incorreta ou precisar ser corrigida (ex.: "a profissão do Fulano está errada, é Técnico em Eletrotécnica").
 7. "consultar_vencimentos": Perguntas sobre prazos de validade ou vencimento de documentos do cofre ("tem algum documento vencendo?", "o que vence este mês?", "quais documentos estão vencidos?").
 8. "silenciar_alerta": Quando o usuário solicitar para parar de alertar sobre o vencimento de um documento (ex: "pare de alertar o CRT do Fulano").
-9. "fora_de_escopo": Apenas assuntos que NÃO TÊM NENHUMA relação com documentos ou informações da empresa (ex: receitas culinárias, futebol, piadas). Perguntas sobre vacinas, documentos, datas de imunização ou dados de titulares NUNCA são fora de escopo.
+9. "consultar_checklist_faltantes": Perguntas sobre documentos faltantes, pendentes ou checklist de um titular ou empresa ("o que falta do Thomaz?", "quais documentos faltam da empresa X?", "o que falta no cofre do Fulano?", "quais documentos faltam?", "checklist de documentos do Fulano"). Preencha "pessoa" se citada.
+10. "fora_de_escopo": Apenas assuntos que NÃO TÊM NENHUMA relação com documentos ou informações da empresa (ex: receitas culinárias, futebol, piadas). Perguntas sobre vacinas, documentos, datas de imunização ou dados de titulares NUNCA são fora de escopo.
 
 REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - SE A MENSAGEM ATUAL CITA UM SUJEITO (pessoa cadastrada, pessoa não cadastrada ou empresa), ele SEMPRE SUBSTITUI o sujeito das mensagens anteriores! O contexto anterior DEVE SER IGNORADO nesse caso!
@@ -1282,6 +1286,10 @@ EXEMPLOS OBRIGATÓRIOS:
 - "qual cpf?" -> {"intencao": "dado_pessoal", "pessoa": "", "campos": ["cpf"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o CPF?", "termo_busca": "cpf"}
 - "qual é a CNH do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CNH", "pergunta_completa": "Enviar documento CNH do Fulano", "termo_busca": "CNH Fulano"}
 - "o que tem em Regra de Negócio: Proposta Comercial" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o conteúdo do documento ou instrução Regra de Negócio: Proposta Comercial?", "termo_busca": "Proposta Comercial"}
+- "o que falta do fulano?" -> {"intencao": "consultar_checklist_faltantes", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar documentos faltantes do Fulano", "termo_busca": ""}
+- "quais documentos faltam da empresa X?" -> {"intencao": "consultar_checklist_faltantes", "pessoa": "Empresa X", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar documentos faltantes da Empresa X", "termo_busca": ""}
+- "o que falta no cofre?" -> {"intencao": "consultar_checklist_faltantes", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar documentos faltantes", "termo_busca": ""}
+- "checklist do fulano" -> {"intencao": "consultar_checklist_faltantes", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar checklist de documentos do Fulano", "termo_busca": ""}
 - "sim" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Confirmar envio do documento oferecido", "termo_busca": ""}
 
 `;
@@ -1421,6 +1429,10 @@ EXEMPLOS OBRIGATÓRIOS:
     const REGEX_CONSULTA_VENCIMENTO = /\b(tem\s*algum\s*documento\s*vencendo|o\s*que\s*vence|quais\s*documentos?\s*est[aã]o\s*vencidos?|documentos?\s*vencidos?|documentos?\s*a\s*vencer|vencimento\s*de\s*documentos?|validade\s*dos?\s*documentos?)\b/i;
     const ehConsultaVencimento = REGEX_CONSULTA_VENCIMENTO.test(msgNorm) || parsed.intencao === 'consultar_vencimentos';
 
+    // Detecção de consulta de documentos faltantes / checklist ("o que falta do Thomaz?", "quais documentos faltam da empresa X?", "o que falta no cofre?", "checklist do Fulano")
+    const REGEX_CHECKLIST_FALTANTES = /\b(o\s*que\s*(est[aá]\s*)?faltando|o\s*que\s*falta|quais\s*documentos?\s*(est[aã]o\s*)?faltando|quais\s*documentos?\s*faltam|quais\s*faltam|documentos?\s*pendentes?|checklist(\s*de\s*documentos?)?|o\s*que\s*falta\s*no\s*cofre)\b/i;
+    const ehConsultaChecklist = REGEX_CHECKLIST_FALTANTES.test(msgNorm) || parsed.intencao === 'consultar_checklist_faltantes';
+
     // Detecção de parar de alertar / silenciar alertas
     const REGEX_SILENCIAR = /\b(pare\s*de\s*alerta(r)?|n[aã]o\s*alerte(\s*mais)?|desative(\s*os)?\s*alerta(s)?|desativar\s*alerta(s)?|silenciar\s*alerta(s)?|parar\s*de\s*alerta(r)?)\b/i;
     const ehSilenciarAlerta = REGEX_SILENCIAR.test(msgNorm) || parsed.intencao === 'silenciar_alerta';
@@ -1435,6 +1447,12 @@ EXEMPLOS OBRIGATÓRIOS:
         if (/\bcrt\b/i.test(msgNorm)) parsed.documento_citado = 'CRT';
         else if (/\bcrea\b/i.test(msgNorm)) parsed.documento_citado = 'CREA';
         else if (/\bcnh\b/i.test(msgNorm)) parsed.documento_citado = 'CNH';
+      }
+    } else if (ehConsultaChecklist && !ehMensagemCorrecao) {
+      parsed.intencao = 'consultar_checklist_faltantes';
+      if (pessoaCitadaNaMensagem || titularExplicitoMsg) {
+        parsed.pessoa = pessoaCitadaNaMensagem || titularExplicitoMsg;
+        origemPessoa = 'mensagem_atual';
       }
     } else if (ehConsultaVencimento && !ehMensagemCorrecao) {
       parsed.intencao = 'consultar_vencimentos';
@@ -3793,6 +3811,163 @@ async function executarProcessamentoMensagemChatInterno(dados: {
   }
 
   // ============================================================================
+  // CASO 2.8: CONSULTA DE CHECKLIST DE DOCUMENTOS FALTANTES (intencao === 'consultar_checklist_faltantes')
+  // ============================================================================
+  if (intencao === 'consultar_checklist_faltantes') {
+    const inicioChecklist = Date.now();
+    const pessoaInformada = (classificacao.pessoa || '').trim();
+
+    // 1. Tenta identificar o titular cadastrado
+    const todosTitulares = await obterTodosTitulares();
+    let titularAlvo = pessoaInformada ? resolverTitularCadastrado(pessoaInformada, todosTitulares) : null;
+
+    if (!titularAlvo) {
+      // Tenta recuperar do contexto da conversa recente (últimas 30 mensagens)
+      const titularHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
+      if (titularHistorico) {
+        titularAlvo = resolverTitularCadastrado(titularHistorico, todosTitulares);
+      }
+    }
+
+    const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+
+    // Se ainda não identificou o titular, pergunta ao usuário (Regra 14: sem titular, pergunta)
+    if (!titularAlvo) {
+      const textoPergunta = `${prefixoSaudacao}De quem você gostaria de consultar os documentos faltantes?`;
+
+      etapas.push({
+        ordem: 1,
+        nome: 'Consulta de Checklist de Documentos',
+        descricao: 'Nenhum titular especificado na mensagem ou no contexto recente. Solicitando identificação ao usuário.',
+        tempoMs: Date.now() - inicioChecklist,
+      });
+
+      const rastro = criarRastroFinal({
+        tipoBusca: 'nome_cofre',
+        docsEncontrados: [],
+        enviouAnexo: false,
+        respostaFinal: textoPergunta,
+        modelo: 'Motor Interno',
+      });
+
+      return {
+        textoResposta: textoPergunta,
+        origem: 'motor',
+        intencaoDetectada: 'consultar_checklist_faltantes',
+        perguntaReescrita: classificacao.pergunta_completa || mensagemUsuario,
+        buscaUsada: 'Checklist de Documentos Esperados',
+        similaridade: '100% (Identificação de Titular Pendente)',
+        rastro,
+      };
+    }
+
+    // 2. Calcula o checklist do titular no Cofre
+    const checklist = await calcularChecklistTitular(titularAlvo.id);
+    if (!checklist) {
+      const textoErro = `Não encontrei dados suficientes para gerar o checklist de *${titularAlvo.nome}*.`;
+      return {
+        textoResposta: textoErro,
+        origem: 'motor',
+        intencaoDetectada: 'consultar_checklist_faltantes',
+        perguntaReescrita: classificacao.pergunta_completa || mensagemUsuario,
+        buscaUsada: 'Checklist de Documentos Esperados',
+        similaridade: '0%',
+        rastro: criarRastroFinal({
+          tipoBusca: 'nome_cofre',
+          docsEncontrados: [],
+          enviouAnexo: false,
+          respostaFinal: textoErro,
+          modelo: 'Motor Interno',
+        }),
+      };
+    }
+
+    // 3. Monta a resposta rica em formato Markdown
+    const linhas: string[] = [];
+    const saudacaoLinha = prefixoSaudacao ? `${prefixoSaudacao}\n\n` : '';
+    linhas.push(`${saudacaoLinha}📋 *Checklist de Documentos — ${checklist.titular.nome}*`);
+    linhas.push(`Completude no Cofre: *${checklist.estatisticas.completos} de ${checklist.estatisticas.totalAplicaveis} documentos* (${checklist.estatisticas.percentualArquivos}%)\n`);
+
+    const obrigatoriosFaltando = checklist.itens.filter(
+      (i) => i.situacao === 'faltando' && i.documentoEsperado.obrigatorio
+    );
+    const soODado = checklist.itens.filter((i) => i.situacao === 'so_o_dado');
+    const complementaresFaltando = checklist.itens.filter(
+      (i) => i.situacao === 'faltando' && !i.documentoEsperado.obrigatorio
+    );
+
+    if (obrigatoriosFaltando.length > 0) {
+      linhas.push('🔴 *Documentos Obrigatórios Faltando:*');
+      for (const item of obrigatoriosFaltando) {
+        const badgePrioridade = item.prioridade
+          ? ` ⚠️ _(solicitado no WhatsApp${item.quantidadePedidosWhatsApp && item.quantidadePedidosWhatsApp > 1 ? ` ${item.quantidadePedidosWhatsApp}x` : ''})_`
+          : '';
+        linhas.push(`• *${item.documentoEsperado.nome}*${badgePrioridade}`);
+      }
+      linhas.push('');
+    }
+
+    if (soODado.length > 0) {
+      linhas.push('🟡 *Dados na ficha (arquivo físico ausente no Cofre):*');
+      for (const item of soODado) {
+        const dadoOrigem = item.dadosFicha?.[0]?.origemNome || 'ficha cadastral';
+        linhas.push(`• *${item.documentoEsperado.nome}* _(dado cadastrado a partir de ${dadoOrigem})_`);
+      }
+      linhas.push('');
+    }
+
+    if (complementaresFaltando.length > 0) {
+      linhas.push('⚪ *Documentos Complementares Faltando:*');
+      for (const item of complementaresFaltando) {
+        linhas.push(`• *${item.documentoEsperado.nome}*`);
+      }
+      linhas.push('');
+    }
+
+    if (obrigatoriosFaltando.length === 0 && soODado.length === 0 && complementaresFaltando.length === 0) {
+      linhas.push('🎉 *Todos os documentos esperados já constam salvos no Cofre!*');
+    } else {
+      linhas.push('💡 _Para adicionar qualquer documento faltante ao Cofre, basta enviar o arquivo ou foto aqui na conversa._');
+    }
+
+    const textoResposta = linhas.join('\n');
+
+    etapas.push({
+      ordem: 1,
+      nome: 'Cálculo de Checklist de Documentos Faltantes',
+      descricao: `Checklist de ${checklist.titular.nome} gerado com sucesso. ${checklist.estatisticas.completos}/${checklist.estatisticas.totalAplicaveis} documentos completos.`,
+      tempoMs: Date.now() - inicioChecklist,
+      detalhes: checklist.estatisticas,
+    });
+
+    const rastro = criarRastroFinal({
+      tipoBusca: 'nome_cofre',
+      docsEncontrados: checklist.itens
+        .filter((i) => i.documentoCofre)
+        .map((i) => ({
+          id: i.documentoCofre!.id,
+          titulo: i.documentoCofre!.titulo,
+          tipo: i.documentoCofre!.tipo,
+          similaridade: 100,
+          usadoNaResposta: true,
+        })),
+      enviouAnexo: false,
+      respostaFinal: textoResposta,
+      modelo: 'Motor Interno',
+    });
+
+    return {
+      textoResposta,
+      origem: 'motor',
+      intencaoDetectada: 'consultar_checklist_faltantes',
+      perguntaReescrita: classificacao.pergunta_completa || mensagemUsuario,
+      buscaUsada: 'Checklist do Cofre (Documentos Esperados)',
+      similaridade: '100% (Checklist Consolidado)',
+      rastro,
+    };
+  }
+
+  // ============================================================================
   // CASO 3: DADO PESSOAL (Ficha primeiro -> se não existir, cai no vetor da pessoa)
   // ============================================================================
   if (intencao === 'dado_pessoal') {
@@ -5196,7 +5371,46 @@ export async function processarMensagemChat(dados: {
   documentosDisponiveis?: DocumentoRegistro[];
   documentoIdDireto?: string;
 }): Promise<ResultadoChatOrquestrador> {
-  const resultado = await executarProcessamentoMensagemChatInterno(dados);
+  // 1. VERIFICAÇÃO DE ESTOURO DE LIMITE MENSAL DE CONSUMO (100%)
+  try {
+    const limiteEstourado = await checarSeLimiteConsumoEstourado();
+    if (limiteEstourado) {
+      console.warn('[VEGA ⚠️] Mensagem bloqueada: limite de consumo mensal de 100% estourado.');
+      return {
+        textoResposta: 'Estou temporariamente indisponível. Já avisei o responsável.',
+        origem: 'motor',
+        intencaoDetectada: 'saudacao_ou_vago' as IntencaoChat,
+        perguntaReescrita: dados.mensagemUsuario,
+      };
+    }
+  } catch (errLimite) {
+    console.warn('[VEGA ⚠️] Falha ao checar limite de consumo:', errLimite);
+  }
+
+  // 2. EXECUÇÃO PROTEGIDA CONTRA FALHAS TÉCNICAS INESPERADAS
+  let resultado: ResultadoChatOrquestrador;
+  try {
+    resultado = await executarProcessamentoMensagemChatInterno(dados);
+  } catch (erroFatal: any) {
+    const msgErro = erroFatal?.message || String(erroFatal);
+    console.error('[VEGA Chat ❌] Falha técnica durante processamento da mensagem:', erroFatal);
+
+    registrarAviso({
+      tipo: 'openai_erro',
+      origem: 'Chat Orquestrador',
+      titulo: 'Falha técnica inesperada no processamento do chat',
+      mensagemTecnica: msgErro,
+      severidade: 'alta',
+      chaveAgrupamento: 'chat_falha_tecnica',
+    }).catch(() => {});
+
+    return {
+      textoResposta: 'Estou com um problema técnico no momento, tente novamente em alguns minutos.',
+      origem: 'motor',
+      intencaoDetectada: 'saudacao_ou_vago' as IntencaoChat,
+      perguntaReescrita: dados.mensagemUsuario,
+    };
+  }
 
   // GUARDRAIL FINAL (REGRA 17): Validação estrita de correspondência de campo
   const checagemCampo = validarCorrespondenciaCampoResposta(dados.mensagemUsuario, resultado.textoResposta);

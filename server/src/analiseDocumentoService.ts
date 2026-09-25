@@ -8,6 +8,7 @@ import { extrairCamposTitularDeDocumento } from './extracaoTitularService.js';
 import { extrairTextoImagemComVisao } from './indexador/indexadorService.js';
 import { obterTodosTitulares, resolverTitularCadastrado } from './storage.js';
 import { verificarSePdfProtegidoPorSenha } from './pdfService.js';
+import { chamarChatComTelemetria } from './ai/telemetriaIaService.js';
 
 const TEMP_DIR = path.resolve(process.cwd(), 'temp_ocr');
 
@@ -53,29 +54,33 @@ async function extrairTextoPdfEscaneadoComVisao(
     } catch {}
 
     const chatModel = process.env.OPENAI_CHAT_MODEL?.trim() || 'gpt-5.4-mini';
-    const response = await openai.chat.completions.create({
-      model: chatModel,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: 'Transcreva todo o texto contido nesta imagem de documento com máxima fidelidade. Preserve nomes completos, títulos, órgãos emissores, datas, números de documentos, nacionalidade e filiação.',
-            },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:image/png;base64,${base64Img}`,
-                detail: 'high',
+    const response = await chamarChatComTelemetria(
+      openai,
+      {
+        model: chatModel,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Transcreva todo o texto contido nesta imagem de documento com máxima fidelidade. Preserve nomes completos, títulos, órgãos emissores, datas, números de documentos, nacionalidade e filiação.',
               },
-            },
-          ],
-        },
-      ],
-      max_completion_tokens: 2500,
-      temperature: 0.1,
-    });
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:image/png;base64,${base64Img}`,
+                  detail: 'high',
+                },
+              },
+            ],
+          },
+        ],
+        max_completion_tokens: 2500,
+        temperature: 0.1,
+      },
+      { motivo: 'analise_ocr_visao' }
+    );
 
     return response.choices[0]?.message?.content?.trim() || '';
   } catch (err) {
@@ -226,18 +231,22 @@ RETORNE ESTRITAMENTE UM JSON no formato:
   "camposTitular": { ... }
 }`;
 
-      const respostaIA = await openai.chat.completions.create({
-        model: chatModel,
-        messages: [
-          { role: 'system', content: promptSistema },
-          {
-            role: 'user',
-            content: `Nome do arquivo: "${nomeArquivo}"\n\nConteúdo extraído do documento:\n${(textoExtraido || '').slice(0, 4000)}`,
-          },
-        ],
-        temperature: 0.1,
-        response_format: { type: 'json_object' },
-      });
+      const respostaIA = await chamarChatComTelemetria(
+        openai,
+        {
+          model: chatModel,
+          messages: [
+            { role: 'system', content: promptSistema },
+            {
+              role: 'user',
+              content: `Nome do arquivo: "${nomeArquivo}"\n\nConteúdo extraído do documento:\n${(textoExtraido || '').slice(0, 4000)}`,
+            },
+          ],
+          temperature: 0.1,
+          response_format: { type: 'json_object' },
+        },
+        { motivo: 'analise_documento_cofre' }
+      );
 
       const conteudoResposta = respostaIA.choices[0]?.message?.content?.trim();
       if (conteudoResposta) {

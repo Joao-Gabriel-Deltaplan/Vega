@@ -359,6 +359,9 @@ export interface MetricasUsoIA {
   // Cotação do Dólar Fixa Configurável
   cotacaoDolar: number;
 
+  // Data a partir da qual o registro de telemetria é 100% completo e unificado
+  dataInicioRegistroCompleto?: string;
+
   // Custo Médio por Mensagem Respondida e por Requisição
   totalMensagensRespondidasMes: number;
   custoMedioPorMensagemUsd: number;
@@ -482,4 +485,126 @@ export interface RastroRegistro {
     correcoesAplicadas?: Array<{ de: string; para: string; motivo: string }>;
   };
   etapas: EtapaRastro[];
+}
+
+export type CategoriaDocumentoEsperado = 'PF' | 'PJ';
+
+export interface DocumentoEsperado {
+  id: string;
+  nome: string;
+  categoria: CategoriaDocumentoEsperado;
+  obrigatorio: boolean;
+  camposFornecidos: string[];
+  ativo: boolean;
+  ordem: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface DocumentoEsperadoDispensa {
+  id: string;
+  titularId: string;
+  documentoEsperadoId: string;
+  motivo?: string | null;
+  criadoEm: string;
+}
+
+export type SituacaoChecklistDocumento = 'completo' | 'so_o_dado' | 'faltando' | 'nao_se_aplica';
+
+export interface ItemChecklistDocumento {
+  documentoEsperado: DocumentoEsperado;
+  situacao: SituacaoChecklistDocumento;
+  documentoCofre?: {
+    id: string;
+    titulo: string;
+    arquivo: string;
+    tipo?: string;
+    dataCadastro?: string;
+  };
+  dadosFicha?: Array<{
+    campo: string;
+    valor: string;
+    origem?: string;
+    origemNome?: string;
+  }>;
+  dispensa?: {
+    id: string;
+    motivo?: string | null;
+    criadoEm: string;
+  };
+  solicitadoNoWhatsApp?: boolean;
+  quantidadePedidosWhatsApp?: number;
+  dataUltimoPedidoWhatsApp?: string;
+  prioridade?: boolean;
+}
+
+export interface ChecklistTitularResultado {
+  titular: {
+    id: string;
+    nome: string;
+    apelidos?: string[];
+    categoria: CategoriaDocumentoEsperado;
+  };
+  itens: ItemChecklistDocumento[];
+  estatisticas: {
+    totalEsperados: number;
+    totalAplicaveis: number;
+    completos: number;
+    soODado: number;
+    faltando: number;
+    dispensados: number;
+    prioritarios: number;
+    percentualCompletude: number;
+    percentualArquivos: number;
+    textoCompletude: string;
+  };
+}
+
+// ==========================================
+// AVISOS DE FALHA E DE CONSUMO DO SISTEMA
+// ==========================================
+
+export type TipoAviso =
+  | 'openai_erro'
+  | 'consumo_limite'
+  | 'evolution_falha'
+  | 'supabase_falha'
+  | 'indexacao_falha'
+  | 'transcricao_falha'
+  | 'recuperacao';
+
+export type SeveridadeAviso = 'critico' | 'alerta' | 'informativo' | 'critica' | 'alta' | 'media' | 'baixa';
+
+export type StatusAviso = 'ativo' | 'resolvido' | 'lido';
+
+export interface AvisoSistemaRegistro {
+  id: string;
+  tipo: TipoAviso;
+  severidade: SeveridadeAviso;
+  origem: string;
+  titulo: string;
+  mensagem: string;
+  detalheTecnico?: string | null;
+  chaveAgrupamento: string;
+  quantidadeOcorrencias: number;
+  primeiraOcorrencia: string;
+  ultimaOcorrencia: string;
+  status: StatusAviso;
+  enviadoWhatsapp: boolean;
+  destinatariosWhatsapp?: string[];
+  criadoEm: string;
+  atualizadoEm: string;
+}
+
+export interface ConfiguracaoAvisos {
+  id: string;
+  destinatariosWhatsapp: string[];
+  limiteMensalUsd: number;
+  notificar50Porcento: boolean;
+  notificar80Porcento: boolean;
+  notificar100Porcento: boolean;
+  tiposAtivos: TipoAviso[];
+  faixasNotificadasMesAtual: Record<string, number[]>;
+  criadoEm?: string;
+  atualizadoEm?: string;
 }

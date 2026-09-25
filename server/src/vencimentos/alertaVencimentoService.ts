@@ -16,7 +16,11 @@ import {
 } from '../utils/dataHoraUtils.js';
 
 /**
- * Lê todos os alertas gravados na tabela alertas_vencimento do Supabase
+ * Lê todos os alertas gravados na tabela alertas_vencimento do Supabase.
+ * - Deduplica garantindo no máximo 1 alerta por documento
+ * - Recalcula diasRestantes e status em tempo real com base no fuso de Brasília
+ * - Ordena por criticidade (vence_hoje > vencido > a_vencer mais próximo)
+ * - Remove automaticamente duplicatas legadas do Supabase
  */
 export async function obterTodosAlertas(): Promise<AlertaVencimento[]> {
   try {
@@ -31,19 +35,99 @@ export async function obterTodosAlertas(): Promise<AlertaVencimento[]> {
       return [];
     }
 
-    return (data || []).map((a: any) => ({
-      id: a.id,
-      documentoId: a.documento_id,
-      documentoTitulo: a.documento_titulo,
-      titular: a.titular,
-      dataValidade: a.data_validade,
-      diasRestantes: a.dias_restantes,
-      status: a.status as StatusAlertaVencimento,
-      prazoAlerta: (isNaN(Number(a.prazo_alerta)) ? a.prazo_alerta : Number(a.prazo_alerta)) as PrazoAlerta,
-      dataGeracao: a.data_geracao,
-      lido: Boolean(a.lido),
-      notificadoWhatsApp: Boolean(a.notificado_whatsapp),
-    }));
+    const agoraRef = obterAgoraBrasilia().dataRef;
+    const mapaPorDocId = new Map<string, AlertaVencimento>();
+    const idsDuplicadosParaRemover: string[] = [];
+
+    for (const a of data || []) {
+      const docId = a.documento_id;
+      if (!docId) continue;
+
+      const parsedPrazo = (isNaN(Number(a.prazo_alerta)) ? a.prazo_alerta : Number(a.prazo_alerta)) as PrazoAlerta;
+
+      // Recalcula dias restantes e status em tempo real com base no fuso de Brasília
+      let diasRestantes = a.dias_restantes;
+      let status = a.status as StatusAlertaVencimento;
+      if (a.data_validade) {
+        const diasCalc = calcularDiasRestantes(a.data_validade, agoraRef);
+        if (diasCalc !== null) {
+          diasRestantes = diasCalc;
+          status = determinarStatusVencimento(diasCalc);
+        }
+      }
+
+      const alertaObj: AlertaVencimento = {
+        id: a.id,
+        documentoId: docId,
+        documentoTitulo: a.documento_titulo,
+        titular: a.titular,
+        dataValidade: a.data_validade,
+        diasRestantes,
+        status,
+        prazoAlerta: parsedPrazo,
+        dataGeracao: a.data_geracao,
+        lido: Boolean(a.lido),
+        notificadoWhatsApp: Boolean(a.notificado_whatsapp),
+      };
+
+      if (!mapaPorDocId.has(docId)) {
+        mapaPorDocId.set(docId, alertaObj);
+      } else {
+        // Alerta repetido encontrado para o mesmo documento no Supabase
+        const existente = mapaPorDocId.get(docId)!;
+        const timeNovo = new Date(a.data_geracao).getTime();
+        const timeExistente = new Date(existente.dataGeracao).getTime();
+
+        if (timeNovo > timeExistente) {
+          idsDuplicadosParaRemover.push(existente.id);
+          mapaPorDocId.set(docId, alertaObj);
+        } else {
+          idsDuplicadosParaRemover.push(a.id);
+        }
+      }
+    }
+
+    // Se identificou duplicatas no banco, remove-as assincronamente sem bloquear
+    if (idsDuplicadosParaRemover.length > 0) {
+      Promise.resolve(
+        supabase
+          .from('alertas_vencimento')
+          .delete()
+          .in('id', idsDuplicadosParaRemover)
+      )
+        .then(() => {
+          console.log(`[Alertas Vencimento 🧹] ${idsDuplicadosParaRemover.length} alerta(s) duplicado(s) removido(s) do Supabase.`);
+        })
+        .catch((err: any) => {
+          console.warn('[Alertas Supabase ⚠️] Erro ao limpar duplicatas:', err);
+        });
+    }
+
+    const alertasUnicos = Array.from(mapaPorDocId.values());
+
+    // Ordenação intuitiva por criticidade:
+    // 1. vence_hoje (mais crítico no dia)
+    // 2. vencido (ordenado pelos vencidos mais recentes primeiro)
+    // 3. a_vencer (ordenado pelos que vencem mais cedo primeiro)
+    alertasUnicos.sort((a, b) => {
+      const prioridadeStatus = (s: StatusAlertaVencimento) => {
+        if (s === 'vence_hoje') return 1;
+        if (s === 'vencido') return 2;
+        return 3;
+      };
+
+      const prioA = prioridadeStatus(a.status);
+      const prioB = prioridadeStatus(b.status);
+      if (prioA !== prioB) return prioA - prioB;
+
+      if (a.status === 'vencido' && b.status === 'vencido') {
+        return b.diasRestantes - a.diasRestantes;
+      }
+
+      return a.diasRestantes - b.diasRestantes;
+    });
+
+    return alertasUnicos;
   } catch (err) {
     console.error('[Alertas Supabase ⚠️] Erro ao consultar alertas:', err);
     return [];
@@ -51,13 +135,23 @@ export async function obterTodosAlertas(): Promise<AlertaVencimento[]> {
 }
 
 /**
- * Salva a lista de alertas na tabela alertas_vencimento do Supabase
+ * Salva a lista de alertas na tabela alertas_vencimento do Supabase.
+ * Garante unicidade por documentoId para nunca duplicar registros.
  */
 export async function salvarAlertas(alertas: AlertaVencimento[]): Promise<void> {
   try {
     const supabase = getSupabaseClient();
-    const registros = alertas.map((a) => ({
-      id: a.id,
+    if (!alertas || alertas.length === 0) return;
+
+    // Garante que cada documento tenha apenas 1 registro no lote
+    const mapaUnico = new Map<string, AlertaVencimento>();
+    for (const a of alertas) {
+      if (!a.documentoId) continue;
+      mapaUnico.set(a.documentoId, a);
+    }
+
+    const registros = Array.from(mapaUnico.values()).map((a) => ({
+      id: a.id || `alerta-${a.documentoId}`,
       documento_id: a.documentoId,
       documento_titulo: a.documentoTitulo,
       titular: a.titular || null,
@@ -281,8 +375,9 @@ export async function enviarAlertaVencimentoWhatsApp(alerta: AlertaVencimento): 
 /**
  * Rotina diária de verificação de vencimento de documentos:
  * - Checa documentos com dataValidade
- * - Gera alertas para 60, 30, 7 dias, no dia (0) e lembrete semanal para vencidos
- * - Não repete o mesmo alerta para o mesmo prazo
+ * - Gera/atualiza alertas para 60, 30, 7 dias, no dia (0) e lembrete semanal para vencidos
+ * - NUNCA duplica documentos na tabela de alertas (mantém no máximo 1 alerta por documento)
+ * - Remove automaticamente alertas órfãos ou de documentos cujos alertas foram silenciados
  */
 export async function executarRotinaVerificacaoVencimentos(): Promise<{
   alertasGerados: AlertaVencimento[];
@@ -291,18 +386,39 @@ export async function executarRotinaVerificacaoVencimentos(): Promise<{
 }> {
   console.log('\n[Vencimentos ⏱️] Executando rotina diária de checagem de validades (Fuso: America/Sao_Paulo)...');
   const documentos = await obterTodosDocumentos();
+  const documentosMap = new Map(documentos.map((d) => [d.id, d]));
   const alertasExistentes = await obterTodosAlertas();
   const agoraBrasilia = obterAgoraBrasilia();
   const agora = agoraBrasilia.dataRef;
   const agoraIsoUtc = obterAgoraIsoUtc();
   const alertasGerados: AlertaVencimento[] = [];
 
-  for (const doc of documentos) {
-    if (doc.silenciarAlertas) {
-      continue;
+  const alertasConsolidados = new Map<string, AlertaVencimento>();
+  // Preenche com os alertas existentes atuais (já deduplicados)
+  for (const a of alertasExistentes) {
+    if (a.documentoId) {
+      alertasConsolidados.set(a.documentoId, a);
     }
+  }
 
-    if (!doc.dataValidade || !doc.dataValidade.trim()) {
+  // 1. Limpa alertas de documentos órfãos (que não existem mais no cofre)
+  const idsOrfaosParaRemover: string[] = [];
+  for (const [docId, alerta] of alertasConsolidados.entries()) {
+    if (!documentosMap.has(docId)) {
+      idsOrfaosParaRemover.push(alerta.id);
+      alertasConsolidados.delete(docId);
+    }
+  }
+
+  // 2. Processa cada documento ativo do cofre
+  for (const doc of documentos) {
+    // Se silenciado ou sem validade, zera alerta desse documento se existir
+    if (doc.silenciarAlertas || !doc.dataValidade || !doc.dataValidade.trim()) {
+      if (alertasConsolidados.has(doc.id)) {
+        const alertaParaRemover = alertasConsolidados.get(doc.id)!;
+        idsOrfaosParaRemover.push(alertaParaRemover.id);
+        alertasConsolidados.delete(doc.id);
+      }
       continue;
     }
 
@@ -310,64 +426,98 @@ export async function executarRotinaVerificacaoVencimentos(): Promise<{
     if (diasRestantes === null) continue;
 
     const prazoAlerta = determinarPrazoAlerta(diasRestantes);
-    if (prazoAlerta === null) continue;
-
-    const status = determinarStatusVencimento(diasRestantes);
-
-    if (typeof prazoAlerta === 'number') {
-      const jaExiste = alertasExistentes.some(
-        (a) =>
-          a.documentoId === doc.id &&
-          a.prazoAlerta === prazoAlerta &&
-          a.dataValidade === doc.dataValidade
-      );
-      if (jaExiste) continue;
-    } else if (prazoAlerta === 'vencido_semanal') {
-      const alertasVencidosDoc = alertasExistentes
-        .filter((a) => a.documentoId === doc.id && a.prazoAlerta === 'vencido_semanal')
-        .sort((a, b) => new Date(b.dataGeracao).getTime() - new Date(a.dataGeracao).getTime());
-
-      if (alertasVencidosDoc.length > 0) {
-        const dataUltimo = new Date(alertasVencidosDoc[0].dataGeracao);
-        const diasDesdeUltimo = Math.round((agora.getTime() - dataUltimo.getTime()) / (1000 * 60 * 60 * 24));
-        if (diasDesdeUltimo < 7) {
-          continue;
-        }
+    // Se o documento estiver fora do prazo monitorado (ex: > 60 dias)
+    if (prazoAlerta === null) {
+      if (alertasConsolidados.has(doc.id)) {
+        const alertaParaRemover = alertasConsolidados.get(doc.id)!;
+        idsOrfaosParaRemover.push(alertaParaRemover.id);
+        alertasConsolidados.delete(doc.id);
       }
+      continue;
     }
 
-    const novoAlerta: AlertaVencimento = {
-      id: `alt-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      documentoId: doc.id,
-      documentoTitulo: doc.titulo,
-      titular: doc.titular || 'Delta Plan',
-      dataValidade: doc.dataValidade,
-      diasRestantes,
-      status,
-      prazoAlerta,
-      dataGeracao: agoraIsoUtc,
-      lido: false,
-      notificadoWhatsApp: false,
-    };
+    const status = determinarStatusVencimento(diasRestantes);
+    const alertaExistente = alertasConsolidados.get(doc.id);
 
-    alertasExistentes.unshift(novoAlerta);
-    alertasGerados.push(novoAlerta);
+    if (alertaExistente) {
+      // O documento já tem alerta. Vamos verificar se mudou o marco de prazo ou ciclo semanal
+      let deveNotificarNovoMarco = false;
 
-    enviarAlertaVencimentoWhatsApp(novoAlerta).catch(() => {});
+      if (alertaExistente.prazoAlerta !== prazoAlerta) {
+        // Ex: Mudou de 60 para 30, de 30 para 7, de 7 para 0, ou de 0 para vencido_semanal
+        deveNotificarNovoMarco = true;
+      } else if (prazoAlerta === 'vencido_semanal') {
+        const dataUltimo = new Date(alertaExistente.dataGeracao);
+        const diasDesdeUltimo = Math.round((agora.getTime() - dataUltimo.getTime()) / (1000 * 60 * 60 * 24));
+        if (diasDesdeUltimo >= 7) {
+          deveNotificarNovoMarco = true;
+        }
+      }
+
+      // Atualiza o alerta existente in-place sem criar outro registro
+      alertaExistente.documentoTitulo = doc.titulo;
+      alertaExistente.titular = doc.titular || 'Delta Plan';
+      alertaExistente.dataValidade = doc.dataValidade;
+      alertaExistente.diasRestantes = diasRestantes;
+      alertaExistente.status = status;
+      alertaExistente.prazoAlerta = prazoAlerta;
+
+      if (deveNotificarNovoMarco) {
+        alertaExistente.dataGeracao = agoraIsoUtc;
+        alertaExistente.lido = false; // Novo alerta não lido no painel
+        alertaExistente.notificadoWhatsApp = false;
+        alertasGerados.push(alertaExistente);
+        enviarAlertaVencimentoWhatsApp(alertaExistente).catch(() => {});
+      }
+    } else {
+      // Documento ainda não tinha alerta: cria o alerta inicial único
+      const novoAlerta: AlertaVencimento = {
+        id: `alerta-${doc.id}`,
+        documentoId: doc.id,
+        documentoTitulo: doc.titulo,
+        titular: doc.titular || 'Delta Plan',
+        dataValidade: doc.dataValidade,
+        diasRestantes,
+        status,
+        prazoAlerta,
+        dataGeracao: agoraIsoUtc,
+        lido: false,
+        notificadoWhatsApp: false,
+      };
+
+      alertasConsolidados.set(doc.id, novoAlerta);
+      alertasGerados.push(novoAlerta);
+      enviarAlertaVencimentoWhatsApp(novoAlerta).catch(() => {});
+    }
+  }
+
+  // 3. Remove alertas órfãos ou desativados no Supabase
+  if (idsOrfaosParaRemover.length > 0) {
+    try {
+      const supabase = getSupabaseClient();
+      await supabase.from('alertas_vencimento').delete().in('id', idsOrfaosParaRemover);
+    } catch (err) {
+      console.warn('[Vencimentos ⚠️] Erro ao remover alertas obsoletos:', err);
+    }
+  }
+
+  // 4. Salva a lista consolidada de alertas únicos
+  const listaFinalAlertas = Array.from(alertasConsolidados.values());
+  if (listaFinalAlertas.length > 0) {
+    await salvarAlertas(listaFinalAlertas);
   }
 
   if (alertasGerados.length > 0) {
-    await salvarAlertas(alertasExistentes);
-    console.log(`[Vencimentos 🔔] ${alertasGerados.length} novo(s) alerta(s) de vencimento gerado(s).`);
+    console.log(`[Vencimentos 🔔] ${alertasGerados.length} alerta(s) de vencimento gerado(s)/notificado(s).`);
   } else {
-    console.log('[Vencimentos ⏱️] Nenhum novo alerta a ser gerado hoje.');
+    console.log(`[Vencimentos ⏱️] Verificação concluída. ${listaFinalAlertas.length} documento(s) monitorado(s) em dia.`);
   }
 
-  const totalNaoLidos = alertasExistentes.filter((a) => !a.lido).length;
+  const totalNaoLidos = listaFinalAlertas.filter((a) => !a.lido).length;
 
   return {
     alertasGerados,
-    totalAlertas: alertasExistentes.length,
+    totalAlertas: listaFinalAlertas.length,
     totalNaoLidos,
   };
 }

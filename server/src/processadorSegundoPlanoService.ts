@@ -27,6 +27,7 @@ import { eventosPainel } from './eventos/eventosService.js';
 import { formatarHorarioBrasilia, obterAgoraIsoUtc } from './utils/dataHoraUtils.js';
 import { ASSISTENTE } from './config/assistente.js';
 import { PdfProtegidoPorSenhaError } from './pdfService.js';
+import { registrarAviso } from './avisos/avisosFalhaService.js';
 
 export const MENSAGEM_PDF_PROTEGIDO_SENHA =
   'Esse PDF está protegido por senha, então não consegui ler o conteúdo. O arquivo continua salvo no Cofre e pode ser aberto e enviado normalmente, mas não vou conseguir responder perguntas sobre o que está escrito nele.';
@@ -350,6 +351,20 @@ async function processarProximoDaFila(): Promise<void> {
           erro_indexacao: erroFinal,
         })
         .eq('id', docId);
+
+      // Se não for documento com senha, registra aviso no sistema de falha de indexação
+      if (!isSenha) {
+        registrarAviso({
+          tipo: 'indexacao_falha',
+          origem: `Indexação Cofre (${docId})`,
+          titulo: 'Documento terminou indexação com erro ou zero trechos',
+          mensagemTecnica: msgErro,
+          severidade: 'alta',
+          chaveAgrupamento: `indexacao_${docId}`,
+        }).catch((errAviso) => {
+          console.warn('[Avisos ⚠️] Falha ao registrar aviso de indexação:', errAviso);
+        });
+      }
 
       // Se veio do WhatsApp, notifica o usuário
       const { data: docErr } = await supabase

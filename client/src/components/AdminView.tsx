@@ -398,6 +398,14 @@ export const AdminView: React.FC<AdminViewProps> = ({ conversas }) => {
                 <span className="text-slate-400 text-[11px]">
                   Cotação Dólar: <strong className="text-slate-200 font-mono">R$ {(metricasIA?.cotacaoDolar ?? 5.60).toFixed(2)}</strong>
                 </span>
+                <span className="text-slate-600">•</span>
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/25 text-emerald-300/90 text-[11px] font-medium"
+                  title="Telemetria unificada com 100% das chamadas registradas a partir desta data"
+                >
+                  <CheckCircle className="w-3 h-3 text-emerald-400" />
+                  <span>Registro completo a partir de {metricasIA?.dataInicioRegistroCompleto || '25/09/2026'}</span>
+                </span>
               </div>
 
               <div className="flex items-center gap-2 self-end sm:self-auto">

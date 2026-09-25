@@ -17,7 +17,9 @@ import {
   X,
   RefreshCw,
   Cpu,
+  Bell,
 } from 'lucide-react';
+import { ConfiguracaoAvisosSection } from './ConfiguracaoAvisosSection';
 
 interface ConfiguracaoVega {
   id: string;
@@ -74,6 +76,9 @@ export const ConfiguracoesVegaView: React.FC = () => {
   // Campos do formulário
   const [promptEditado, setPromptEditado] = useState('');
   const [temperaturaEditada, setTemperaturaEditada] = useState(0.1);
+
+  // Aba selecionada
+  const [abaAtiva, setAbaAtiva] = useState<'persona' | 'avisos'>('persona');
 
   // Estados de interface
   const [carregando, setCarregando] = useState(true);
@@ -337,11 +342,43 @@ export const ConfiguracoesVegaView: React.FC = () => {
         )}
       </div>
 
-      <div className="space-y-6 mb-8">
-        {/* ============================================================== */}
-        {/* DESTAQUE 1: Editor do Prompt da Persona */}
-        {/* ============================================================== */}
-        <div className="bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl">
+      {/* Navegação entre Abas */}
+      <div className="flex items-center gap-2 mb-6 border-b border-[#1e2633] pb-3">
+        <button
+          type="button"
+          onClick={() => setAbaAtiva('persona')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+            abaAtiva === 'persona'
+              ? 'bg-emerald-500/10 border border-emerald-500/40 text-emerald-400 shadow-sm'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-[#121820] border border-transparent'
+          }`}
+        >
+          <Bot className="w-4 h-4" />
+          <span>Comportamento & Persona</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setAbaAtiva('avisos')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+            abaAtiva === 'avisos'
+              ? 'bg-amber-500/10 border border-amber-500/40 text-amber-400 shadow-sm'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-[#121820] border border-transparent'
+          }`}
+        >
+          <Bell className="w-4 h-4" />
+          <span>Avisos de Falha & Consumo</span>
+        </button>
+      </div>
+
+      {abaAtiva === 'avisos' ? (
+        <ConfiguracaoAvisosSection />
+      ) : (
+        <>
+          <div className="space-y-6 mb-8">
+          {/* ============================================================== */}
+          {/* DESTAQUE 1: Editor do Prompt da Persona */}
+          {/* ============================================================== */}
+          <div className="bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl">
           <div className="flex flex-col md:flex-row md:items-center justify-between mb-4 gap-3">
             <div>
               <h2 className="text-sm md:text-base font-semibold text-slate-100 flex items-center gap-2">
@@ -664,6 +701,8 @@ export const ConfiguracoesVegaView: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );
