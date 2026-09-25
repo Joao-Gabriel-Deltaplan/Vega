@@ -1,6 +1,11 @@
 import { OpenAI, toFile } from 'openai';
 import { EvolutionConfig } from './evolutionSenderService.js';
-import { adicionarRegistroUsoIA, obterPrecoMinutoAudio } from '../storage.js';
+import {
+  adicionarRegistroUsoIA,
+  obterPrecoMinutoAudio,
+  obterTodosTitulares,
+  obterTodosDocumentos,
+} from '../storage.js';
 
 /**
  * Limites operacionais para mensagens de áudio
@@ -297,6 +302,74 @@ export async function obterAudioBufferEvolution(
   };
 }
 
+const SIGLAS_FIXAS_DOMINIO = 'CREA, CRT, ART, RRT, CTPS, CNH, CPF, RG, DIRPF';
+const NOMES_INSTITUCIONAIS = 'Delta Plan, VEGA';
+
+/**
+ * Monta dinamicamente o prompt contextual para o modelo de transcrição da OpenAI (gpt-transcribe / Whisper).
+ * Respeita estritamente o limite de 224 tokens (~800 caracteres), priorizando titulares cadastrados,
+ * apelidos e tipos de documentos do Cofre, enriquecidos com siglas corporativas e termos institucionais.
+ */
+export async function montarPromptContextualTranscricao(): Promise<string> {
+  try {
+    const [titulares, docs] = await Promise.all([
+      obterTodosTitulares(),
+      obterTodosDocumentos(),
+    ]);
+
+    // 1. Nomes e apelidos dos titulares cadastrados no Supabase
+    const nomesEApelidosTitulares: string[] = [];
+    for (const t of titulares) {
+      if (t.nome && !nomesEApelidosTitulares.includes(t.nome.trim())) {
+        nomesEApelidosTitulares.push(t.nome.trim());
+      }
+      if (t.apelidos && Array.isArray(t.apelidos)) {
+        for (const ap of t.apelidos) {
+          if (ap && !nomesEApelidosTitulares.includes(ap.trim())) {
+            nomesEApelidosTitulares.push(ap.trim());
+          }
+        }
+      }
+    }
+
+    // 2. Tipos e títulos únicos de documentos existentes no Cofre
+    const tiposEDocs: string[] = [];
+    for (const d of docs) {
+      if (d.tipo && d.tipo !== 'Outros' && !tiposEDocs.includes(d.tipo.trim())) {
+        tiposEDocs.push(d.tipo.trim());
+      }
+      if (d.titulo && !tiposEDocs.includes(d.titulo.trim())) {
+        tiposEDocs.push(d.titulo.trim());
+      }
+    }
+
+    // 3. Montagem do prompt respeitando ordem de prioridade
+    const partes: string[] = [
+      `${NOMES_INSTITUCIONAIS}. Termos e siglas: ${SIGLAS_FIXAS_DOMINIO}.`,
+    ];
+
+    if (nomesEApelidosTitulares.length > 0) {
+      partes.push(`Titulares: ${nomesEApelidosTitulares.slice(0, 10).join(', ')}.`);
+    }
+
+    if (tiposEDocs.length > 0) {
+      partes.push(`Documentos: ${tiposEDocs.slice(0, 15).join(', ')}.`);
+    }
+
+    let promptFinal = partes.join(' ');
+
+    // Limite de segurança: ~800 caracteres (garante ficar com margem abaixo do limite de 224 tokens do Whisper)
+    if (promptFinal.length > 800) {
+      promptFinal = promptFinal.slice(0, 800).replace(/,[^,]*$/, '.');
+    }
+
+    return promptFinal;
+  } catch (err) {
+    console.warn('[OpenAI Transcrição ⚠️] Falha ao montar prompt contextual:', err);
+    return `${NOMES_INSTITUCIONAIS}. ${SIGLAS_FIXAS_DOMINIO}.`;
+  }
+}
+
 /**
  * Transcreve um áudio em memória RAM utilizando a API da OpenAI (Whisper).
  * Não grava nada em disco.
@@ -346,7 +419,10 @@ export async function transcreverAudioOpenAI(
   // Converte o Buffer de memória para o formato aceito pelo SDK oficial da OpenAI sem salvar em disco
   const file = await toFile(audioBuffer, nomeArquivoVirtual, { type: mimeNormalizado });
 
-  console.log(`[OpenAI Transcrição 🎙️] Enviando áudio em memória para o modelo "${modelo}" (tamanho: ${audioBuffer.length} bytes)...`);
+  // Monta dinamicamente o prompt contextual de vocabulário do domínio
+  const promptContextual = await montarPromptContextualTranscricao();
+
+  console.log(`[OpenAI Transcrição 🎙️] Enviando áudio em memória para o modelo "${modelo}" (tamanho: ${audioBuffer.length} bytes, prompt: ${promptContextual.length} chars)...`);
 
   let resposta: any;
   try {
@@ -354,6 +430,7 @@ export async function transcreverAudioOpenAI(
       file,
       model: modelo,
       language: 'pt',
+      prompt: promptContextual,
     });
   } catch (err: any) {
     const motivoExato =

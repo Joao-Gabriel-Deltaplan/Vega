@@ -19,6 +19,7 @@ import {
   VisibilidadeDoc,
 } from './types.js';
 import { marcarDocumentoFaltanteComoProvidenciado } from './documentosFaltantesService.js';
+import { nomesSaoEquivalentesComTolerancia } from './utils/nomeUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -344,46 +345,97 @@ export async function marcarComoLida(conversaId: string): Promise<void> {
  * Se o nome casar com um titular já cadastrado (nome completo, primeiro nome ou apelido/parte significativa),
  * vincula ao existente em vez de criar outro.
  */
-export function resolverTitularCadastrado(
+export function resolverTitularComAmbiguidade(
   nomeIdentificado: string | null | undefined,
   titulares: FichaTitular[]
-): FichaTitular | null {
-  if (!nomeIdentificado || !nomeIdentificado.trim()) return null;
+): { titular: FichaTitular | null; ambiguo: boolean; candidatos: FichaTitular[] } {
+  if (!nomeIdentificado || !nomeIdentificado.trim()) {
+    return { titular: null, ambiguo: false, candidatos: [] };
+  }
   const norm = nomeIdentificado.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
   // 1. Match exato por ID
   const porId = titulares.find((t) => t.id.toLowerCase() === norm);
-  if (porId) return porId;
+  if (porId) return { titular: porId, ambiguo: false, candidatos: [porId] };
 
   // 2. Match exato por nome cadastrado
   const porNomeExato = titulares.find((t) => {
     const tNomeNorm = t.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     return tNomeNorm === norm;
   });
-  if (porNomeExato) return porNomeExato;
+  if (porNomeExato) return { titular: porNomeExato, ambiguo: false, candidatos: [porNomeExato] };
 
-  // 3. Match por primeiro nome de pessoa física (ex: "Fulano" -> "Fulano de Tal")
+  // 3. Match em apelidos oficiais cadastrados no Supabase
   for (const t of titulares) {
-    const partes = t.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/\s+/);
-    const primeiro = partes[0];
-    if (primeiro && primeiro.length >= 3 && (norm === primeiro || norm.startsWith(primeiro + ' ') || norm.endsWith(' ' + primeiro))) {
-      return t;
+    const apelidos = t.apelidos || [];
+    for (const ap of apelidos) {
+      const apNorm = ap.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+      if (apNorm && (norm === apNorm || norm.startsWith(apNorm + ' ') || norm.endsWith(' ' + apNorm))) {
+        return { titular: t, ambiguo: false, candidatos: [t] };
+      }
     }
   }
 
-  // 4. Match por partes significativas de pessoas jurídicas (ex: "Empresa" -> "Serviços Empresa Ltda")
+  // 4. Match por primeiro nome de pessoa física (ex: "Fulano" -> "Fulano de Tal")
+  const porPrimeiroNome = titulares.filter((t) => {
+    const partes = t.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/\s+/);
+    const primeiro = partes[0];
+    return primeiro && primeiro.length >= 3 && (norm === primeiro || norm.startsWith(primeiro + ' ') || norm.endsWith(' ' + primeiro));
+  });
+  if (porPrimeiroNome.length === 1) {
+    return { titular: porPrimeiroNome[0], ambiguo: false, candidatos: porPrimeiroNome };
+  } else if (porPrimeiroNome.length > 1) {
+    return { titular: null, ambiguo: true, candidatos: porPrimeiroNome };
+  }
+
+  // 5. Match com tolerância fonética e pequenas variações de grafia (S/Z, TH/T, Y/I, digitação)
+  const candidatosTolerancia: FichaTitular[] = [];
+  for (const t of titulares) {
+    // Testa contra nome completo e primeiro nome
+    if (nomesSaoEquivalentesComTolerancia(norm, t.nome)) {
+      if (!candidatosTolerancia.some((c) => c.id === t.id)) {
+        candidatosTolerancia.push(t);
+      }
+      continue;
+    }
+    // Testa contra apelidos
+    const apelidos = t.apelidos || [];
+    const casouApelido = apelidos.some((ap) => nomesSaoEquivalentesComTolerancia(norm, ap));
+    if (casouApelido) {
+      if (!candidatosTolerancia.some((c) => c.id === t.id)) {
+        candidatosTolerancia.push(t);
+      }
+      continue;
+    }
+  }
+
+  if (candidatosTolerancia.length === 1) {
+    return { titular: candidatosTolerancia[0], ambiguo: false, candidatos: candidatosTolerancia };
+  } else if (candidatosTolerancia.length > 1) {
+    return { titular: null, ambiguo: true, candidatos: candidatosTolerancia };
+  }
+
+  // 6. Match por partes significativas de pessoas jurídicas (ex: "Empresa" -> "Serviços Empresa Ltda")
   for (const t of titulares) {
     const tNomeNorm = t.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     if (tNomeNorm.includes(norm) || norm.includes(tNomeNorm)) {
-      return t;
+      return { titular: t, ambiguo: false, candidatos: [t] };
     }
     const partesPJ = tNomeNorm.split(/\s+/).filter((p) => p.length >= 4 && !['servicos', 'engenharia', 'ltda', 'brasil'].includes(p));
     for (const p of partesPJ) {
-      if (norm.includes(p)) return t;
+      if (norm.includes(p)) return { titular: t, ambiguo: false, candidatos: [t] };
     }
   }
 
-  return null;
+  return { titular: null, ambiguo: false, candidatos: [] };
+}
+
+export function resolverTitularCadastrado(
+  nomeIdentificado: string | null | undefined,
+  titulares: FichaTitular[]
+): FichaTitular | null {
+  const resultado = resolverTitularComAmbiguidade(nomeIdentificado, titulares);
+  return resultado.titular;
 }
 
 function mapearLinhaDocumento(row: any): DocumentoRegistro {
@@ -1059,7 +1111,7 @@ export async function obterTodosTitulares(): Promise<FichaTitular[]> {
     const supabase = getSupabaseClient();
     const { data, error } = await supabase
       .from('titulares')
-      .select('id, nome, campos, atualizado_em')
+      .select('id, nome, apelidos, campos, atualizado_em')
       .order('created_at', { ascending: true });
 
     if (error) {
@@ -1070,6 +1122,7 @@ export async function obterTodosTitulares(): Promise<FichaTitular[]> {
     const titulares = (data || []).map((t: any) => ({
       id: t.id,
       nome: t.nome,
+      apelidos: t.apelidos || [],
       campos: t.campos || {},
       atualizadoEm: t.atualizado_em || '',
     }));
@@ -1087,7 +1140,7 @@ export async function obterTitularPorId(id: string): Promise<FichaTitular | null
     const supabase = getSupabaseClient();
     const { data, error } = await supabase
       .from('titulares')
-      .select('id, nome, campos, atualizado_em')
+      .select('id, nome, apelidos, campos, atualizado_em')
       .eq('id', id)
       .maybeSingle();
 
@@ -1096,6 +1149,7 @@ export async function obterTitularPorId(id: string): Promise<FichaTitular | null
     return {
       id: data.id,
       nome: data.nome,
+      apelidos: data.apelidos || [],
       campos: data.campos || {},
       atualizadoEm: data.atualizado_em || '',
     };
@@ -1108,17 +1162,7 @@ export async function obterTitularPorId(id: string): Promise<FichaTitular | null
 export async function obterTitularPorNome(nome: string): Promise<FichaTitular | null> {
   if (!nome || !nome.trim()) return null;
   const todos = await obterTodosTitulares();
-  const nomeLower = nome.toLowerCase().trim();
-
-  return (
-    todos.find(
-      (t) =>
-        t.nome.toLowerCase().trim() === nomeLower ||
-        t.nome.toLowerCase().includes(nomeLower) ||
-        nomeLower.includes(t.nome.toLowerCase()) ||
-        t.id.toLowerCase().includes(nomeLower)
-    ) || null
-  );
+  return resolverTitularCadastrado(nome, todos);
 }
 
 export function obterNomesTitularesCadastrados(): string[] {
@@ -1135,6 +1179,7 @@ export async function salvarOuAtualizarTitular(titular: FichaTitular): Promise<F
       .upsert({
         id: titular.id,
         nome: titular.nome,
+        apelidos: titular.apelidos || [],
         campos: titular.campos || {},
         atualizado_em: atualizadoEm,
       }, { onConflict: 'id' });

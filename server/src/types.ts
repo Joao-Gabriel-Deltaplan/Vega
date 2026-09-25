@@ -200,6 +200,7 @@ export interface CorrecaoPendenteFicha {
 export interface FichaTitular {
   id: string;
   nome: string;
+  apelidos?: string[];
   campos: Partial<Record<CampoTitularId, CampoTitular>>;
   atualizadoEm: string;
 }

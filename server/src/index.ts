@@ -711,15 +711,22 @@ app.get('/api/titulares/:id', async (req, res) => {
 // POST /api/titulares (Cria nova ficha de titular)
 app.post('/api/titulares', async (req, res) => {
   try {
-    const { nome, campos } = req.body;
+    const { nome, campos, apelidos } = req.body;
     if (!nome || !nome.trim()) {
       return res.status(400).json({ erro: 'Nome do titular é obrigatório.' });
     }
+
+    const apelidosArray = Array.isArray(apelidos)
+      ? apelidos
+      : typeof apelidos === 'string'
+      ? apelidos.split(',').map((a: string) => a.trim()).filter(Boolean)
+      : [];
 
     const idSanitizado = `tit_${nome.trim().toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
     const novaFicha: FichaTitular = {
       id: idSanitizado,
       nome: nome.trim(),
+      apelidos: apelidosArray,
       campos: campos || {},
       atualizadoEm: new Date().toLocaleDateString('pt-BR'),
     };
@@ -740,8 +747,15 @@ app.patch('/api/titulares/:id', async (req, res) => {
       return res.status(404).json({ erro: 'Titular não encontrado.' });
     }
 
-    const { nome, campos } = req.body;
+    const { nome, campos, apelidos } = req.body;
     if (nome) fichaExistente.nome = nome.trim();
+    if (apelidos !== undefined) {
+      fichaExistente.apelidos = Array.isArray(apelidos)
+        ? apelidos
+        : typeof apelidos === 'string'
+        ? apelidos.split(',').map((a: string) => a.trim()).filter(Boolean)
+        : [];
+    }
     if (campos && typeof campos === 'object') {
       fichaExistente.campos = {
         ...fichaExistente.campos,

@@ -9,6 +9,7 @@ import {
   obterTodosConhecimentos,
   salvarOuAtualizarTitular,
   resolverTitularCadastrado,
+  resolverTitularComAmbiguidade,
 } from '../storage.js';
 import {
   buscarDocumentos,
@@ -42,8 +43,9 @@ import {
   AnexoRastro,
   CorrecaoPendenteFicha,
   DadosEstruturadosMensagem,
+  FichaTitular,
 } from '../types.js';
-import { extrairPrimeiroNome, formatarFraseAcompanhamento } from '../utils/nomeUtils.js';
+import { extrairPrimeiroNome, formatarFraseAcompanhamento, nomesSaoEquivalentesComTolerancia } from '../utils/nomeUtils.js';
 import { criarAnexoParaDocumento } from '../pdfService.js';
 import { mascararDadosSensiveis, mascararDocumento, truncarTrecho } from '../utils/segurancaUtils.js';
 
@@ -116,6 +118,7 @@ export interface ClassificacaoChatResponse {
   campos?: string[];
   documento_citado?: string;
   documentos_citados?: string[];
+  ambiguidadeTitulares?: string[];
   pergunta_completa: string;
   termo_busca: string;
   pergunta_reescrita: string;
@@ -1165,26 +1168,32 @@ EXEMPLOS OBRIGATÓRIOS:
     }
 
     let origemPessoa: 'mensagem_atual' | 'contexto' | undefined = undefined;
+    let ambiguidadeTitulares: FichaTitular[] = [];
 
-    // Regra 16: Nome citado na mensagem sempre prevalece sobre o contexto, mesmo que não seja titular cadastrado
+    // Regra 16 com Tolerância de Grafia e Apelidos:
+    // Nome citado na mensagem sempre prevalece sobre o contexto.
+    // Se casar com um titular cadastrado (exato, por apelido ou por tolerância S/Z, TH/T, acentos),
+    // normalizamos para o nome oficial do titular. Se for ambíguo, sinalizamos ambiguidade.
     if (pessoaCitadaNaMensagem) {
-      parsed.pessoa = pessoaCitadaNaMensagem;
+      const resAmb = resolverTitularComAmbiguidade(pessoaCitadaNaMensagem, titulares);
+      if (resAmb.ambiguo) {
+        ambiguidadeTitulares = resAmb.candidatos;
+        parsed.pessoa = pessoaCitadaNaMensagem;
+      } else if (resAmb.titular) {
+        parsed.pessoa = resAmb.titular.nome;
+      } else {
+        parsed.pessoa = pessoaCitadaNaMensagem;
+      }
       origemPessoa = 'mensagem_atual';
     } else if (parsed.pessoa) {
       // Se parsed.pessoa veio da LLM mas não está textualmente na mensagem atual,
-      // só aceitamos se for um titular cadastrado válido
-      const pNorm = normalizarParaBusca(parsed.pessoa);
-      const titularValido = titulares.some((t) => {
-        const tNorm = normalizarParaBusca(t.nome);
-        const pPrimeiro = extrairPrimeiroNome(t.nome) || '';
-        return (
-          tNorm === pNorm ||
-          tNorm.includes(pNorm) ||
-          pNorm.includes(tNorm) ||
-          (pPrimeiro && normalizarParaBusca(pPrimeiro) === pNorm)
-        );
-      });
-      if (!titularValido) {
+      // verificamos se casa com algum titular cadastrado válido (com tolerância)
+      const resAmb = resolverTitularComAmbiguidade(parsed.pessoa, titulares);
+      if (resAmb.ambiguo) {
+        ambiguidadeTitulares = resAmb.candidatos;
+      } else if (resAmb.titular) {
+        parsed.pessoa = resAmb.titular.nome;
+      } else {
         parsed.pessoa = '';
       }
     }
@@ -1473,6 +1482,7 @@ EXEMPLOS OBRIGATÓRIOS:
       valor_novo: parsed.valor_novo || undefined,
       documento_citado: parsed.documento_citado || undefined,
       documentos_citados: parsed.documentos_citados && parsed.documentos_citados.length > 0 ? parsed.documentos_citados : undefined,
+      ambiguidadeTitulares: ambiguidadeTitulares.length > 1 ? ambiguidadeTitulares.map((t) => t.nome) : undefined,
       pergunta_completa: perguntaCompleta,
       termo_busca: termoBusca,
       pergunta_reescrita: perguntaCompleta,
@@ -2238,6 +2248,40 @@ async function executarProcessamentoMensagemChatInterno(dados: {
       etapas,
     };
   };
+
+  // ============================================================================
+  // CASO ESPECIAL: AMBIGUIDADE ENTRE TITULARES CADASTRADOS SIMILARES
+  // ============================================================================
+  if (classificacao.ambiguidadeTitulares && classificacao.ambiguidadeTitulares.length > 1) {
+    const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+    const opcoes = classificacao.ambiguidadeTitulares.map((t, idx) => `${idx + 1}) ${t}`).join(', ');
+    const textoResposta = `${prefixoSaudacao}Encontrei mais de um titular parecido: ${opcoes}. De qual deles você precisa?`;
+
+    etapas.push({
+      ordem: 2,
+      nome: 'Resolução de Ambiguidade de Titular',
+      descricao: `Identificada ambiguidade entre ${classificacao.ambiguidadeTitulares.length} titulares: ${opcoes}.`,
+      tempoMs: 1,
+    });
+
+    const rastro = criarRastroFinal({
+      tipoBusca: 'ambiguidade_titular',
+      docsEncontrados: [],
+      enviouAnexo: false,
+      respostaFinal: textoResposta,
+      modelo: 'Motor Interno',
+    });
+
+    return {
+      textoResposta,
+      origem: 'motor',
+      intencaoDetectada: intencao,
+      perguntaReescrita: pergunta_reescrita,
+      buscaUsada: 'ambiguidade_titular',
+      similaridade: 'N/A',
+      rastro,
+    };
+  }
 
   // ============================================================================
   // CASO 1: SAUDAÇÃO OU PEDIDO VAGO

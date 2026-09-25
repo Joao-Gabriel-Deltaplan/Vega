@@ -3,7 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Contato, DocumentoRegistro, NivelAcesso } from '../types.js';
 import { obterDocumentosPorNivelAcesso, obterNomesTitularesCadastrados } from '../storage.js';
-import { extrairPrimeiroNome } from '../utils/nomeUtils.js';
+import { extrairPrimeiroNome, nomesSaoEquivalentesComTolerancia } from '../utils/nomeUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -318,27 +318,24 @@ export function extrairTitularExplicito(texto: string, titularesDisponiveis?: st
 
   // Procura estritamente por correspondência com titulares cadastrados no Supabase
   const titulares = Array.from(new Set(cadastrados)).filter(Boolean);
-
   const textoNorm = normalizarTexto(texto);
 
   // Ordena por comprimento para priorizar nomes completos antes de primeiros nomes
   const titularesOrdenados = [...titulares].sort((a, b) => b.length - a.length);
 
+  // 1º Passo: Casamento exato por fronteira de palavra
   for (const titular of titularesOrdenados) {
     const titNorm = normalizarTexto(titular);
     if (!titNorm || titNorm.length < 2) continue;
-
-    // Proteção extra: lista de exclusão
     if (TERMOS_NAO_TITULARES.has(titNorm)) continue;
 
-    // Casamento exato por fronteira de palavra
     const regex = new RegExp(`\\b${titNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
     if (regex.test(textoNorm)) {
       return titular;
     }
   }
 
-  // Verifica palavras significativas de titulares cadastrados (ex.: sobrenome ou termo significativo da PJ)
+  // 2º Passo: Casamento por partes significativas de titulares cadastrados (sobrenomes / PJ)
   for (const titular of titulares) {
     const partes = titular.split(/\s+/).filter(
       (p) =>
@@ -353,6 +350,25 @@ export function extrairTitularExplicito(texto: string, titularesDisponiveis?: st
         return titular;
       }
     }
+  }
+
+  // 3º Passo: Casamento com tolerância fonética e de grafia nas palavras do texto
+  // Exemplo: "thomas" com S casa com titular cadastrado "Thomaz Lustri Fabre"
+  const palavrasTexto = textoNorm.split(/\s+/).filter((p) => p.length >= 3 && !TERMOS_NAO_TITULARES.has(p));
+  const candidatosTolerancia: string[] = [];
+
+  for (const palavra of palavrasTexto) {
+    for (const titular of titulares) {
+      if (nomesSaoEquivalentesComTolerancia(palavra, titular)) {
+        if (!candidatosTolerancia.includes(titular)) {
+          candidatosTolerancia.push(titular);
+        }
+      }
+    }
+  }
+
+  if (candidatosTolerancia.length === 1) {
+    return candidatosTolerancia[0];
   }
 
   // Se nenhuma palavra casar com titular cadastrado, retorna rigorosamente null.
@@ -377,13 +393,14 @@ export function extrairNomePessoaPotencial(texto: string): string | null {
 }
 
 /**
- * Verifica se dois nomes de titular correspondem
+ * Verifica se dois nomes de titular correspondem (com tolerância de grafia S/Z, TH/T, acentos)
  */
 export function titularCorresponde(docTitular?: string, alvo?: string): boolean {
   if (!docTitular || !alvo) return false;
   const n1 = normalizarTexto(docTitular);
   const n2 = normalizarTexto(alvo);
-  return n1 === n2 || n1.includes(n2) || n2.includes(n1);
+  if (n1 === n2 || n1.includes(n2) || n2.includes(n1)) return true;
+  return nomesSaoEquivalentesComTolerancia(n1, n2);
 }
 
 /**
