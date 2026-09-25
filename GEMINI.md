@@ -155,5 +155,14 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
 - **Resposta de campo inexistente condicionada:** A resposta `"Não encontrei [campo] d[prep] [titular] nos documentos."` só pode ser emitida se o dado falhar comprovadamente em AMBAS as camadas.
 - **Citação do documento fonte:** Ao localizar a informação nos trechos de algum documento do titular (ex.: Título Eleitoral localizado na Declaração de Imposto de Renda), a VEGA deve responder com o dado exato e oferecer o envio do documento oficial de origem.
 
+---
+
+## 20. Prevalência Absoluta de Documento Citado sobre o Contexto
+- **Prevalência absoluta:** Documento citado na mensagem atual SEMPRE prevalece sobre o documento do contexto. O contexto só vale quando a mensagem não cita nenhum documento (ex.: `"resuma esse documento"`, `"me manda o pdf"`, `"explique ele"`, `"o que diz nele?"`, `"resuma em 10 linhas"`).
+- **Documento existente no Cofre:** Se a mensagem citar um documento que existe no Cofre, a VEGA deve resumir, responder sobre o conteúdo ou enviar ESSE documento específico, mesmo que a conversa anterior estivesse tratando de outro documento.
+- **Documento inexistente no Cofre:** Se a mensagem citar um documento que NÃO existe no Cofre, responder obrigatoriamente que não encontrou esse documento no Cofre (`"Não encontrei [artigo] *[Tipo]* [prep] *[Titular]* no Cofre."` ou `"Não encontrei esse documento no Cofre."`), anotando na lista de pendências se for tipo documental reconhecível. NUNCA resumir, enviar ou responder com base em outro documento do contexto.
+- **Abrangência total:** Esta regra é válida indistintamente para pedidos de resumo (`resuma ...`, `resumo de ...`), perguntas de conteúdo (`pergunta_conteudo`) e pedidos de envio de arquivo (`pedir_arquivo`).
+
+
 
 

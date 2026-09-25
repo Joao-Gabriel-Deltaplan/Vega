@@ -403,6 +403,169 @@ export function sanitizarPedidoArquivo(mensagem: string): {
 }
 
 /**
+ * Sanitiza pedidos de resumo ou conteúdo para verificar se a mensagem cita expressamente
+ * um documento ou se é puramente uma referência anafórica ao documento do contexto.
+ * Retorna se é puramente anafórico/genérico e o termo/documento remanescente se houver.
+ */
+export function sanitizarPedidoResumoOuConteudo(mensagem: string): {
+  termoLimpo: string;
+  apenasReferenciaContexto: boolean;
+} {
+  if (!mensagem || !mensagem.trim()) {
+    return { termoLimpo: '', apenasReferenciaContexto: true };
+  }
+
+  let limpo = mensagem
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+  // 1. Remover pontuações
+  limpo = limpo.replace(/[,;:.!?"'()«»\\\[\]|]/g, ' ');
+
+  // 2. Remover saudações e cortesias
+  limpo = limpo.replace(
+    /\b(perfeito|perfeita|otimo|otima|beleza|legal|maravilha|show|maravilhoso|ok|obrigado|obrigada|valeu|muito obrigado|muito obrigada|por favor|por gentileza|agora|entao|bom dia|boa tarde|boa noite|ola|oi|e ai)\b/gi,
+    ' '
+  );
+
+  // 3. Remover comandos de resumo, explicação e leitura de conteúdo
+  limpo = limpo.replace(
+    /\b(resuma|resumo|resumir|faca um resumo|faz um resumo|explique|explicar|me explique|me diga|fala sobre|fale sobre|diga sobre|diz sobre|conteudo|qual o conteudo|qual e o conteudo|o que diz|o que fala|o que consta|o que tem|do que se trata|sobre o que e|sobre o que se trata|quantas linhas|em poucas palavras)\b/gi,
+    ' '
+  );
+
+  // 4. Remover especificações numéricas de linhas ("em 10 linhas", "em 5 linhas", "10 linhas")
+  limpo = limpo.replace(/\b(em\s+)?\d+\s+linhas\b/gi, ' ');
+
+  // 5. Remover pronomes dêiticos e termos puramente anafóricos que referenciam o contexto
+  limpo = limpo.replace(
+    /\b(esse documento|este documento|deste documento|desse documento|o documento acima|o documento entregue|o documento|um documento|documento|os documentos|o arquivo|esse arquivo|este arquivo|desse arquivo|deste arquivo|arquivo|os arquivos|o pdf|esse pdf|este pdf|desse pdf|deste pdf|pdf|os pdfs|ele|ela|dele|dela|nele|nela|esse|este|deste|desse|isso|aquilo|ai)\b/gi,
+    ' '
+  );
+
+  // 6. Remover preposições e artigos soltos
+  limpo = limpo.replace(/\b(o|a|os|as|de|do|da|dos|das|em|no|na|nos|nas|por|para|pra|pro|com|e|ou|um|uma|uns|umas)\b/gi, ' ');
+
+  limpo = limpo.replace(/\s+/g, ' ').trim();
+
+  // Se nada sobrou (ou menos que 2 letras), é puramente anafórico / referência ao contexto
+  const apenasReferenciaContexto = limpo.length < 2;
+
+  return {
+    termoLimpo: limpo,
+    apenasReferenciaContexto,
+  };
+}
+
+/**
+ * Localiza no catálogo do Cofre um documento citado pelo usuário em pedidos de resumo ou conteúdo.
+ * Retorna o documento correspondente ou null se não existir no Cofre.
+ */
+export function localizarDocumentoCitadoNoCofre(
+  termoOuNomeCitado: string,
+  todosDocs: DocumentoRegistro[],
+  titularAlvo?: string
+): DocumentoRegistro | null {
+  if (!termoOuNomeCitado || !todosDocs || todosDocs.length === 0) return null;
+
+  const termoNorm = termoOuNomeCitado
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+  // 1. Match direto no catálogo completo por título ou arquivo (independente de titular suposto)
+  for (const doc of todosDocs) {
+    const docTitNorm = doc.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    const docArqNorm = doc.arquivo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    if (docTitNorm === termoNorm || docArqNorm === termoNorm || termoNorm === docTitNorm || termoNorm === docArqNorm) {
+      return doc;
+    }
+    // Match se o título contém o termo ou vice-versa (se tiver 4+ letras)
+    if (termoNorm.length >= 4 && (docTitNorm.includes(termoNorm) || termoNorm.includes(docTitNorm))) {
+      return doc;
+    }
+  }
+
+  // Se houver titularAlvo válido, tenta filtrar, mas se o filtro esvaziar, mantém o catálogo completo
+  let catalogo = titularAlvo
+    ? todosDocs.filter((d) => titularCorresponde(d.titular, titularAlvo))
+    : todosDocs;
+
+  if (catalogo.length === 0) {
+    catalogo = todosDocs;
+  }
+
+  // 2. Se o termo cita sigla técnica ou tipo específico (ART, RRT, CREA, CNH, CRT, etc.)
+  const tipoIdentificado = identificarTipoPedido(termoOuNomeCitado);
+  const palavrasTermo = termoNorm.split(/\s+/).filter(
+    (w) => w.length >= 3 && !['resumo', 'resuma', 'sobre', 'para', 'documento', 'arquivo', 'pdf', 'servicos'].includes(w)
+  );
+
+  // Documentos que casam com o tipo ou sigla
+  const docsDoTipo = catalogo.filter((d) => {
+    const titNorm = d.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const tipoNorm = (d.tipo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const arqNorm = d.arquivo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+    if (tipoIdentificado) {
+      const tipoIdNorm = tipoIdentificado.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (tipoNorm === tipoIdNorm || titNorm.includes(tipoIdNorm) || arqNorm.includes(tipoIdNorm)) {
+        return true;
+      }
+    }
+
+    // Siglas como ART, RRT, CREA, CNH, CRT
+    for (const sigla of ['art', 'rrt', 'crea', 'crt', 'cau', 'cnh', 'rg', 'cpf']) {
+      if (new RegExp(`\\b${sigla}\\b`, 'i').test(termoNorm)) {
+        if (
+          new RegExp(`\\b${sigla}\\b`, 'i').test(titNorm) ||
+          new RegExp(`\\b${sigla}\\b`, 'i').test(tipoNorm) ||
+          new RegExp(`\\b${sigla}\\b`, 'i').test(arqNorm)
+        ) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  });
+
+  if (docsDoTipo.length === 1) {
+    return docsDoTipo[0];
+  }
+
+  if (docsDoTipo.length > 1) {
+    // Desempata pelas outras palavras do termo (ex: "menegazzo")
+    let melhorDoc = docsDoTipo[0];
+    let maxBates = -1;
+    for (const d of docsDoTipo) {
+      const textoCompleto = `${d.titulo} ${d.arquivo} ${d.titular || ''}`.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const bates = palavrasTermo.filter((p) => textoCompleto.includes(p)).length;
+      if (bates > maxBates) {
+        maxBates = bates;
+        melhorDoc = d;
+      }
+    }
+    return melhorDoc;
+  }
+
+  // 3. Match por inclusão de partes significativas no título de algum documento
+  for (const doc of catalogo) {
+    const docTitNorm = doc.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    if (palavrasTermo.length >= 2 && palavrasTermo.every((p) => docTitNorm.includes(p))) {
+      return doc;
+    }
+    if (palavrasTermo.length >= 1 && palavrasTermo.some((p) => p.length >= 5 && docTitNorm.includes(p))) {
+      return doc;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Constantes da Janela de Contexto de Conversa
  * - JANELA_CONTEXTO_MENSAGENS: 30 mensagens para o histórico geral (titulares, documentos recentes e referências).
  * - JANELA_CLASSIFICADOR_MENSAGENS: 12 mensagens para o classificador LLM (contexto real sem encarecer).
@@ -1074,6 +1237,9 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
      * Qualquer pedido desses campos — MESMO QUE VENHA COM VERBOS DE ENVIO ("me mande o título de eleitor do Thomaz", "me envia o PIS do Fulano", "manda o CPF dele", "me passa a filiação", "mande o título") — É ESTRITAMENTE "dado_pessoal", NUNCA "pedir_arquivo"!
      * "pedir_arquivo" só se aplica a documentos físicos reais existentes ou solicitados como arquivos (ex: "me manda o contrato", "envia a certidão de casamento", "manda o CREA", "solta a CNH", "envia o PDF do imposto de renda").
 5. "pergunta_conteudo": Perguntas sobre o conteúdo de documentos ("resuma esse documento em 10 linhas", "o que esse documento fala sobre águas fluviais?", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?", "quais dias eu tomei as vacinas da covid?", "quais vacinas ele tomou?", "qual o endereço do Fulano?", "o que diz na página 2?").
+   - REGRA DE DOCUMENTO CITADO EM RESUMO OU CONTEÚDO (REGRA 20):
+     * Se a mensagem citar um documento específico pelo nome ou tipo ("resuma a ART de serviços menegazzo", "resuma o contrato de locação", "o que consta na certidão de casamento"), preencha OBRIGATORIAMENTE "documento_citado" e "termo_busca" com o nome desse documento citado! O documento citado na mensagem SEMPRE prevalece sobre qualquer documento do histórico.
+     * Se a mensagem for genérica, anafórica ou sobre o documento do contexto ("resuma esse documento", "resuma em 10 linhas", "o que diz nele?", "resuma o documento acima", "resuma ele"), devolva OBRIGATORIAMENTE "documento_citado": "" e "termo_busca": "" (vazios!). O sistema usará o documento do contexto.
    - REGRA MANDATÓRIA: Perguntas sobre o conteúdo de documentos arquivados no Cofre (como vacinas tomadas, datas de vacinação/doses de covid, cláusulas contratuais, valores, datas de registro de certidões, alvarás) são SEMPRE "pergunta_conteudo", NUNCA "fora_de_escopo"!
    - Se o usuário perguntar sem citar titular (ex: "quais dias eu tomei as vacinas da covid?"), devolva "intencao": "pergunta_conteudo", "pessoa": "", "termo_busca": "vacina covid". O sistema perguntará de quem é. NUNCA classifique como fora_de_escopo!
    - Quando o usuário disser "esse documento" ou "o documento acima" logo após a VEGA entregar um anexo, a pergunta DEVE ser respondida com base estrita no texto daquele documento!
@@ -1089,6 +1255,10 @@ REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - O CONTEXTO SÓ DEVE SER USADO quando a mensagem atual NÃO tem sujeito nenhum (ex.: perguntas com pronomes como "ele", "dele", ou elípticas como "e a validade?", "e o CPF dele?", "e o RG dele?", "e o endereço dele?"). Nesses casos, herde o titular mencionado anteriormente no histórico.
 
 EXEMPLOS OBRIGATÓRIOS:
+- "resuma a art de serviços menegazzo" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "ART de serviços menegazzo", "documentos_citados": ["ART de serviços menegazzo"], "pergunta_completa": "Resumir a ART de serviços menegazzo", "termo_busca": "ART de serviços menegazzo"}
+- "resuma esse documento" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Resumir o documento do contexto", "termo_busca": ""}
+- "resuma o contrato de locação" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "contrato de locação", "documentos_citados": ["contrato de locação"], "pergunta_completa": "Resumir o contrato de locação", "termo_busca": "contrato de locação"}
+- "o que diz nele?" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "O que diz no documento do contexto?", "termo_busca": ""}
 - "qual número do título eleitoral do thomaz?" -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["titulo_eleitor"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o número do título de eleitor do Thomaz?", "termo_busca": "titulo eleitor Thomaz"}
 - "me mande o título de eleitor do thomaz" -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["titulo_eleitor"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o título de eleitor do Thomaz?", "termo_busca": "titulo eleitor Thomaz"}
 - "qual o PIS do fulano?" -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["pis"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o PIS do Fulano?", "termo_busca": "pis Fulano"}
@@ -1389,6 +1559,18 @@ EXEMPLOS OBRIGATÓRIOS:
       parsed.intencao = 'listar_documentos';
     } else if (ehPerguntaExplicacaoOuResumo) {
       parsed.intencao = 'pergunta_conteudo';
+      // REGRA 20: Prevalência Absoluta de Documento Citado sobre o Contexto
+      const sanitizadoResumo = sanitizarPedidoResumoOuConteudo(mensagemUsuario);
+      if (!sanitizadoResumo.apenasReferenciaContexto) {
+        if (!parsed.documento_citado) {
+          const tipoIdentificado = identificarTipoPedido(mensagemUsuario);
+          parsed.documento_citado = tipoIdentificado || sanitizadoResumo.termoLimpo;
+          parsed.termo_busca = parsed.documento_citado;
+        }
+      } else {
+        parsed.documento_citado = '';
+        parsed.termo_busca = '';
+      }
     } else if (ehPedidoCertidao || REGEX_DOCUMENTO_QUALQUER.test(msgNorm)) {
       if (
         ehPedidoCertidao ||
@@ -4177,19 +4359,71 @@ NÃO inclua explicações nem frases antes ou depois, apenas o valor exato.`;
   if (intencao === 'pergunta_conteudo') {
     const todosDocs = documentosDisponiveis.length > 0 ? documentosDisponiveis : await obterTodosDocumentos();
 
-    // 0. Detecção de pergunta ou resumo sobre documento recém-entregue no chat ("esse documento", "o documento acima", "resumo do documento")
-    const ehSobreDocRecente =
-      /\b(esse|este|deste|desse|o)\s+documento\b/i.test(mensagemUsuario) ||
-      /\b(resum[aeo]|expliq?u?e|fala\s+sobre|diz\s+sobre|conte[uú]do)\b/i.test(mensagemUsuario);
+    // REGRA 20: Prevalência Absoluta de Documento Citado sobre o Contexto.
+    // Documento citado na mensagem atual SEMPRE prevalece sobre o documento do contexto.
+    // O contexto só vale quando a mensagem não cita nenhum documento ("resuma esse documento", "me manda o pdf").
+    // Se a mensagem citar um documento que existe no Cofre, resumir/analisar ESSE documento.
+    // Se citar um que não existe, responder que não encontrou no Cofre e NUNCA resumir outro do contexto.
 
-    const docRecente = ehSobreDocRecente ? obterUltimoDocumentoEnviado(historicoRecente, todosDocs) : null;
-    if (docRecente) {
-      // Busca todos os trechos desse documento específico no Supabase
+    const ehPerguntaOuResumoDoc =
+      /\b(resum[aeo]|resumo|resumir|expliq?u?e|fala\s+sobre|diz\s+sobre|conte[uú]do|do\s+que\s+se\s+trata|sobre\s+o\s+que\s+[eé]|quantas\s+linhas|em\s+\d+\s+linhas|o\s+que\s+(diz|fala|consta|tem)|qual\s+(o\s+conte[uú]do|a\s+data|o\s+prazo|o\s+valor|o\s+n[uú]mero))\b/i.test(
+        mensagemUsuario
+      ) ||
+      /\b(esse|este|deste|desse|o)\s+documento\b/i.test(mensagemUsuario) ||
+      Boolean(classificacao.documento_citado && classificacao.documento_citado.trim().length > 0);
+
+    const sanitizadoResumo = sanitizarPedidoResumoOuConteudo(mensagemUsuario);
+    const docCitadoIa = (classificacao.documento_citado || '').trim();
+    const termoBuscaIa = (classificacao.termo_busca || '').trim();
+
+    // Determina se a mensagem cita um documento específico
+    const citaDocEspecifico =
+      (!sanitizadoResumo.apenasReferenciaContexto && sanitizadoResumo.termoLimpo.length >= 2) ||
+      (docCitadoIa && !sanitizarPedidoResumoOuConteudo(docCitadoIa).apenasReferenciaContexto);
+
+    const executarAnaliseDeDocumento = async (
+      docParaAnalisar: DocumentoRegistro,
+      motivoEtapa: string
+    ): Promise<ResultadoChatOrquestrador> => {
+      // 1. PDF Protegido por Senha (Regra 12)
+      if (docParaAnalisar.statusIndexacao === 'protegido_senha') {
+        const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+        const textoRespostaDoc = `${prefixoSaudacao}Esse PDF está protegido por senha, então não consegui ler o conteúdo. O arquivo continua salvo no Cofre e pode ser aberto e enviado normalmente, mas não vou conseguir responder perguntas sobre o que está escrito nele.`;
+
+        const rastro = criarRastroFinal({
+          tipoBusca: 'nome_cofre',
+          docsEncontrados: [
+            {
+              id: docParaAnalisar.id,
+              titulo: docParaAnalisar.titulo,
+              tipo: docParaAnalisar.tipo,
+              similaridade: 100,
+              usadoNaResposta: true,
+            },
+          ],
+          docUsado: docParaAnalisar.titulo,
+          enviouAnexo: false,
+          respostaFinal: textoRespostaDoc,
+          modelo: 'Motor Interno',
+        });
+
+        return {
+          textoResposta: textoRespostaDoc,
+          origem: 'motor',
+          intencaoDetectada: 'pergunta_conteudo',
+          perguntaReescrita: mensagemUsuario,
+          buscaUsada: `Documento Protegido por Senha: ${docParaAnalisar.titulo}`,
+          similaridade: '100% (Protegido por senha)',
+          rastro,
+        };
+      }
+
+      // 2. Busca todos os trechos desse documento específico no Supabase
       const supabase = getSupabaseClient();
       const { data: trechosDoDoc } = await supabase
         .from('trechos')
         .select('*')
-        .eq('documento_id', docRecente.id)
+        .eq('documento_id', docParaAnalisar.id)
         .order('pagina', { ascending: true });
 
       if (trechosDoDoc && trechosDoDoc.length > 0) {
@@ -4198,7 +4432,7 @@ NÃO inclua explicações nem frases antes ou depois, apenas o valor exato.`;
           .join('\n\n');
 
         const promptDoc = `Você é a VEGA, assistente de inteligência artificial da Construtora Delta Plan.
-O usuário está fazendo uma pergunta ou solicitando um resumo sobre o documento que você acabou de entregar: "${docRecente.titulo}" (${docRecente.arquivo}).
+O usuário está fazendo uma pergunta ou solicitando um resumo sobre o documento: "${docParaAnalisar.titulo}" (${docParaAnalisar.arquivo}).
 
 CONTEÚDO COMPLETO DO DOCUMENTO:
 """
@@ -4222,31 +4456,38 @@ DIRETRIZES OBRIGATÓRIAS:
             messages: [{ role: 'user', content: promptDoc }],
             temperature: obterConfiguracoesVegaSync().temperaturaResposta,
           },
-          { motivo: 'chat_pergunta_documento_entregue', contatoId: contato.id, contatoNome: contato.nome }
+          { motivo: 'chat_pergunta_documento_especifico', contatoId: contato.id, contatoNome: contato.nome }
         );
+
+        const tokensUsage = completion.usage;
+        if (tokensUsage) {
+          tokensPromptTotal += tokensUsage.prompt_tokens || 0;
+          tokensCompletionTotal += tokensUsage.completion_tokens || 0;
+          tokensGeraisTotal += tokensUsage.total_tokens || 0;
+        }
 
         const textoRespostaDoc =
           completion.choices[0]?.message?.content?.trim() || 'Não consegui analisar o conteúdo do documento.';
 
         etapas.push({
           ordem: 2,
-          nome: 'Análise de Conteúdo do Documento Recém-Entregue',
-          descricao: `Conteúdo de "${docRecente.titulo}" analisado pelo modelo gpt-5.4-mini em ${Date.now() - inicioIA} ms.`,
+          nome: motivoEtapa,
+          descricao: `Conteúdo de "${docParaAnalisar.titulo}" analisado pelo modelo gpt-5.4-mini em ${Date.now() - inicioIA} ms.`,
           tempoMs: Date.now() - inicioIA,
-          detalhes: { documento: docRecente.titulo, trechos: trechosDoDoc.length },
+          detalhes: { documento: docParaAnalisar.titulo, trechos: trechosDoDoc.length },
         });
 
         const rastro = criarRastroFinal({
           tipoBusca: 'vetorial',
           docsEncontrados: trechosDoDoc.map((t, idx) => ({
             id: t.documento_id,
-            titulo: docRecente.titulo,
+            titulo: docParaAnalisar.titulo,
             pagina: t.pagina,
             similaridade: 100,
             trecho: truncarTrecho(t.conteudo, 300),
             usadoNaResposta: true,
           })),
-          docUsado: docRecente.titulo,
+          docUsado: docParaAnalisar.titulo,
           enviouAnexo: false,
           respostaFinal: textoRespostaDoc,
           modelo: 'gpt-5.4-mini',
@@ -4257,8 +4498,140 @@ DIRETRIZES OBRIGATÓRIAS:
           origem: 'ia',
           intencaoDetectada: 'pergunta_conteudo',
           perguntaReescrita: mensagemUsuario,
-          buscaUsada: `Análise direta de conteúdo: ${docRecente.titulo}`,
-          similaridade: '100% (Documento Recém-Entregue)',
+          buscaUsada: `Análise direta de conteúdo: ${docParaAnalisar.titulo}`,
+          similaridade: '100% (Documento Selecionado)',
+          rastro,
+        };
+      }
+
+      // Documento no cofre mas sem trechos de texto indexados
+      const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+      const textoSemTrechos = `${prefixoSaudacao}O documento *${docParaAnalisar.titulo}* consta no Cofre, mas ainda não possui texto indexado para análise.`;
+      const rastro = criarRastroFinal({
+        tipoBusca: 'nome_cofre',
+        docsEncontrados: [
+          {
+            id: docParaAnalisar.id,
+            titulo: docParaAnalisar.titulo,
+            tipo: docParaAnalisar.tipo,
+            similaridade: 100,
+            usadoNaResposta: true,
+          },
+        ],
+        docUsado: docParaAnalisar.titulo,
+        enviouAnexo: false,
+        respostaFinal: textoSemTrechos,
+        modelo: 'Motor Interno',
+      });
+
+      return {
+        textoResposta: textoSemTrechos,
+        origem: 'motor',
+        intencaoDetectada: 'pergunta_conteudo',
+        perguntaReescrita: mensagemUsuario,
+        buscaUsada: `Documento sem trechos indexados: ${docParaAnalisar.titulo}`,
+        similaridade: '100%',
+        rastro,
+      };
+    };
+
+    if (ehPerguntaOuResumoDoc && citaDocEspecifico) {
+      // CASO 1: Pedido cita expressamente um documento pelo nome/tipo.
+      // REGRA 20: Prevalência Absoluta do documento citado sobre o contexto!
+      const termoDocCitado = docCitadoIa || sanitizadoResumo.termoLimpo || termoBuscaIa;
+      const docAlvo = localizarDocumentoCitadoNoCofre(termoDocCitado, todosDocs, pessoa || classificacao.pessoa);
+
+      if (docAlvo) {
+        // Documento citado EXISTE no Cofre -> analisa/resume ESSE documento específico
+        return await executarAnaliseDeDocumento(docAlvo, 'Análise de Conteúdo do Documento Citado');
+      } else {
+        // Documento citado NÃO EXISTE no Cofre!
+        // REGRA 20: Responder que não encontrou esse documento no Cofre. NUNCA resumir outro documento!
+        const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+        const tipoIdentificado = identificarTipoPedido(mensagemUsuario) || formatarTipoDocumentoLegivel(termoDocCitado);
+        const titularNome = pessoa || classificacao.pessoa;
+
+        let textoResposta: string;
+        if (titularNome) {
+          const artigo = obterArtigoDefinido(tipoIdentificado);
+          const prep = obterPreposicaoTitular(titularNome);
+          textoResposta = `${prefixoSaudacao}Não encontrei ${artigo} *${tipoIdentificado}* ${prep} *${titularNome}* no Cofre. Anotei na lista de documentos pendentes.`;
+        } else {
+          const artigo = obterArtigoDefinido(tipoIdentificado);
+          textoResposta = `${prefixoSaudacao}Não encontrei ${artigo} *${tipoIdentificado}* no Cofre. Anotei na lista de documentos pendentes.`;
+        }
+
+        if (validarTipoDocumentoReconhecivel(tipoIdentificado)) {
+          await registrarOuIncrementarDocumentoFaltante({
+            tipoDocumento: tipoIdentificado,
+            titularInformado: titularNome,
+            solicitanteNome: contato.nome,
+            solicitanteContato: contato.id,
+            textoDoPedido: mensagemUsuario,
+          });
+        }
+
+        etapas.push({
+          ordem: 2,
+          nome: 'Verificação de Documento Citado no Cofre',
+          descricao: `Documento citado "${termoDocCitado}" não foi localizado no Cofre. Registrado em pendências conforme Regra 20.`,
+          tempoMs: 1,
+        });
+
+        const rastro = criarRastroFinal({
+          tipoBusca: 'nome_cofre',
+          docsEncontrados: [],
+          enviouAnexo: false,
+          respostaFinal: textoResposta,
+          modelo: 'Motor Interno',
+        });
+
+        return {
+          textoResposta,
+          origem: 'motor',
+          intencaoDetectada: 'pergunta_conteudo',
+          perguntaReescrita: classificacao.pergunta_completa || mensagemUsuario,
+          buscaUsada: `Busca no Cofre por documento citado: ${termoDocCitado}`,
+          similaridade: '0% (Não encontrado no Cofre)',
+          rastro,
+        };
+      }
+    } else if (ehPerguntaOuResumoDoc && sanitizadoResumo.apenasReferenciaContexto) {
+      // CASO 2: Pedido anafórico ou genérico ("resuma esse documento", "resuma em 10 linhas", "o que diz nele")
+      // Usa estritamente o documento do contexto!
+      const docRecente =
+        obterUltimoDocumentoEnviado(historicoRecente, todosDocs) ||
+        extrairDocumentoRecenteDoHistorico(historicoRecente, todosDocs);
+
+      if (docRecente) {
+        return await executarAnaliseDeDocumento(docRecente, 'Análise de Conteúdo do Documento Recém-Entregue');
+      } else {
+        // Pedido genérico de resumo sem documento citado e sem documento no contexto
+        const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+        const textoResposta = `${prefixoSaudacao}Qual documento você gostaria que eu resuma? Por favor, informe o nome ou tipo do documento.`;
+
+        etapas.push({
+          ordem: 2,
+          nome: 'Solicitação de Esclarecimento de Documento para Resumo',
+          descricao: 'Pedido de resumo recebido sem documento citado e sem documento prévio no histórico da conversa.',
+          tempoMs: 1,
+        });
+
+        const rastro = criarRastroFinal({
+          tipoBusca: 'nenhuma',
+          docsEncontrados: [],
+          enviouAnexo: false,
+          respostaFinal: textoResposta,
+          modelo: 'Motor Interno',
+        });
+
+        return {
+          textoResposta,
+          origem: 'motor',
+          intencaoDetectada: 'pergunta_conteudo',
+          perguntaReescrita: classificacao.pergunta_completa || mensagemUsuario,
+          buscaUsada: 'Comando de resumo genérico sem documento no contexto',
+          similaridade: '0%',
           rastro,
         };
       }
