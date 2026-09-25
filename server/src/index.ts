@@ -56,7 +56,13 @@ import {
   obterRastroPorId,
   limparRastrosAntigos,
 } from './rastros/rastroService.js';
-import { RastroRegistro } from './types.js';
+import {
+  RastroRegistro,
+  PontoGraficoUsoIA,
+  ChamadasDia,
+  MetricaOrigemUsoIA,
+  MetricaPessoaUsoIA,
+} from './types.js';
 import { mascararDadosSensiveis } from './utils/segurancaUtils.js';
 import {
   indexarDocumentoBackground,
@@ -127,6 +133,10 @@ import {
   obterModelosEmUso,
   inicializarConfiguracoesVega,
 } from './config/configuracoesVegaService.js';
+import {
+  obterConfiguracaoIA,
+  salvarConfiguracaoIA,
+} from './config/configuracoesIaService.js';
 import { eventosPainel } from './eventos/eventosService.js';
 import {
   listarUsuariosAutorizados,
@@ -1126,12 +1136,78 @@ app.get('/api/status-ia', (req, res) => {
   });
 });
 
+// Funções auxiliares para fuso de Brasília (America/Sao_Paulo)
+function formatarDataBrasilia(date: Date): { diaStr: string; mesStr: string; diaMes: string } {
+  const parts = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const dia = parts.find((p) => p.type === 'day')?.value || '01';
+  const mes = parts.find((p) => p.type === 'month')?.value || '01';
+  const ano = parts.find((p) => p.type === 'year')?.value || '2026';
+  return {
+    diaStr: `${ano}-${mes}-${dia}`,
+    mesStr: `${ano}-${mes}`,
+    diaMes: `${dia}/${mes}`,
+  };
+}
+
+function obterDataBrasiliaDeIso(isoStr: string): { diaStr: string; mesStr: string; diaMes: string } {
+  try {
+    const d = new Date(isoStr);
+    return formatarDataBrasilia(d);
+  } catch {
+    const dia = (isoStr || '').slice(8, 10) || '01';
+    const mes = (isoStr || '').slice(5, 7) || '01';
+    const ano = (isoStr || '').slice(0, 4) || '2026';
+    return {
+      diaStr: `${ano}-${mes}-${dia}`,
+      mesStr: `${ano}-${mes}`,
+      diaMes: `${dia}/${mes}`,
+    };
+  }
+}
+
+function classificarOrigem(
+  motivo: string
+): 'chat' | 'transcricao_audio' | 'indexacao' | 'ocr' | 'embeddings' | 'testes' | 'outros' {
+  const m = (motivo || '').toLowerCase();
+  if (m.includes('transcricao') || m.includes('audio')) {
+    return 'transcricao_audio';
+  }
+  if (m.includes('ocr') || m.includes('visao')) {
+    return 'ocr';
+  }
+  if (m.includes('embedding')) {
+    return 'embeddings';
+  }
+  if (m.startsWith('teste') || m.startsWith('script') || m.includes('diagnostico')) {
+    return 'testes';
+  }
+  if (m.startsWith('indexacao') || m.includes('resumo_documento') || m.includes('estruturacao')) {
+    return 'indexacao';
+  }
+  if (
+    m.startsWith('chat') ||
+    m.startsWith('whatsapp') ||
+    m === 'conversa' ||
+    m === 'interpretacao' ||
+    m === 'equivalencia'
+  ) {
+    return 'chat';
+  }
+  return 'outros';
+}
+
 // GET /api/uso-ia/metricas (Agregação de uso, custos e cotas para o painel admin)
 app.get('/api/uso-ia/metricas', async (req, res) => {
   try {
     const registros = await obterRegistrosUsoIA();
     const tabelaPrecos = await obterTabelaPrecos();
     const conversas = await obterTodasConversas();
+    const configIA = await obterConfiguracaoIA();
 
     const limiteRPM = parseInt(process.env.LIMITE_RPM || '10', 10);
     const limiteRPD = parseInt(process.env.LIMITE_RPD || '250', 10);
@@ -1140,12 +1216,12 @@ app.get('/api/uso-ia/metricas', async (req, res) => {
 
     const agora = Date.now();
     const agoraDate = new Date(agora);
-    const dataHojePac = obterDataPacifico(agoraDate);
-    const mesAtual = agoraDate.toISOString().slice(0, 7);
+    const infoHojeBrasilia = formatarDataBrasilia(agoraDate);
+    const mesAtual = infoHojeBrasilia.mesStr;
 
-    // 1. Requisições Hoje (Reset no Pacífico)
+    // 1. Requisições Hoje (Fuso de Brasília)
     const chamadasHoje = registros.filter(
-      (r) => obterDataPacificoDeIso(r.data) === dataHojePac
+      (r) => obterDataBrasiliaDeIso(r.data).diaStr === infoHojeBrasilia.diaStr
     );
     const requisicoesHoje = chamadasHoje.length;
     const percentualRPD = Math.round((requisicoesHoje / limiteRPD) * 100);
@@ -1178,16 +1254,222 @@ app.get('/api/uso-ia/metricas', async (req, res) => {
         ? Math.round((mensagensSemIA30d / totalMensagensAssistente30d) * 100)
         : 100;
 
-    // 4. Tokens e Custo do Mês
-    const chamadasMes = registros.filter((r) => r.data.slice(0, 7) === mesAtual);
+    // 4. Tokens e Custo do Mês Atual (Fuso de Brasília)
+    const chamadasMes = registros.filter(
+      (r) => obterDataBrasiliaDeIso(r.data).mesStr === mesAtual
+    );
+    const requisicoesMes = chamadasMes.length;
     const tokensEntradaMes = chamadasMes.reduce((acc, r) => acc + (r.tokensEntrada || 0), 0);
     const tokensSaidaMes = chamadasMes.reduce((acc, r) => acc + (r.tokensSaida || 0), 0);
     const totalTokensMes = tokensEntradaMes + tokensSaidaMes;
-    const custoEstimadoMes = Number(
+    const gastoMesUsd = Number(
       chamadasMes.reduce((acc, r) => acc + (r.custoEstimado || 0), 0).toFixed(4)
     );
+    const gastoMesBrl = Number((gastoMesUsd * configIA.cotacaoDolar).toFixed(2));
 
-    // Verifica se os preços estão zerados (Free tier)
+    // Comparativo com o limite mensal configurado na OpenAI
+    const limiteMensalUsd = configIA.limiteMensalUsd;
+    const percentualLimiteMensal =
+      limiteMensalUsd > 0 ? Math.round((gastoMesUsd / limiteMensalUsd) * 100) : 0;
+    const alerta50 = percentualLimiteMensal >= 50 && percentualLimiteMensal < 80;
+    const alerta80 = percentualLimiteMensal >= 80;
+    const limiteExcedido = limiteMensalUsd > 0 && gastoMesUsd >= limiteMensalUsd;
+
+    // 5. Gráfico de gasto e chamadas por dia nos últimos 30 dias (Fuso de Brasília)
+    const grafico30Dias: PontoGraficoUsoIA[] = [];
+    const chamadasUltimos30Dias: ChamadasDia[] = [];
+
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(agoraDate.getTime() - i * 24 * 60 * 60 * 1000);
+      const infoDia = formatarDataBrasilia(d);
+      const chamadasDoDia = registros.filter(
+        (r) => obterDataBrasiliaDeIso(r.data).diaStr === infoDia.diaStr
+      );
+      const custoDiaUsd = Number(
+        chamadasDoDia.reduce((acc, r) => acc + (r.custoEstimado || 0), 0).toFixed(6)
+      );
+      const custoDiaBrl = Number((custoDiaUsd * configIA.cotacaoDolar).toFixed(4));
+      const tokensDia = chamadasDoDia.reduce(
+        (acc, r) => acc + (r.tokensEntrada || 0) + (r.tokensSaida || 0),
+        0
+      );
+
+      grafico30Dias.push({
+        data: infoDia.diaStr,
+        diaMes: infoDia.diaMes,
+        custoUsd: custoDiaUsd,
+        custoBrl: custoDiaBrl,
+        chamadas: chamadasDoDia.length,
+        tokens: tokensDia,
+      });
+
+      chamadasUltimos30Dias.push({
+        data: infoDia.diaStr,
+        chamadas: chamadasDoDia.length,
+      });
+    }
+
+    // 6. Divisão do Gasto por Origem (Chat, Áudio, Indexação, OCR, Embeddings, Testes)
+    const mapaOrigens: Record<
+      string,
+      { nome: string; cor: string; custoUsd: number; chamadas: number; tokens: number }
+    > = {
+      chat: { nome: 'Chat / Mensagens', cor: '#10b981', custoUsd: 0, chamadas: 0, tokens: 0 },
+      transcricao_audio: { nome: 'Transcrição de Áudio', cor: '#f59e0b', custoUsd: 0, chamadas: 0, tokens: 0 },
+      ocr: { nome: 'OCR com Visão', cor: '#8b5cf6', custoUsd: 0, chamadas: 0, tokens: 0 },
+      indexacao: { nome: 'Indexação de Documentos', cor: '#0ea5e9', custoUsd: 0, chamadas: 0, tokens: 0 },
+      embeddings: { nome: 'Embeddings Vetoriais', cor: '#06b6d4', custoUsd: 0, chamadas: 0, tokens: 0 },
+      testes: { nome: 'Testes / Diagnóstico', cor: '#64748b', custoUsd: 0, chamadas: 0, tokens: 0 },
+      outros: { nome: 'Outros Processos', cor: '#a855f7', custoUsd: 0, chamadas: 0, tokens: 0 },
+    };
+
+    const poolOrigens = chamadasMes.length > 0 ? chamadasMes : registros;
+    const custoBaseOrigens = poolOrigens.reduce((acc, r) => acc + (r.custoEstimado || 0), 0);
+
+    for (const r of poolOrigens) {
+      const cat = classificarOrigem(r.motivo);
+      if (!mapaOrigens[cat]) {
+        mapaOrigens.outros.custoUsd += r.custoEstimado || 0;
+        mapaOrigens.outros.chamadas += 1;
+        mapaOrigens.outros.tokens += (r.tokensEntrada || 0) + (r.tokensSaida || 0);
+      } else {
+        mapaOrigens[cat].custoUsd += r.custoEstimado || 0;
+        mapaOrigens[cat].chamadas += 1;
+        mapaOrigens[cat].tokens += (r.tokensEntrada || 0) + (r.tokensSaida || 0);
+      }
+    }
+
+    const divisaoOrigens: MetricaOrigemUsoIA[] = Object.entries(mapaOrigens)
+      .map(([chave, item]) => {
+        const custoUsd = Number(item.custoUsd.toFixed(6));
+        const custoBrl = Number((custoUsd * configIA.cotacaoDolar).toFixed(4));
+        const percentual =
+          custoBaseOrigens > 0 ? Math.round((custoUsd / custoBaseOrigens) * 100) : 0;
+        return {
+          chave: chave as any,
+          nome: item.nome,
+          custoUsd,
+          custoBrl,
+          chamadas: item.chamadas,
+          tokens: item.tokens,
+          percentual,
+          cor: item.cor,
+        };
+      })
+      .sort((a, b) => b.custoUsd - a.custoUsd);
+
+    // 7. Divisão por Pessoa (Quem mais usa a VEGA pelo WhatsApp e quanto custa)
+    const mapaPessoas: Record<
+      string,
+      { contatoId: string; contatoNome: string; chamadas: number; custoUsd: number; tokens: number }
+    > = {};
+
+    const poolPessoas = chamadasMes.length > 0 ? chamadasMes : registros;
+    const custoBasePessoas = poolPessoas.reduce((acc, r) => acc + (r.custoEstimado || 0), 0);
+
+    for (const r of poolPessoas) {
+      let chave = '';
+      let nome = '';
+
+      if (r.contatoNome && r.contatoNome.trim()) {
+        chave = r.contatoId ? `${r.contatoNome}___${r.contatoId}` : r.contatoNome.trim();
+        nome = r.contatoNome.trim();
+      } else if (r.contatoId && r.contatoId !== 'anonimo' && r.contatoId !== 'sistema') {
+        chave = r.contatoId;
+        nome = `Contato (${r.contatoId})`;
+      } else {
+        chave = 'sistema';
+        nome = 'Sistema / Tarefas Internas';
+      }
+
+      if (!mapaPessoas[chave]) {
+        mapaPessoas[chave] = {
+          contatoId: r.contatoId || chave,
+          contatoNome: nome,
+          chamadas: 0,
+          custoUsd: 0,
+          tokens: 0,
+        };
+      }
+
+      mapaPessoas[chave].chamadas += 1;
+      mapaPessoas[chave].custoUsd += r.custoEstimado || 0;
+      mapaPessoas[chave].tokens += (r.tokensEntrada || 0) + (r.tokensSaida || 0);
+    }
+
+    const divisaoPessoas: MetricaPessoaUsoIA[] = Object.values(mapaPessoas)
+      .map((p) => {
+        const custoUsd = Number(p.custoUsd.toFixed(6));
+        const custoBrl = Number((custoUsd * configIA.cotacaoDolar).toFixed(4));
+        const custoMedioUsd = p.chamadas > 0 ? Number((custoUsd / p.chamadas).toFixed(6)) : 0;
+        const custoMedioBrl = Number((custoMedioUsd * configIA.cotacaoDolar).toFixed(4));
+        const percentual =
+          custoBasePessoas > 0 ? Math.round((custoUsd / custoBasePessoas) * 100) : 0;
+        return {
+          contatoId: p.contatoId,
+          contatoNome: p.contatoNome,
+          chamadas: p.chamadas,
+          custoUsd,
+          custoBrl,
+          tokens: p.tokens,
+          custoMedioUsd,
+          custoMedioBrl,
+          percentual,
+        };
+      })
+      .sort((a, b) => b.custoUsd - a.custoUsd);
+
+    // 8. Custo Médio por Mensagem Respondida
+    let totalMensagensRespondidasMes = 0;
+    for (const c of conversas) {
+      for (const m of c.mensagens) {
+        if (m.remetente === 'assistente') {
+          const dataStr = m.timestamp || c.ultimaAtualizacao;
+          const dataMsg = dataStr ? new Date(dataStr) : null;
+          if (dataMsg && !isNaN(dataMsg.getTime())) {
+            const infoMsg = formatarDataBrasilia(dataMsg);
+            if (infoMsg.mesStr === mesAtual) {
+              totalMensagensRespondidasMes++;
+            }
+          } else {
+            totalMensagensRespondidasMes++;
+          }
+        }
+      }
+    }
+
+    const custoChatMesUsd = divisaoOrigens.find((o) => o.chave === 'chat')?.custoUsd || 0;
+    const custoAudioMesUsd =
+      divisaoOrigens.find((o) => o.chave === 'transcricao_audio')?.custoUsd || 0;
+    const custoInteracoesDiretasUsd = custoChatMesUsd + custoAudioMesUsd;
+
+    const custoMedioPorMensagemUsd =
+      totalMensagensRespondidasMes > 0
+        ? Number((custoInteracoesDiretasUsd / totalMensagensRespondidasMes).toFixed(6))
+        : requisicoesMes > 0
+        ? Number((gastoMesUsd / requisicoesMes).toFixed(6))
+        : 0;
+    const custoMedioPorMensagemBrl = Number(
+      (custoMedioPorMensagemUsd * configIA.cotacaoDolar).toFixed(4)
+    );
+
+    const custoMedioPorRequisicaoUsd =
+      requisicoesMes > 0 ? Number((gastoMesUsd / requisicoesMes).toFixed(6)) : 0;
+    const custoMedioPorRequisicaoBrl = Number(
+      (custoMedioPorRequisicaoUsd * configIA.cotacaoDolar).toFixed(4)
+    );
+
+    // 9. Quebra clássica por motivo
+    const motivos = {
+      interpretacao: registros.filter((r) => r.motivo === 'interpretacao').length,
+      equivalencia: registros.filter((r) => r.motivo === 'equivalencia').length,
+      conversa: registros.filter((r) => r.motivo === 'conversa').length,
+      transcricao_audio: registros.filter((r) => r.motivo === 'transcricao_audio').length,
+    };
+
+    // 10. Últimas 50 chamadas (mais recentes primeiro)
+    const ultimas50Chamadas = [...registros].reverse().slice(0, 50);
+
     const modeloAtual = process.env.OPENAI_CHAT_MODEL || 'gpt-5.4-mini';
     const configModelo = tabelaPrecos[modeloAtual] || {
       precoEntradaPorMilhao: 0,
@@ -1197,32 +1479,44 @@ app.get('/api/uso-ia/metricas', async (req, res) => {
       (configModelo.precoEntradaPorMilhao || 0) === 0 &&
       (configModelo.precoSaidaPorMilhao || 0) === 0;
 
-    const tetoExcedido = tetoCustoMensal > 0 && custoEstimadoMes >= tetoCustoMensal;
-
-    // 5. Gráfico de chamadas por dia nos últimos 30 dias
-    const chamadasUltimos30Dias: { data: string; chamadas: number }[] = [];
-    for (let i = 29; i >= 0; i--) {
-      const d = new Date(agora - i * 24 * 60 * 60 * 1000);
-      const diaStr = d.toISOString().slice(0, 10);
-      const totalDia = registros.filter((r) => r.data.slice(0, 10) === diaStr).length;
-      chamadasUltimos30Dias.push({
-        data: diaStr,
-        chamadas: totalDia,
-      });
-    }
-
-    // 6. Quebra por motivo
-    const motivos = {
-      interpretacao: registros.filter((r) => r.motivo === 'interpretacao').length,
-      equivalencia: registros.filter((r) => r.motivo === 'equivalencia').length,
-      conversa: registros.filter((r) => r.motivo === 'conversa').length,
-      transcricao_audio: registros.filter((r) => r.motivo === 'transcricao_audio').length,
-    };
-
-    // 7. Últimas 50 chamadas (mais recentes primeiro)
-    const ultimas50Chamadas = [...registros].reverse().slice(0, 50);
+    const tetoExcedido = tetoCustoMensal > 0 && gastoMesBrl >= tetoCustoMensal;
 
     const metricas: MetricasUsoIA = {
+      // Gasto e Consumo do Mês Atual (Fuso de Brasília)
+      gastoMesUsd,
+      gastoMesBrl,
+      requisicoesMes,
+      tokensEntradaMes,
+      tokensSaidaMes,
+      totalTokensMes,
+
+      // Limite OpenAI e Alertas Visuais
+      limiteMensalUsd,
+      percentualLimiteMensal,
+      alerta50,
+      alerta80,
+      limiteExcedido,
+
+      // Cotação Fixa do Dólar
+      cotacaoDolar: configIA.cotacaoDolar,
+
+      // Custo Médio por Mensagem Respondida e por Requisição
+      totalMensagensRespondidasMes,
+      custoMedioPorMensagemUsd,
+      custoMedioPorMensagemBrl,
+      custoMedioPorRequisicaoUsd,
+      custoMedioPorRequisicaoBrl,
+
+      // Gráfico Diário dos Últimos 30 Dias (Fuso de Brasília)
+      grafico30Dias,
+
+      // Divisão por Origem
+      divisaoOrigens,
+
+      // Divisão por Pessoa (WhatsApp)
+      divisaoPessoas,
+
+      // Compatibilidade legada
       requisicoesHoje,
       limiteRPD,
       percentualRPD,
@@ -1233,10 +1527,7 @@ app.get('/api/uso-ia/metricas', async (req, res) => {
       percentualSemIA30d,
       totalMensagens30d: totalMensagensAssistente30d,
       mensagensSemIA30d,
-      tokensEntradaMes,
-      tokensSaidaMes,
-      totalTokensMes,
-      custoEstimadoMes,
+      custoEstimadoMes: gastoMesBrl,
       moeda: 'BRL',
       isFreeTier,
       tetoCustoMensal,
@@ -1251,6 +1542,21 @@ app.get('/api/uso-ia/metricas', async (req, res) => {
   } catch (erro) {
     console.error('Erro ao calcular métricas de uso da IA:', erro);
     res.status(500).json({ erro: 'Erro ao calcular métricas de uso da IA.' });
+  }
+});
+
+// POST /api/uso-ia/config (Atualiza limite mensal e cotação do dólar)
+app.post('/api/uso-ia/config', async (req, res) => {
+  try {
+    const { limiteMensalUsd, cotacaoDolar } = req.body;
+    const configAtualizada = await salvarConfiguracaoIA({
+      limiteMensalUsd: typeof limiteMensalUsd === 'number' ? limiteMensalUsd : undefined,
+      cotacaoDolar: typeof cotacaoDolar === 'number' ? cotacaoDolar : undefined,
+    });
+    return res.json({ sucesso: true, config: configAtualizada });
+  } catch (err: any) {
+    console.error('Erro ao salvar configurações de uso de IA:', err);
+    return res.status(500).json({ erro: 'Falha ao salvar configurações de uso de IA.' });
   }
 });
 

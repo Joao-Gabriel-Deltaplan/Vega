@@ -320,7 +320,74 @@ export interface ChamadasDia {
   chamadas: number;
 }
 
+export interface MetricaOrigemUsoIA {
+  chave: 'chat' | 'transcricao_audio' | 'indexacao' | 'ocr' | 'embeddings' | 'testes' | 'outros';
+  nome: string;
+  custoUsd: number;
+  custoBrl: number;
+  chamadas: number;
+  tokens: number;
+  percentual: number;
+  cor: string;
+}
+
+export interface MetricaPessoaUsoIA {
+  contatoId: string;
+  contatoNome: string;
+  chamadas: number;
+  custoUsd: number;
+  custoBrl: number;
+  tokens: number;
+  custoMedioUsd: number;
+  custoMedioBrl: number;
+  percentual: number;
+}
+
+export interface PontoGraficoUsoIA {
+  data: string;
+  diaMes: string;
+  custoUsd: number;
+  custoBrl: number;
+  chamadas: number;
+  tokens: number;
+}
+
 export interface MetricasUsoIA {
+  // Gasto e Consumo do Mês Atual (Fuso de Brasília)
+  gastoMesUsd: number;
+  gastoMesBrl: number;
+  requisicoesMes: number;
+  tokensEntradaMes: number;
+  tokensSaidaMes: number;
+  totalTokensMes: number;
+
+  // Limite OpenAI e Alertas Visuais
+  limiteMensalUsd: number;
+  percentualLimiteMensal: number;
+  alerta50: boolean;
+  alerta80: boolean;
+  limiteExcedido: boolean;
+
+  // Cotação do Dólar Fixa Configurável
+  cotacaoDolar: number;
+
+  // Custo Médio por Mensagem Respondida e por Requisição
+  totalMensagensRespondidasMes: number;
+  custoMedioPorMensagemUsd: number;
+  custoMedioPorMensagemBrl: number;
+  custoMedioPorRequisicaoUsd: number;
+  custoMedioPorRequisicaoBrl: number;
+
+  // Gráfico Diário dos Últimos 30 Dias (Fuso de Brasília)
+  grafico30Dias: PontoGraficoUsoIA[];
+
+  // Divisão por Origem
+  divisaoOrigens: MetricaOrigemUsoIA[];
+
+  // Divisão por Pessoa (WhatsApp)
+  divisaoPessoas: MetricaPessoaUsoIA[];
+
+  // Compatibilidade com telas e lógicas legadas
   requisicoesHoje: number;
   limiteRPD: number;
   percentualRPD: number;
@@ -333,10 +400,6 @@ export interface MetricasUsoIA {
   percentualSemIA30d: number;
   totalMensagens30d: number;
   mensagensSemIA30d: number;
-
-  tokensEntradaMes: number;
-  tokensSaidaMes: number;
-  totalTokensMes: number;
 
   custoEstimadoMes: number;
   moeda: string;
