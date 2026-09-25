@@ -247,6 +247,31 @@ export const ModalRaciocinio: React.FC<ModalRaciocinioProps> = ({
                       </div>
                     )}
                   </div>
+                  {rastro.transcricaoAudio?.correcoesAplicadas && rastro.transcricaoAudio.correcoesAplicadas.length > 0 && (
+                    <div className="w-full pt-2 border-t border-amber-500/20 text-xs space-y-1.5">
+                      <div className="text-[11px] text-amber-300 font-semibold flex items-center gap-1">
+                        <span>✨ Correção Fonética de Transcrição:</span>
+                      </div>
+                      <div className="space-y-1">
+                        {rastro.transcricaoAudio.correcoesAplicadas.map((c, i) => (
+                          <div key={i} className="text-[11px] text-slate-300 flex items-center gap-1.5 flex-wrap">
+                            <span className="line-through text-red-400/90 font-mono bg-red-950/50 px-1.5 py-0.5 rounded border border-red-800/30">
+                              "{c.de}"
+                            </span>
+                            <span className="text-amber-400 font-bold">→</span>
+                            <span className="text-emerald-300 font-mono font-semibold bg-emerald-950/50 px-1.5 py-0.5 rounded border border-emerald-800/30">
+                              "{c.para}"
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                      {rastro.transcricaoAudio?.textoOriginal && rastro.transcricaoAudio?.textoCorrigido && (
+                        <div className="text-[10px] text-slate-400 pt-0.5 font-mono">
+                          Original: <span className="text-slate-300">"{rastro.transcricaoAudio.textoOriginal}"</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

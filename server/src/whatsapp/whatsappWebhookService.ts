@@ -19,6 +19,7 @@ import {
   validarLimitesAudio,
   registrarInspecaoPrimeiroAudio,
 } from './audioTranscriptionService.js';
+import { corrigirTranscricaoFonetica } from './correcaoTranscricaoService.js';
 import {
   extrairInfoDocumentoWhatsApp,
   processarDocumentoRecebidoWhatsApp,
@@ -467,6 +468,8 @@ export async function processarEventoEvolution(
   let metodoDownload: 'base64_payload' | 'api_download' | undefined;
   let audioOriginalBuffer: Buffer | undefined;
   let audioOriginalMimetype: string | undefined;
+  let textoTranscritoOriginal: string | undefined;
+  let correcoesTranscricao: Array<{ de: string; para: string; motivo: string }> = [];
 
   const infoAudio = extrairInfoAudio(evento);
 
@@ -674,7 +677,10 @@ export async function processarEventoEvolution(
         };
       }
 
-      textoMensagem = resultadoTranscricao.texto;
+      textoTranscritoOriginal = resultadoTranscricao.texto;
+      const resultadoCorrecao = await corrigirTranscricaoFonetica(textoTranscritoOriginal);
+      textoMensagem = resultadoCorrecao.textoCorrigido;
+      correcoesTranscricao = resultadoCorrecao.correcoes;
       tipoMensagem = 'audio';
       duracaoAudioSegundos = resultadoTranscricao.duracaoSegundos;
       custoTranscricaoUsd = resultadoTranscricao.custoUsd;
@@ -683,7 +689,7 @@ export async function processarEventoEvolution(
       metodoDownload = downloadAudio.metodo;
 
       console.log(
-        `[Webhook WhatsApp 🎙️] Áudio transcrito com sucesso: "${textoMensagem}" (Custo: $${custoTranscricaoUsd}, Método: ${metodoDownload})`
+        `[Webhook WhatsApp 🎙️] Áudio transcrito: "${textoTranscritoOriginal}" | Corrigido: "${textoMensagem}" (Correções: ${correcoesTranscricao.length}, Custo: $${custoTranscricaoUsd}, Método: ${metodoDownload})`
       );
     } catch (err: any) {
       const motivoExato = err?.motivoExato || err?.message || String(err);
@@ -1162,22 +1168,31 @@ export async function processarEventoEvolution(
         custoUsd: custoTranscricaoUsd,
         modelo: modeloTranscricao,
         metodoDownload,
+        textoOriginal: textoTranscritoOriginal,
+        textoCorrigido: textoMensagem,
+        correcoesAplicadas: correcoesTranscricao,
       };
 
       // Injeta a etapa de transcrição no rastro antes das etapas da busca/resposta
+      const descCorrecoes = correcoesTranscricao.length > 0
+        ? ` Correções fonéticas aplicadas: ${correcoesTranscricao.map((c) => `"${c.de}" → "${c.para}"`).join(', ')}.`
+        : '';
+
       resultadoChat.rastro.etapas.unshift({
         ordem: 0,
         nome: 'Transcrição de Áudio (Whisper)',
         descricao: `Áudio transcrito via ${modeloTranscricao} (${duracaoAudioSegundos || 0}s). Método: ${
           metodoDownload === 'base64_payload' ? 'Base64 direto no evento' : 'Download via Evolution API'
-        }.`,
+        }.${descCorrecoes}`,
         tempoMs: tempoTranscricaoMs,
         detalhes: {
           duracaoSegundos: duracaoAudioSegundos,
           custoUsd: custoTranscricaoUsd,
           modelo: modeloTranscricao,
           metodoDownload,
-          textoTranscrito: textoMensagem,
+          textoOriginal: textoTranscritoOriginal,
+          textoCorrigido: textoMensagem,
+          correcoesAplicadas: correcoesTranscricao,
         },
       });
 

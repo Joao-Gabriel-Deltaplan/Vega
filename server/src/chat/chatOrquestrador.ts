@@ -1069,6 +1069,10 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
    - Pedidos de RESUMO, EXPLICAÇÃO, INTERPRETAÇÃO ou PERGUNTAS sobre o que está escrito ("resuma esse documento", "o que esse documento fala sobre X?", "explique o documento", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?") são SEMPRE "pergunta_conteudo", NUNCA "pedir_arquivo"!
 3. "listar_documentos": Quando o usuário solicitar listar, ver ou consultar quais documentos existem no Cofre ou de uma pessoa ("quais documentos você tem?", "o que tem no cofre?", "quais documentos do Fulano você tem?", "o que você tem do Fulano?", "preciso de mais alguns documentos do Fulano", "me mostra os documentos"). Preencha "pessoa" se citada.
 4. "dado_pessoal": Perguntas sobre dados cadastrais e informações pontuais de pessoas (RG, CPF, filiação/mãe/pai, profissão, estado civil, validade da CNH, título de eleitor, PIS, carteira de reservista, etc.).
+   - REGRA MANDATÓRIA DE CAMPOS VS DOCUMENTOS FÍSICOS:
+     * Campos cadastrais (título de eleitor, PIS, CPF, filiação, mãe, pai, data de nascimento, estado civil, profissão, endereço, órgão emissor, validade da CNH, categoria da CNH) NÃO SÃO documentos físicos avulsos no Cofre!
+     * Qualquer pedido desses campos — MESMO QUE VENHA COM VERBOS DE ENVIO ("me mande o título de eleitor do Thomaz", "me envia o PIS do Fulano", "manda o CPF dele", "me passa a filiação", "mande o título") — É ESTRITAMENTE "dado_pessoal", NUNCA "pedir_arquivo"!
+     * "pedir_arquivo" só se aplica a documentos físicos reais existentes ou solicitados como arquivos (ex: "me manda o contrato", "envia a certidão de casamento", "manda o CREA", "solta a CNH", "envia o PDF do imposto de renda").
 5. "pergunta_conteudo": Perguntas sobre o conteúdo de documentos ("resuma esse documento em 10 linhas", "o que esse documento fala sobre águas fluviais?", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?", "quais dias eu tomei as vacinas da covid?", "quais vacinas ele tomou?", "qual o endereço do Fulano?", "o que diz na página 2?").
    - REGRA MANDATÓRIA: Perguntas sobre o conteúdo de documentos arquivados no Cofre (como vacinas tomadas, datas de vacinação/doses de covid, cláusulas contratuais, valores, datas de registro de certidões, alvarás) são SEMPRE "pergunta_conteudo", NUNCA "fora_de_escopo"!
    - Se o usuário perguntar sem citar titular (ex: "quais dias eu tomei as vacinas da covid?"), devolva "intencao": "pergunta_conteudo", "pessoa": "", "termo_busca": "vacina covid". O sistema perguntará de quem é. NUNCA classifique como fora_de_escopo!
@@ -1086,7 +1090,9 @@ REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 
 EXEMPLOS OBRIGATÓRIOS:
 - "qual número do título eleitoral do thomaz?" -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["titulo_eleitor"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o número do título de eleitor do Thomaz?", "termo_busca": "titulo eleitor Thomaz"}
+- "me mande o título de eleitor do thomaz" -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["titulo_eleitor"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o título de eleitor do Thomaz?", "termo_busca": "titulo eleitor Thomaz"}
 - "qual o PIS do fulano?" -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["pis"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o PIS do Fulano?", "termo_busca": "pis Fulano"}
+- "me passa o PIS do thomaz" -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["pis"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o PIS do Thomaz?", "termo_busca": "pis Thomaz"}
 - "show, agora me envie o pdf" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
 - "contrato de locação" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "contrato de locação", "documentos_citados": ["contrato de locação"], "pergunta_completa": "Enviar documento contrato de locação", "termo_busca": "contrato de locação"}
 - "me envia o crea e a certidão de casamento do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CREA, Certidão de Casamento", "documentos_citados": ["CREA", "Certidão de Casamento"], "pergunta_completa": "Enviar documentos CREA e Certidão de Casamento do Fulano", "termo_busca": "CREA, Certidão de Casamento"}
@@ -1384,7 +1390,12 @@ EXEMPLOS OBRIGATÓRIOS:
     } else if (ehPerguntaExplicacaoOuResumo) {
       parsed.intencao = 'pergunta_conteudo';
     } else if (ehPedidoCertidao || REGEX_DOCUMENTO_QUALQUER.test(msgNorm)) {
-      if (ehPedidoCertidao || parsed.intencao === 'fora_de_escopo' || parsed.intencao === 'saudacao_ou_vago' || parsed.intencao === 'dado_pessoal') {
+      if (
+        ehPedidoCertidao ||
+        parsed.intencao === 'fora_de_escopo' ||
+        parsed.intencao === 'saudacao_ou_vago' ||
+        (parsed.intencao === 'dado_pessoal' && camposDetectadosRegex.length === 0 && (!parsed.campos || parsed.campos.length === 0))
+      ) {
         parsed.intencao = 'pedir_arquivo';
         if (!parsed.documento_citado) {
           const tipoIdentificado = identificarTipoPedido(mensagemUsuario);
@@ -1406,7 +1417,7 @@ EXEMPLOS OBRIGATÓRIOS:
       parsed.documento_citado = multiplosNoTexto.map((d) => d.titulo).join(', ');
       parsed.termo_busca = parsed.documento_citado;
     } else if (!ehPerguntaExplicacaoOuResumo && !ehPedidoListagem) {
-      const regexCampoEspecifico = /\b(numero|validade|vencimento|categoria|vence|venc|data|emissao|expedicao|orgao|endereco|estado\s*civil|rg|profissao|cpf|mae|pai|filiacao|alerta|alertar|silenciar|desativar)\b/i;
+      const regexCampoEspecifico = /\b(numero|validade|vencimento|categoria|vence|venc|data|emissao|expedicao|orgao|endereco|estado\s*civil|rg|profissao|cpf|mae|pai|filiacao|titulo|eleitor|eleitoral|pis|pasep|nis|alerta|alertar|silenciar|desativar)\b/i;
 
       if (
         !ehSilenciarAlerta &&
@@ -1436,6 +1447,70 @@ EXEMPLOS OBRIGATÓRIOS:
             parsed.termo_busca = `${parsed.termo_busca} ${titularDetectado}`.trim();
           }
         }
+      }
+    }
+
+    // ============================================================================
+    // REGRA 3: Quando o termo pedido for um campo cadastral e NÃO um tipo de documento
+    // existente no Cofre, tratar estritamente como dado_pessoal mesmo com verbos de envio
+    // (ex.: "me mande o título de eleitor do Thomaz", "me envia o PIS", etc.)
+    // ============================================================================
+    const ehTermoCampoCadastral =
+      camposDetectadosRegex.length > 0 ||
+      (parsed.campos && parsed.campos.length > 0) ||
+      /\b(t[ií]tulo(\s*de)?\s*eleitor(al)?|pis|pasep|nis|cpf|filia[cç][aã]o|m[aã]e|pai|data\s*(de\s*)?nascimento|estado\s*civil|[oó]rg[aã]o(\s*emissor)?|validade(\s*da\s*cnh)?|categoria(\s*da\s*cnh)?)\b/i.test(msgNorm);
+
+    if (ehTermoCampoCadastral && !ehPedidoCertidao && !ehPerguntaExplicacaoOuResumo && !ehPedidoListagem) {
+      const docFisicoExiste = parsed.documento_citado
+        ? docs.some(
+            (d) =>
+              (d.tipo && d.tipo.toLowerCase() === parsed.documento_citado.toLowerCase()) ||
+              (d.titulo && d.titulo.toLowerCase() === parsed.documento_citado.toLowerCase())
+          )
+        : false;
+
+      if (!docFisicoExiste) {
+        parsed.intencao = 'dado_pessoal';
+        parsed.documento_citado = '';
+        parsed.documentos_citados = [];
+
+        // Garante os campos identificados
+        const camposSet = new Set([...(parsed.campos || []), ...camposDetectadosRegex]);
+        if (/\b(t[ií]tulo(\s*de)?\s*eleitor(al)?|n[uú]mero\s*do\s*t[ií]tulo)\b/i.test(msgNorm)) {
+          camposSet.add('titulo_eleitor');
+        }
+        if (/\b(pis|pasep|nis)\b/i.test(msgNorm)) {
+          camposSet.add('pis');
+        }
+        parsed.campos = Array.from(camposSet);
+
+        // Se a pessoa estiver na mensagem atual ou resolvida, preserva
+        if (!parsed.pessoa) {
+          if (pessoaCitadaNaMensagem) {
+            parsed.pessoa = pessoaCitadaNaMensagem;
+            origemPessoa = 'mensagem_atual';
+          } else if (titularExplicitoMsg) {
+            parsed.pessoa = titularExplicitoMsg;
+            origemPessoa = 'mensagem_atual';
+          } else {
+            const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
+            if (titularDoHistorico) {
+              parsed.pessoa = titularDoHistorico;
+              origemPessoa = 'contexto';
+            }
+          }
+        }
+
+        const campoNomeLegivel =
+          parsed.campos[0] === 'titulo_eleitor'
+            ? 'título de eleitor'
+            : parsed.campos[0] === 'pis'
+            ? 'PIS'
+            : parsed.campos[0];
+        parsed.pergunta_completa = parsed.pessoa
+          ? `Qual é o ${campoNomeLegivel} do ${parsed.pessoa}?`
+          : `Qual é o ${campoNomeLegivel}?`;
+        parsed.termo_busca = parsed.pessoa ? `${campoNomeLegivel} ${parsed.pessoa}` : campoNomeLegivel;
       }
     }
 

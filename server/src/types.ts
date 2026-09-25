@@ -426,6 +426,9 @@ export interface RastroRegistro {
     custoUsd: number;
     modelo: string;
     metodoDownload?: string;
+    textoOriginal?: string;
+    textoCorrigido?: string;
+    correcoesAplicadas?: Array<{ de: string; para: string; motivo: string }>;
   };
   etapas: EtapaRastro[];
 }
