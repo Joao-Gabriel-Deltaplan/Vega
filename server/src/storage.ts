@@ -20,6 +20,7 @@ import {
 } from './types.js';
 import { marcarDocumentoFaltanteComoProvidenciado } from './documentosFaltantesService.js';
 import { nomesSaoEquivalentesComTolerancia } from './utils/nomeUtils.js';
+import { gerarLinksNavegacao } from './utils/geoLinks.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -976,6 +977,23 @@ function formatarConteudoEstruturado(
     return partes.join(' | ');
   }
 
+  if (tipo === 'local') {
+    const { nomeLocal, endereco, pontoReferencia, cidade, linkMaps, linkWaze } = dadosEstruturados;
+    const partes: string[] = [];
+    if (nomeLocal) partes.push(`Local: ${nomeLocal}`);
+    if (endereco) partes.push(`Endereço: ${endereco}`);
+    if (cidade) partes.push(`Cidade: ${cidade}`);
+    if (pontoReferencia) partes.push(`Como Chegar / Ponto de Referência: ${pontoReferencia}`);
+    
+    const linksNav = endereco ? gerarLinksNavegacao(endereco, cidade) : undefined;
+    const maps = (!linkMaps || linkMaps.includes('google.com/maps/search/')) ? (linksNav?.linkMaps || linkMaps) : linkMaps;
+    const waze = (!linkWaze || linkWaze.includes('waze.com/ul')) ? (linksNav?.linkWaze || linkWaze) : linkWaze;
+
+    if (maps) partes.push(`Google Maps: ${maps}`);
+    if (waze) partes.push(`Waze: ${waze}`);
+    return partes.join(' | ');
+  }
+
   return (conteudoAtual || '').trim();
 }
 
@@ -1014,18 +1032,31 @@ export async function adicionarConhecimento(
   const dataFormatada = agora.toLocaleDateString('pt-BR');
 
   const tipoEfetivo = dados.tipo || 'regra';
+  const dadosEstruturados = dados.dadosEstruturados ? { ...dados.dadosEstruturados } : undefined;
+
+  if (tipoEfetivo === 'local' && dadosEstruturados && (dadosEstruturados as any).endereco) {
+    const dLoc = dadosEstruturados as any;
+    const linksNav = gerarLinksNavegacao(dLoc.endereco, dLoc.cidade);
+    if (!dLoc.linkMaps || dLoc.linkMaps.includes('google.com/maps/search/')) {
+      dLoc.linkMaps = linksNav.linkMaps;
+    }
+    if (!dLoc.linkWaze || dLoc.linkWaze.includes('waze.com/ul')) {
+      dLoc.linkWaze = linksNav.linkWaze;
+    }
+  }
+
   const conteudoFinal =
     dados.conteudo && dados.conteudo.trim()
       ? dados.conteudo.trim()
-      : formatarConteudoEstruturado(tipoEfetivo, dados.dadosEstruturados, '');
+      : formatarConteudoEstruturado(tipoEfetivo, dadosEstruturados, '');
 
   const novoItem: ItemConhecimento = {
     id: `k-${Date.now()}`,
     titulo: dados.titulo.trim(),
-    categoria: dados.categoria?.trim() || (tipoEfetivo === 'pix' ? 'Financeiro' : tipoEfetivo === 'link' ? 'Sistemas' : tipoEfetivo === 'contato' ? 'Contatos' : 'Geral'),
+    categoria: dados.categoria?.trim() || (tipoEfetivo === 'pix' ? 'Financeiro' : tipoEfetivo === 'link' ? 'Sistemas' : tipoEfetivo === 'contato' ? 'Contatos' : tipoEfetivo === 'local' ? 'Localização' : 'Geral'),
     conteudo: conteudoFinal,
     tipo: tipoEfetivo,
-    dadosEstruturados: dados.dadosEstruturados || undefined,
+    dadosEstruturados: dadosEstruturados || undefined,
     dataAtualizacao: dataFormatada,
   };
 
@@ -1070,12 +1101,25 @@ export async function atualizarConhecimento(
     if (dados.titulo !== undefined) payload.titulo = dados.titulo.trim();
     if (dados.categoria !== undefined) payload.categoria = dados.categoria.trim();
     if (dados.tipo !== undefined) payload.tipo = dados.tipo;
-    if (dados.dadosEstruturados !== undefined) payload.dados_estruturados = dados.dadosEstruturados;
+    if (dados.dadosEstruturados !== undefined) {
+      const dEstr = { ...dados.dadosEstruturados };
+      if ((dados.tipo === 'local' || (dEstr as any).endereco) && (dEstr as any).endereco) {
+        const dLoc = dEstr as any;
+        const linksNav = gerarLinksNavegacao(dLoc.endereco, dLoc.cidade);
+        if (!dLoc.linkMaps || dLoc.linkMaps.includes('google.com/maps/search/')) {
+          dLoc.linkMaps = linksNav.linkMaps;
+        }
+        if (!dLoc.linkWaze || dLoc.linkWaze.includes('waze.com/ul')) {
+          dLoc.linkWaze = linksNav.linkWaze;
+        }
+      }
+      payload.dados_estruturados = dEstr;
+    }
 
     if (dados.conteudo !== undefined) {
       payload.conteudo = dados.conteudo.trim();
-    } else if (dados.dadosEstruturados !== undefined) {
-      payload.conteudo = formatarConteudoEstruturado(dados.tipo, dados.dadosEstruturados, '');
+    } else if (payload.dados_estruturados !== undefined) {
+      payload.conteudo = formatarConteudoEstruturado(dados.tipo, payload.dados_estruturados, '');
     }
 
     const { data, error } = await supabase

@@ -1,13 +1,14 @@
 import OpenAI from 'openai';
 import { chamarChatComTelemetria } from './ai/telemetriaIaService.js';
-import { TipoConhecimento, DadosPix, DadosLink, DadosContato } from './types.js';
+import { TipoConhecimento, DadosPix, DadosLink, DadosContato, DadosLocal } from './types.js';
+import { gerarLinksNavegacao } from './utils/geoLinks.js';
 
 export interface ItemEstruturadoProposto {
   tipo: TipoConhecimento;
   titulo: string;
   categoria: string;
   conteudo: string;
-  dadosEstruturados?: DadosPix | DadosLink | DadosContato | Record<string, any>;
+  dadosEstruturados?: DadosPix | DadosLink | DadosContato | DadosLocal | Record<string, any>;
 }
 
 export interface ResultadoEstruturacaoConhecimento {
@@ -18,7 +19,7 @@ export interface ResultadoEstruturacaoConhecimento {
 
 /**
  * Utiliza gpt-5.4-mini para interpretar texto em linguagem natural ou colagem de planilhas/tabelas
- * e transformar em itens estruturados (PIX, Links de sistemas, Contatos ou Regras de negócio).
+ * e transformar em itens estruturados (PIX, Links de sistemas, Contatos, Localização ou Regras de negócio).
  */
 export async function estruturarConhecimentoComIA(
   textoEntrada: string
@@ -45,7 +46,7 @@ export async function estruturarConhecimentoComIA(
   const promptSistema = `Você é o orquestrador de conhecimento corporativo da VEGA (Assistente de Inteligência Artificial da Delta Plan).
 Sua missão é ler a entrada do usuário (que pode ser uma frase em linguagem natural, uma descrição de procedimento ou dados colados de uma planilha Excel) e transformá-la em um ou mais itens estruturados de conhecimento.
 
-Classifique cada informação em um destes 4 tipos:
+Classifique cada informação em um destes 5 tipos:
 1. "pix": Chaves PIX corporativas ou pessoais.
    - dadosEstruturados: { "titular": string, "tipoChave": "CNPJ"|"CPF"|"Celular"|"E-mail"|"Aleatória", "chave": string, "banco"?: string }
    - titulo sugerido: "Chave PIX [Titular] ([Tipo])"
@@ -64,7 +65,18 @@ Classifique cada informação em um destes 4 tipos:
    - categoria: "Contatos"
    - conteudo: texto legível formatado
 
-4. "regra": Procedimentos, políticas internas, regras de negócio, prazos, orçamentos ou textos livres.
+4. "local": Localizações, endereços de obras, escritórios, sedes, filiais, almoxarifados, depósitos ou pontos de apoio.
+   - dadosEstruturados: { "nomeLocal": string, "endereco": string, "pontoReferencia"?: string, "cidade"?: string, "linkMaps"?: string, "linkWaze"?: string }
+   - titulo sugerido: "[Nome do Local]" (ex: "Escritório Deltaplan", "Obra Residencial Solar", "Depósito de Materiais")
+   - categoria: "Localização" ou "Obras"
+   - conteudo: texto legível formatado (ex: "Local: Escritório Deltaplan | Endereço: Rua Ricardo Rios, 610 | Cidade: Pirajuí - SP")
+   - DIRETRIZES CRÍTICAS PARA "local":
+     * 'nomeLocal': apenas o nome do lugar, empresa ou obra (ex: "Escritório Deltaplan").
+     * 'endereco': estritamente o logradouro/rua, número e bairro (ex: "Rua Ricardo Rios, 610"). NUNCA coloque o nome da empresa ou local dentro do campo 'endereco'.
+     * 'cidade': cidade e UF (ex: "Pirajuí - SP").
+     * 'linkMaps' e 'linkWaze': NUNCA invente links de mapas. Deixe vazio caso o usuário não tenha colado um link explícito.
+
+5. "regra": Procedimentos, políticas internas, regras de negócio, prazos, orçamentos ou textos livres.
    - dadosEstruturados: {}
    - titulo sugerido: Título claro e objetivo do tópico/procedimento
    - categoria: "Geral", "Comercial", "Operações", "Atendimento" ou "Segurança"
@@ -72,12 +84,12 @@ Classifique cada informação em um destes 4 tipos:
 
 REGRAS IMPORTANTES:
 - Se o usuário colar uma tabela com múltiplas linhas (com separadores de tabulação \\t ou quebras de linha), gere um item para CADA linha/registro da tabela.
-- NUNCA invente dados que o usuário não forneceu. Se o banco do PIX não foi informado, deixe em branco.
+- NUNCA invente dados que o usuário não forneceu. Se o link do maps não foi informado, deixe em branco.
 - Responda OBRIGATORIAMENTE em JSON válido com a estrutura:
 {
   "itens": [
     {
-      "tipo": "pix" | "link" | "contato" | "regra",
+      "tipo": "pix" | "link" | "contato" | "local" | "regra",
       "titulo": string,
       "categoria": string,
       "conteudo": string,
@@ -119,14 +131,41 @@ REGRAS IMPORTANTES:
 
     // Higienização e validação dos itens
     const itensValidados: ItemEstruturadoProposto[] = listaItens.map((it: any) => {
-      const tipo: TipoConhecimento = ['pix', 'link', 'contato', 'regra'].includes(it.tipo)
+      const tipo: TipoConhecimento = ['pix', 'link', 'contato', 'local', 'regra'].includes(it.tipo)
         ? it.tipo
         : 'regra';
 
       const titulo = (it.titulo || 'Nova Instrução').trim();
-      const categoria = (it.categoria || 'Geral').trim();
-      const conteudo = (it.conteudo || '').trim();
+      const categoria = (it.categoria || (tipo === 'local' ? 'Localização' : 'Geral')).trim();
+      let conteudo = (it.conteudo || '').trim();
       const dadosEstruturados = it.dadosEstruturados || {};
+
+      if (tipo === 'local') {
+        const dLocal = dadosEstruturados as DadosLocal;
+        const nomeLocal = (dLocal.nomeLocal || titulo).trim();
+        const endereco = (dLocal.endereco || '').trim();
+        const cidade = (dLocal.cidade || '').trim();
+
+        // Geração limpa e padronizada de links de navegação baseada ESTRITAMENTE na rua/cidade
+        if (endereco) {
+          const linksNav = gerarLinksNavegacao(endereco, cidade);
+          // Se não havia link explicitamente colado pelo usuário (ou se era busca antiga com nome do local), usa o link estrito da rua
+          if (!dLocal.linkMaps || dLocal.linkMaps.includes('google.com/maps/search/')) {
+            dLocal.linkMaps = linksNav.linkMaps;
+          }
+          if (!dLocal.linkWaze || dLocal.linkWaze.includes('waze.com/ul')) {
+            dLocal.linkWaze = linksNav.linkWaze;
+          }
+        }
+
+        const partes = [`Local: ${nomeLocal}`];
+        if (endereco) partes.push(`Endereço: ${endereco}`);
+        if (cidade) partes.push(`Cidade: ${cidade}`);
+        if (dLocal.pontoReferencia) partes.push(`Como Chegar / Ponto de Referência: ${dLocal.pontoReferencia}`);
+        if (dLocal.linkMaps) partes.push(`Google Maps: ${dLocal.linkMaps}`);
+        if (dLocal.linkWaze) partes.push(`Waze: ${dLocal.linkWaze}`);
+        conteudo = partes.join(' | ');
+      }
 
       return {
         tipo,

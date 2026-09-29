@@ -15,6 +15,8 @@ import {
   User,
   FileText,
   Info,
+  MapPin,
+  Navigation,
 } from 'lucide-react';
 import { Mensagem } from '../types/chat.js';
 import { ASSISTENTE } from '../config/assistente.js';
@@ -393,6 +395,121 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
                     </button>
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Caso Localização / Endereço */}
+            {mensagem.dadosEstruturados.tipo === 'local' && (
+              <div className="flex flex-col gap-2.5">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                    <MapPin className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-slate-100 truncate">
+                      {mensagem.dadosEstruturados.nomeLocal || mensagem.dadosEstruturados.titulo || 'Localização'}
+                    </p>
+                    {mensagem.dadosEstruturados.cidade && (
+                      <p className="text-[10px] text-amber-400/90 font-medium">
+                        {mensagem.dadosEstruturados.cidade}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {mensagem.dadosEstruturados.endereco && (
+                  <div className="flex flex-col gap-1.5 bg-[#0b0f15] p-2.5 rounded-lg border border-slate-800">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] text-slate-400 font-medium flex items-center gap-1">
+                        <MapPin className="w-3 h-3 text-amber-400/80" />
+                        <span>Endereço:</span>
+                      </span>
+                      <button
+                        onClick={() =>
+                          copiarTexto(mensagem.dadosEstruturados?.endereco || '', 'endereco-local')
+                        }
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium flex items-center gap-1 transition-colors border border-slate-700/80"
+                        title="Copiar endereço"
+                      >
+                        {copiadoCampo === 'endereco-local' ? (
+                          <>
+                            <Check className="w-3 h-3 text-emerald-400" />
+                            <span className="text-emerald-400">Copiado</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3 h-3" />
+                            <span>Copiar</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    <p className="text-xs text-slate-200 select-all font-sans leading-relaxed">
+                      {mensagem.dadosEstruturados.endereco}
+                    </p>
+                  </div>
+                )}
+
+                {mensagem.dadosEstruturados.pontoReferencia && (
+                  <div className="text-[11px] text-slate-300 bg-[#0e141d] px-2.5 py-1.5 rounded-lg border border-slate-800/80 flex items-start gap-1.5">
+                    <Navigation className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="text-slate-400 font-medium">Como chegar: </span>
+                      <span>{mensagem.dadosEstruturados.pontoReferencia}</span>
+                    </div>
+                  </div>
+                )}
+
+                {(() => {
+                  let end = (mensagem.dadosEstruturados.endereco || '').trim();
+                  // Limpa prefixos acidentais
+                  end = end.replace(/^local:\s*[^|,\n]+[|,\n]\s*/i, '').trim();
+                  const cid = (mensagem.dadosEstruturados.cidade || '').trim();
+                  const termoRua = cid && !end.toLowerCase().includes(cid.toLowerCase())
+                    ? `${end}, ${cid}`
+                    : end;
+
+                  const rawMaps = mensagem.dadosEstruturados.linkMaps;
+                  const urlMaps = (rawMaps && !rawMaps.includes('google.com/maps/search/'))
+                    ? rawMaps
+                    : (termoRua ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(termoRua)}` : undefined);
+
+                  const rawWaze = mensagem.dadosEstruturados.linkWaze;
+                  const urlWaze = (rawWaze && !rawWaze.includes('waze.com/ul'))
+                    ? rawWaze
+                    : (termoRua ? `https://waze.com/ul?q=${encodeURIComponent(termoRua)}&navigate=yes` : undefined);
+
+                  if (!urlMaps && !urlWaze) return null;
+
+                  return (
+                    <div className="pt-2 border-t border-slate-700/50 flex flex-col sm:flex-row items-center gap-2">
+                      {urlMaps && (
+                        <a
+                          href={urlMaps}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="w-full sm:flex-1 py-1.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-sm cursor-pointer"
+                          title="Abrir no Google Maps"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          <span>Google Maps</span>
+                        </a>
+                      )}
+                      {urlWaze && (
+                        <a
+                          href={urlWaze}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="w-full sm:flex-1 py-1.5 px-3 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-sm cursor-pointer"
+                          title="Abrir no Waze"
+                        >
+                          <Navigation className="w-3.5 h-3.5" />
+                          <span>Waze</span>
+                        </a>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             )}
 

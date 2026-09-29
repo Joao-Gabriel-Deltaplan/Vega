@@ -138,9 +138,9 @@ export function classificarIntencao(textoUsuario: string, nomeContato?: string):
     }
   }
 
-  // 2. Sinais explícitos de consulta a CONHECIMENTO / REGRAS / POLÍTICAS
+  // 2. Sinais explícitos de consulta a CONHECIMENTO / REGRAS / POLÍTICAS / LOCALIZAÇÃO
   const regexSinaisConhecimento =
-    /\b(o que temos sobre|o que voce tem de|o que voce sabe sobre|o que voce sabe de|qual a politica|como funciona|qual o prazo|pode me explicar|quais as regras|qual a regra|regras de|politica de|seguranca de dados|duvidas frequentes|duvida sobre|saber sobre|sabe sobre|fala sobre|fale sobre|explica|me explica|sobre a delta|sobre a empresa|informacoes sobre|informacao sobre)\b/i;
+    /\b(o que temos sobre|o que voce tem de|o que voce sabe sobre|o que voce sabe de|qual a politica|como funciona|qual o prazo|pode me explicar|quais as regras|qual a regra|regras de|politica de|seguranca de dados|duvidas frequentes|duvida sobre|saber sobre|sabe sobre|fala sobre|fale sobre|explica|me explica|sobre a delta|sobre a empresa|informacoes sobre|informacao sobre|onde fica|onde e|onde é|como chegar|como chego|qual o endereco|qual o endereço|qual a localizacao|qual a localização|localizacao de|localização de|como ir para|como ir pro|como ir pra|como ir ate|como ir até|rota para|lugares cadastrados|locais cadastrados)\b/i;
 
   const regexTermosExclusivosConhecimento =
     /\b(lgpd|compliance|proposta comercial|orcamentos|politica de agendamento|reunioes de diagnostico)\b/i;
@@ -152,8 +152,14 @@ export function classificarIntencao(textoUsuario: string, nomeContato?: string):
   const regexTermosDocumento =
     /\b(cnh|cpf|rg|ctps|crt|art|dre|balanco|alvara|certidao|cnd|comprovante|holerite|contracheque|contrato|estatuto|procuracao|regimento|codigo de conduta|documento|documentos|arquivo|arquivos|pdf)\b/i;
 
+  const temSinalLocais =
+    /\b(locais|lugares|enderecos|endereços)\b/i.test(normalizado) &&
+    /\b(temos|tem|cadastrad|quais|onde|lista|todas|todos|nossas|nossos|empresa|delta)\b/i.test(normalizado);
+
   const temSinalConhecimento =
-    regexSinaisConhecimento.test(normalizado) || regexTermosExclusivosConhecimento.test(normalizado);
+    regexSinaisConhecimento.test(normalizado) ||
+    regexTermosExclusivosConhecimento.test(normalizado) ||
+    temSinalLocais;
   const temVerboDoc = regexVerbosDocumento.test(normalizado);
   const temTermoDoc = regexTermosDocumento.test(normalizado);
 

@@ -90,10 +90,15 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
   });
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-[#121820] border border-[#202937] rounded-2xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+    <div
+      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onFechar();
+      }}
+    >
+      <div className="bg-[#121820] border border-[#202937] rounded-2xl max-w-2xl w-full h-[85vh] max-h-[85vh] flex flex-col shadow-2xl overflow-hidden min-h-0">
         {/* Cabeçalho */}
-        <div className="p-4 sm:p-5 border-b border-[#1e2633] flex items-center justify-between bg-[#18202b]">
+        <div className="p-4 sm:p-5 border-b border-[#1e2633] flex items-center justify-between bg-[#18202b] shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
               <Bell className="w-5 h-5" />
@@ -137,7 +142,7 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
         </div>
 
         {/* Abas Principais: Vencimentos vs Avisos do Sistema */}
-        <div className="flex border-b border-[#1e2633] bg-[#0d1218] px-4 pt-2">
+        <div className="flex border-b border-[#1e2633] bg-[#0d1218] px-4 pt-2 shrink-0">
           <button
             type="button"
             onClick={() => setAbaPrincipal('vencimentos')}
@@ -187,7 +192,7 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
         ) : (
           <>
             {/* Barra de Filtros e Ações em Lote */}
-            <div className="px-4 py-2.5 bg-[#0f141c] border-b border-[#1e2633] flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="px-4 py-2.5 bg-[#0f141c] border-b border-[#1e2633] flex flex-wrap items-center justify-between gap-2 text-xs shrink-0">
           <div className="flex items-center gap-1.5">
             <button
               type="button"
@@ -248,7 +253,7 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
         </div>
 
         {/* Lista de Alertas */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-2.5 pb-6 overscroll-contain">
           {alertasFiltrados.length === 0 ? (
             <div className="p-10 text-center space-y-3 bg-[#0f141c] rounded-xl border border-dashed border-[#202937]">
               <div className="w-10 h-10 rounded-full bg-emerald-500/10 text-emerald-400 mx-auto flex items-center justify-center">
@@ -388,7 +393,7 @@ export const ModalAlertasVencimento: React.FC<ModalAlertasVencimentoProps> = ({
         </div>
 
         {/* Rodapé Informativo */}
-        <div className="p-3 bg-[#18202b] border-t border-[#1e2633] text-[11px] text-slate-500 flex items-center justify-between">
+        <div className="p-3 bg-[#18202b] border-t border-[#1e2633] text-[11px] text-slate-500 flex items-center justify-between shrink-0">
           <span>Alertas automáticos: 60, 30 e 7 dias antes do vencimento.</span>
           <span className="font-mono text-[10px]">Delta Plan • VEGA</span>
         </div>

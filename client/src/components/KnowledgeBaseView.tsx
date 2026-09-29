@@ -38,8 +38,11 @@ import {
   Eye,
   EyeOff,
   ShieldCheck,
+  MapPin,
+  Navigation,
 } from 'lucide-react';
 import { ASSISTENTE } from '../config/assistente.js';
+import { gerarLinksNavegacao } from '../utils/geoLinks.js';
 import {
   DocumentoRegistro,
   FichaTitular,
@@ -47,6 +50,7 @@ import {
   DadosPix,
   DadosLink,
   DadosContato,
+  DadosLocal,
 } from '../types/chat.js';
 import { obterPaletaAvatar, obterIniciais } from '../utils/avatarUtils.js';
 import { DocumentosFaltantesView } from './DocumentosFaltantesView.js';
@@ -126,7 +130,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   const [carregandoConhecimento, setCarregandoConhecimento] = useState(true);
   const [buscaConhecimento, setBuscaConhecimento] = useState('');
   const [filtroTipoConhecimento, setFiltroTipoConhecimento] = useState<
-    'todos' | 'pix' | 'link' | 'contato' | 'regra'
+    'todos' | 'pix' | 'link' | 'contato' | 'regra' | 'local'
   >('todos');
 
   // Entrada única de texto com IA
@@ -657,6 +661,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
       pix: itensConhecimento.filter((i) => i.tipo === 'pix').length,
       link: itensConhecimento.filter((i) => i.tipo === 'link').length,
       contato: itensConhecimento.filter((i) => i.tipo === 'contato').length,
+      local: itensConhecimento.filter((i) => i.tipo === 'local').length,
       regra: itensConhecimento.filter((i) => !i.tipo || i.tipo === 'regra').length,
     };
   }, [itensConhecimento]);
@@ -674,6 +679,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
       if (filtroTipoConhecimento === 'pix') matchTipo = item.tipo === 'pix';
       else if (filtroTipoConhecimento === 'link') matchTipo = item.tipo === 'link';
       else if (filtroTipoConhecimento === 'contato') matchTipo = item.tipo === 'contato';
+      else if (filtroTipoConhecimento === 'local') matchTipo = item.tipo === 'local';
       else if (filtroTipoConhecimento === 'regra') matchTipo = !item.tipo || item.tipo === 'regra';
 
       return matchBusca && matchTipo;
@@ -1563,7 +1569,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                   setTextoEntradaUnica(e.target.value);
                   setErroEstruturacao('');
                 }}
-                placeholder="Exemplos:&#10;• 'A chave PIX da Delta Plan é o CNPJ 12.345.678/0001-90 no Banco Santander'&#10;• 'Para acessar o sistema de orçamentos use https://orcamentos.deltaplan.com.br'&#10;• 'Carlos Silva é do suporte técnico, telefone (14) 99888-7766' ou cole linhas de tabelas..."
+                placeholder="Exemplos:&#10;• 'A chave PIX da Delta Plan é o CNPJ 12.345.678/0001-90 no Banco Santander'&#10;• 'O Escritório Central fica na Av. das Nações, 1500, sala 4. Referência: em frente ao banco'&#10;• 'A Obra Residencial Solar fica na Rua das Palmeiras, 45, Bairro Centro, Piracicaba - SP'&#10;• 'Carlos Silva é do suporte técnico, telefone (14) 99888-7766'..."
                 className="w-full px-3.5 py-2.5 bg-[#0b0f14] border border-[#202937] rounded-xl text-xs text-slate-100 placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none resize-none leading-relaxed"
               />
 
@@ -1574,9 +1580,49 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                 </div>
               )}
 
+              <div className="flex items-center gap-2 flex-wrap pt-0.5">
+                <span className="text-[11px] text-slate-400">Modelos rápidos:</span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setTextoEntradaUnica(
+                      'Local: Escritório Central Delta Plan\nEndereço: Rua Principal, 100, Centro - Piracicaba/SP\nComo chegar / Ponto de referência: Em frente à praça central, ao lado do banco Santander\nLink Maps: https://maps.app.goo.gl/...'
+                    )
+                  }
+                  className="px-2.5 py-1 rounded-lg bg-[#18202b] hover:bg-[#202937] text-amber-300 text-[11px] border border-amber-500/30 flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <MapPin className="w-3 h-3 text-amber-400" />
+                  <span>+ Modelo Localização</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setTextoEntradaUnica(
+                      'Chave PIX da Delta Plan: CNPJ 12.345.678/0001-90 no Banco Santander'
+                    )
+                  }
+                  className="px-2.5 py-1 rounded-lg bg-[#18202b] hover:bg-[#202937] text-emerald-300 text-[11px] border border-emerald-500/30 flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <CreditCard className="w-3 h-3 text-emerald-400" />
+                  <span>+ Modelo PIX</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setTextoEntradaUnica(
+                      'Contato Carlos Silva, Engenheiro de Obras, Telefone: (14) 99888-7766, Email: carlos@deltaplan.com.br'
+                    )
+                  }
+                  className="px-2.5 py-1 rounded-lg bg-[#18202b] hover:bg-[#202937] text-purple-300 text-[11px] border border-purple-500/30 flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <Phone className="w-3 h-3 text-purple-400" />
+                  <span>+ Modelo Contato</span>
+                </button>
+              </div>
+
               <div className="flex items-center justify-between pt-1">
                 <span className="text-[11px] text-slate-400">
-                  A IA identifica o tipo (PIX, Link, Contato ou Regra) e sugere os campos em linha.
+                  A IA identifica o tipo (PIX, Link, Contato, Localização ou Regra) e sugere os campos em linha.
                 </span>
 
                 <button
@@ -1646,6 +1692,8 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                                 ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
                                 : item.tipo === 'contato'
                                 ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                                : item.tipo === 'local'
+                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                                 : 'bg-[#18202b] text-slate-300 border border-[#202937]'
                             }`}
                           >
@@ -1655,6 +1703,8 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                               ? 'Link'
                               : item.tipo === 'contato'
                               ? 'Contato'
+                              : item.tipo === 'local'
+                              ? 'Localização'
                               : 'Regra'}
                           </span>
                           <span className="text-xs font-semibold text-slate-100">
@@ -1945,6 +1995,121 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                         </div>
                       )}
 
+                      {item.tipo === 'local' && (
+                        <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs">
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">Nome do Local:</label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosLocal)?.nomeLocal || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? { ...i, titulo: val || i.titulo, dadosEstruturados: { ...i.dadosEstruturados, nomeLocal: val } }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                            />
+                          </div>
+                          <div className="sm:col-span-2">
+                            <label className="text-[10px] text-slate-400 block mb-0.5">Endereço Completo:</label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosLocal)?.endereco || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? { ...i, dadosEstruturados: { ...i.dadosEstruturados, endereco: val } }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">Cidade / UF:</label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosLocal)?.cidade || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? { ...i, dadosEstruturados: { ...i.dadosEstruturados, cidade: val } }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                            />
+                          </div>
+                          <div className="sm:col-span-2">
+                            <label className="text-[10px] text-slate-400 block mb-0.5">Como Chegar / Referência:</label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosLocal)?.pontoReferencia || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? { ...i, dadosEstruturados: { ...i.dadosEstruturados, pontoReferencia: val } }
+                                      : i
+                                  )
+                                );
+                              }}
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">Link Google Maps (opcional):</label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosLocal)?.linkMaps || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? { ...i, dadosEstruturados: { ...i.dadosEstruturados, linkMaps: val } }
+                                      : i
+                                  )
+                                );
+                              }}
+                              placeholder="Automático pela rua ou https://maps.app.goo.gl/..."
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-amber-400 focus:outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5">Link Waze (opcional):</label>
+                            <input
+                              type="text"
+                              value={(item.dadosEstruturados as DadosLocal)?.linkWaze || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setItensSugeridosIA((prev) =>
+                                  prev.map((i, ix) =>
+                                    ix === idx
+                                      ? { ...i, dadosEstruturados: { ...i.dadosEstruturados, linkWaze: val } }
+                                      : i
+                                  )
+                                );
+                              }}
+                              placeholder="Automático pela rua ou https://waze.com/ul?..."
+                              className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-sky-400 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      )}
+
                       {(!item.tipo || item.tipo === 'regra') && (
                         <div>
                           <label className="text-[10px] text-slate-400 block mb-0.5">
@@ -2026,6 +2191,19 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
 
                 <button
                   type="button"
+                  onClick={() => setFiltroTipoConhecimento('local')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
+                    filtroTipoConhecimento === 'local'
+                      ? 'bg-amber-500 text-slate-950 font-semibold'
+                      : 'bg-[#121820] hover:bg-[#18202b] text-slate-300 border border-[#202937]'
+                  }`}
+                >
+                  <MapPin className="w-3.5 h-3.5" />
+                  <span>Locais ({contadoresTipo.local})</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => setFiltroTipoConhecimento('regra')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
                     filtroTipoConhecimento === 'regra'
@@ -2072,6 +2250,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                   const dPix = item.tipo === 'pix' ? (item.dadosEstruturados as DadosPix) : null;
                   const dLink = item.tipo === 'link' ? (item.dadosEstruturados as DadosLink) : null;
                   const dCt = item.tipo === 'contato' ? (item.dadosEstruturados as DadosContato) : null;
+                  const dLoc = item.tipo === 'local' ? (item.dadosEstruturados as DadosLocal) : null;
 
                   return (
                     <div
@@ -2351,6 +2530,116 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                             </div>
                           )}
 
+                          {draftEdicaoLinha.tipo === 'local' && (
+                            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs pt-1">
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">Nome do Local:</label>
+                                <input
+                                  type="text"
+                                  value={(draftEdicaoLinha.dadosEstruturados as DadosLocal)?.nomeLocal || ''}
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      titulo: e.target.value || draftEdicaoLinha.titulo,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        nomeLocal: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                                />
+                              </div>
+                              <div className="sm:col-span-2">
+                                <label className="text-[10px] text-slate-400 block mb-0.5">Endereço:</label>
+                                <input
+                                  type="text"
+                                  value={(draftEdicaoLinha.dadosEstruturados as DadosLocal)?.endereco || ''}
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        endereco: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">Cidade / UF:</label>
+                                <input
+                                  type="text"
+                                  value={(draftEdicaoLinha.dadosEstruturados as DadosLocal)?.cidade || ''}
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        cidade: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                                />
+                              </div>
+                              <div className="sm:col-span-2">
+                                <label className="text-[10px] text-slate-400 block mb-0.5">Como Chegar / Referência:</label>
+                                <input
+                                  type="text"
+                                  value={(draftEdicaoLinha.dadosEstruturados as DadosLocal)?.pontoReferencia || ''}
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        pontoReferencia: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">Link Google Maps:</label>
+                                <input
+                                  type="text"
+                                  value={(draftEdicaoLinha.dadosEstruturados as DadosLocal)?.linkMaps || ''}
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        linkMaps: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  placeholder="Automático pela rua ou https://maps.app.goo.gl/..."
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-amber-400 focus:outline-none"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">Link Waze:</label>
+                                <input
+                                  type="text"
+                                  value={(draftEdicaoLinha.dadosEstruturados as DadosLocal)?.linkWaze || ''}
+                                  onChange={(e) =>
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        linkWaze: e.target.value,
+                                      },
+                                    })
+                                  }
+                                  placeholder="Automático pela rua ou https://waze.com/ul?..."
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-sky-400 focus:outline-none"
+                                />
+                              </div>
+                            </div>
+                          )}
+
                           {(!draftEdicaoLinha.tipo || draftEdicaoLinha.tipo === 'regra') && (
                             <div>
                               <label className="text-[10px] text-slate-400 block mb-1">
@@ -2388,6 +2677,10 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                                 <div className="w-9 h-9 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shadow-sm">
                                   <Phone className="w-4 h-4" />
                                 </div>
+                              ) : item.tipo === 'local' ? (
+                                <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shadow-sm">
+                                  <MapPin className="w-4 h-4" />
+                                </div>
                               ) : (
                                 <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shadow-sm">
                                   <BookOpen className="w-4 h-4" />
@@ -2409,6 +2702,8 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                                       ? 'bg-sky-500/15 text-sky-300 border border-sky-500/30'
                                       : item.tipo === 'contato'
                                       ? 'bg-purple-500/15 text-purple-300 border border-purple-500/30'
+                                      : item.tipo === 'local'
+                                      ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
                                       : 'bg-[#18202b] text-slate-400 border border-[#202937]'
                                   }`}
                                 >
@@ -2418,6 +2713,8 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                                     ? 'Link'
                                     : item.tipo === 'contato'
                                     ? 'Contato'
+                                    : item.tipo === 'local'
+                                    ? 'Localização'
                                     : item.categoria || 'Regra'}
                                 </span>
                               </div>
@@ -2480,6 +2777,74 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                                       <span>{dCt.email}</span>
                                     </span>
                                   )}
+                                </div>
+                              ) : item.tipo === 'local' && dLoc ? (
+                                <div className="flex items-center gap-2 mt-1 text-xs text-slate-300 flex-wrap">
+                                  <span className="font-medium bg-[#0b0f14] px-2 py-0.5 rounded border border-[#202937] text-slate-200 select-all flex items-center gap-1">
+                                    <MapPin className="w-3 h-3 text-amber-400" />
+                                    <span>{dLoc.endereco || item.conteudo}</span>
+                                  </span>
+                                  <button
+                                    onClick={() => copiarChave(item.id, dLoc.endereco || item.conteudo)}
+                                    className="p-1 rounded bg-[#18202b] hover:bg-[#202937] text-slate-400 hover:text-amber-400 transition-colors cursor-pointer flex items-center gap-1 text-[11px]"
+                                    title="Copiar endereço"
+                                  >
+                                    {copiadoId === item.id ? (
+                                      <>
+                                        <Check className="w-3 h-3 text-emerald-400" />
+                                        <span className="text-emerald-400 font-medium">Copiado</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-3 h-3" />
+                                        <span>Copiar</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  {dLoc.cidade && <span>• Cidade: {dLoc.cidade}</span>}
+                                   {dLoc.pontoReferencia && (
+                                     <span className="text-slate-400">• Como chegar: {dLoc.pontoReferencia}</span>
+                                   )}
+                                   {(() => {
+                                     const linksNav = dLoc.endereco ? gerarLinksNavegacao(dLoc.endereco, dLoc.cidade) : undefined;
+                                     const urlMaps = (dLoc.linkMaps && !dLoc.linkMaps.includes('google.com/maps/search/'))
+                                       ? dLoc.linkMaps
+                                       : linksNav?.linkMaps;
+                                     const urlWaze = (dLoc.linkWaze && !dLoc.linkWaze.includes('waze.com/ul'))
+                                       ? dLoc.linkWaze
+                                       : linksNav?.linkWaze;
+
+                                     if (!urlMaps && !urlWaze) return null;
+
+                                     return (
+                                       <div className="flex items-center gap-2 ml-1">
+                                         {urlMaps && (
+                                           <a
+                                             href={urlMaps}
+                                             target="_blank"
+                                             rel="noopener noreferrer"
+                                             className="text-amber-400 hover:text-amber-300 underline underline-offset-2 flex items-center gap-1 font-medium text-[11px]"
+                                             title="Abrir no Google Maps"
+                                           >
+                                             <span>Maps</span>
+                                             <ExternalLink className="w-3 h-3" />
+                                           </a>
+                                         )}
+                                         {urlWaze && (
+                                           <a
+                                             href={urlWaze}
+                                             target="_blank"
+                                             rel="noopener noreferrer"
+                                             className="text-sky-400 hover:text-sky-300 underline underline-offset-2 flex items-center gap-1 font-medium text-[11px]"
+                                             title="Abrir no Waze"
+                                           >
+                                             <span>Waze</span>
+                                             <Navigation className="w-3 h-3" />
+                                           </a>
+                                         )}
+                                       </div>
+                                     );
+                                   })()}
                                 </div>
                               ) : (
                                 <p className="text-xs text-slate-400 truncate mt-1 max-w-xl">

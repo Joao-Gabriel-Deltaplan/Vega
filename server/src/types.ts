@@ -17,7 +17,7 @@ export type MotivoBuscaSemResultado =
   | 'inexistente_documento'
   | 'inexistente_conhecimento';
 
-export type TipoConhecimento = 'pix' | 'link' | 'contato' | 'regra';
+export type TipoConhecimento = 'pix' | 'link' | 'contato' | 'regra' | 'local';
 
 export interface DadosPix {
   titular: string;
@@ -39,13 +39,22 @@ export interface DadosContato {
   email?: string;
 }
 
+export interface DadosLocal {
+  nomeLocal: string;
+  endereco: string;
+  pontoReferencia?: string;
+  cidade?: string;
+  linkMaps?: string;
+  linkWaze?: string;
+}
+
 export interface ItemConhecimento {
   id: string;
   titulo: string;
   categoria: string;
   conteudo: string;
   tipo?: TipoConhecimento;
-  dadosEstruturados?: DadosPix | DadosLink | DadosContato | Record<string, any>;
+  dadosEstruturados?: DadosPix | DadosLink | DadosContato | DadosLocal | Record<string, any>;
   dataAtualizacao: string;
   dataCadastro?: string;
 }
@@ -69,7 +78,7 @@ export interface OpcaoDocumento {
 }
 
 export interface DadosEstruturadosMensagem {
-  tipo: 'pix' | 'link' | 'contato' | 'regra';
+  tipo: 'pix' | 'link' | 'contato' | 'regra' | 'local';
   titulo: string;
   conteudo?: string;
   chavePix?: string;
@@ -79,6 +88,12 @@ export interface DadosEstruturadosMensagem {
   link?: string;
   telefone?: string;
   setor?: string;
+  nomeLocal?: string;
+  endereco?: string;
+  pontoReferencia?: string;
+  cidade?: string;
+  linkMaps?: string;
+  linkWaze?: string;
 }
 
 export interface Mensagem {
