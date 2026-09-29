@@ -205,13 +205,27 @@ export function App() {
       }
       if (res.ok) {
         const dados: Conversa[] = await res.json();
+        // Filtra estritamente fora qualquer registro de teste
+        const dadosValidos = (dados || []).filter((c) => {
+          const idLower = (c.id || '').toLowerCase();
+          const nomeLower = (c.contato?.nome || '').toLowerCase();
+          const tel = String(c.contato?.telefone || '');
+          if (idLower.startsWith('wa-teste-') || idLower.includes('teste')) return false;
+          if (nomeLower.includes('titular teste') || nomeLower === 'teste') return false;
+          if (tel.includes('999990001')) return false;
+          return true;
+        });
+
         setConversas((prev) => {
-          // Se não houver dados prévios, adota os recebidos
-          if (prev.length === 0) return dados;
+          // Se não houver dados prévios, adota os recebidos filtrados
+          if (prev.length === 0) return dadosValidos;
+
+          // Conversas excluídas no servidor devem ser removidas da lista local
+          const dadosMap = new Map(dadosValidos.map((c) => [c.id, c]));
+          const prevValidas = prev.filter((p) => dadosMap.has(p.id));
 
           // Mescla para não perder estado instantâneo de streaming ou mensagens locais
-          const dadosMap = new Map(dados.map((c) => [c.id, c]));
-          const atualizadas = prev.map((c) => {
+          const atualizadas = prevValidas.map((c) => {
             const nova = dadosMap.get(c.id);
             if (!nova) return c;
             // Se a versão nova do servidor tiver mais mensagens ou atualização mais recente, usa a do servidor
@@ -222,8 +236,8 @@ export function App() {
           });
 
           // Adiciona conversas novas que não estavam na lista
-          for (const d of dados) {
-            if (!prev.some((p) => p.id === d.id)) {
+          for (const d of dadosValidos) {
+            if (!prevValidas.some((p) => p.id === d.id)) {
               atualizadas.push(d);
             }
           }
@@ -235,9 +249,11 @@ export function App() {
           });
         });
 
-        // Se nenhuma estiver ativa, ativa a primeira da lista
+        // Se a conversa ativa não existir mais nas conversas válidas, seleciona a primeira
         setConversaAtivaId((atual) => {
-          if (!atual && dados.length > 0) return dados[0].id;
+          if (!atual || !dadosValidos.some((c) => c.id === atual)) {
+            return dadosValidos.length > 0 ? dadosValidos[0].id : null;
+          }
           return atual;
         });
       }
@@ -289,8 +305,9 @@ export function App() {
   useSSE({
     habilitado: Boolean(autenticado),
     onNovaMensagem: (conversaId, msg, conversaAtualizada) => {
-      // Processa apenas mensagens do WhatsApp real
-      if (!conversaId.startsWith('wa-')) return;
+      // Processa apenas mensagens do WhatsApp real e ignora testes
+      if (!conversaId.startsWith('wa-') || conversaId.startsWith('wa-teste-') || conversaId.includes('teste')) return;
+      if (conversaAtualizada?.contato?.nome?.toLowerCase().includes('titular teste')) return;
 
       console.log(`[SSE 💬] Mensagem em tempo real recebida para ${conversaId}:`, msg.texto);
 
@@ -336,7 +353,8 @@ export function App() {
       });
     },
     onConversaAtualizada: (conversaAtualizada) => {
-      if (!conversaAtualizada.id.startsWith('wa-')) return;
+      if (!conversaAtualizada.id.startsWith('wa-') || conversaAtualizada.id.startsWith('wa-teste-') || conversaAtualizada.id.includes('teste')) return;
+      if (conversaAtualizada?.contato?.nome?.toLowerCase().includes('titular teste')) return;
       setConversas((prev) =>
         prev.map((c) => (c.id === conversaAtualizada.id ? conversaAtualizada : c))
       );

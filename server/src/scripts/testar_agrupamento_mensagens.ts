@@ -7,7 +7,7 @@ import {
   ItemMensagemAgrupada,
 } from '../whatsapp/agrupadorMensagensService.js';
 import { salvarConfiguracoesVega } from '../config/configuracoesVegaService.js';
-import { obterConversaPorId, salvarConversa, adicionarMensagem, adicionarDocumento, removerDocumento } from '../storage.js';
+import { obterConversaPorId, salvarConversa, removerConversa, adicionarMensagem, adicionarDocumento, removerDocumento } from '../storage.js';
 import { Contato, Mensagem, DocumentoRegistro } from '../types.js';
 import { UsuarioWhatsApp } from '../whatsapp/types.js';
 import { getSupabaseClient } from '../db/supabaseClient.js';
@@ -62,6 +62,7 @@ async function rodarTestes() {
 
   let totalPassou = 0;
   let totalFalhou = 0;
+  const conversasCriadas: string[] = [];
 
   // --------------------------------------------------------------------------
   // TESTE 1: Duas mensagens de texto em sequência rápida -> 1 única resposta
@@ -69,6 +70,7 @@ async function rodarTestes() {
   console.log('--- TESTE 1: Duas mensagens de texto consecutivas rápidas ---');
   try {
     const conversaId1 = `wa-teste-conversa-1-${Date.now()}`;
+    conversasCriadas.push(conversaId1);
     await salvarConversa({
       id: conversaId1,
       contato: contatoTeste,
@@ -152,6 +154,7 @@ async function rodarTestes() {
   console.log('--- TESTE 2: Áudio transcrito seguido de texto complementar ---');
   try {
     const conversaId2 = `wa-teste-conversa-2-${Date.now()}`;
+    conversasCriadas.push(conversaId2);
     await salvarConversa({
       id: conversaId2,
       contato: contatoTeste,
@@ -238,6 +241,7 @@ async function rodarTestes() {
   let docCriadoId: string | null = null;
   try {
     const conversaId3 = `wa-teste-conversa-3-${Date.now()}`;
+    conversasCriadas.push(conversaId3);
     await salvarConversa({
       id: conversaId3,
       contato: contatoTeste,
@@ -362,6 +366,7 @@ async function rodarTestes() {
   console.log('--- TESTE 4: Limite de segurança de 5 mensagens (disparo imediato) ---');
   try {
     const conversaId4 = `wa-teste-conversa-4-${Date.now()}`;
+    conversasCriadas.push(conversaId4);
     await salvarConversa({
       id: conversaId4,
       contato: contatoTeste,
@@ -419,6 +424,7 @@ async function rodarTestes() {
   console.log('--- TESTE 5: Mensagem durante o processamento (Fila pós-processamento) ---');
   try {
     const conversaId5 = `wa-teste-conversa-5-${Date.now()}`;
+    conversasCriadas.push(conversaId5);
     await salvarConversa({
       id: conversaId5,
       contato: contatoTeste,
@@ -492,6 +498,15 @@ async function rodarTestes() {
     console.error('❌ TESTE 5 ERRO:', err?.message || err);
     totalFalhou++;
   }
+
+  // Limpeza das conversas de teste geradas no Supabase
+  console.log('Limpando conversas temporárias de teste no Supabase...');
+  for (const cId of conversasCriadas) {
+    try {
+      await removerConversa(cId);
+    } catch (_) {}
+  }
+  console.log(`Limpas ${conversasCriadas.length} conversas de teste.`);
 
   // Restaura configuração padrão de 7 segundos no Supabase
   await salvarConfiguracoesVega({

@@ -32,18 +32,31 @@ export const SidebarConversas: React.FC<SidebarConversasProps> = ({
 }) => {
   const [busca, setBusca] = useState('');
 
+  // Conversas válidas excluindo testes
+  const conversasValidas = useMemo(() => {
+    return conversas.filter((c) => {
+      const idLower = (c.id || '').toLowerCase();
+      const nomeLower = (c.contato?.nome || '').toLowerCase();
+      const tel = String(c.contato?.telefone || '');
+      if (idLower.startsWith('wa-teste-') || idLower.includes('teste')) return false;
+      if (nomeLower.includes('titular teste') || nomeLower === 'teste') return false;
+      if (tel.includes('999990001')) return false;
+      return true;
+    });
+  }, [conversas]);
+
   // Filtra por nome, telefone ou texto da última mensagem
   const conversasFiltradas = useMemo(() => {
     const termo = busca.toLowerCase().trim();
-    if (!termo) return conversas;
-    return conversas.filter(
+    if (!termo) return conversasValidas;
+    return conversasValidas.filter(
       (c) =>
         c.contato.nome.toLowerCase().includes(termo) ||
         c.contato.telefone.toLowerCase().includes(termo) ||
         (c.contato.cargo && c.contato.cargo.toLowerCase().includes(termo)) ||
         c.mensagens[c.mensagens.length - 1]?.texto.toLowerCase().includes(termo)
     );
-  }, [conversas, busca]);
+  }, [conversasValidas, busca]);
 
   return (
     <aside className="w-[320px] min-w-[320px] h-full flex flex-col bg-[#0f141c] border-r border-[#1e2633]">
@@ -65,7 +78,7 @@ export const SidebarConversas: React.FC<SidebarConversasProps> = ({
                     Carregando...
                   </span>
                 ) : (
-                  `${conversas.length} ${conversas.length === 1 ? 'conversa' : 'conversas'}`
+                  `${conversasValidas.length} ${conversasValidas.length === 1 ? 'conversa' : 'conversas'}`
                 )}
               </span>
             </div>

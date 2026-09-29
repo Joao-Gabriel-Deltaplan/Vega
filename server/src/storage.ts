@@ -80,10 +80,17 @@ export async function obterTodasConversas(): Promise<Conversa[]> {
       console.warn('[Storage Supabase ⚠️] Aviso ao carregar usuarios para enriquecimento:', e);
     }
 
-    // Retorna apenas conversas reais do WhatsApp
-    const conversasFiltradas = (data || []).filter(
-      (c: any) => typeof c.id === 'string' && c.id.startsWith('wa-')
-    );
+    // Retorna apenas conversas reais do WhatsApp (ignora conversas geradas por testes/scripts)
+    const conversasFiltradas = (data || []).filter((c: any) => {
+      if (typeof c.id !== 'string' || !c.id.startsWith('wa-')) return false;
+      const idLower = c.id.toLowerCase();
+      if (idLower.startsWith('wa-teste-') || idLower.includes('teste')) return false;
+      const nomeContato = (c.contato?.nome || '').toLowerCase();
+      if (nomeContato.includes('titular teste') || nomeContato === 'teste') return false;
+      const tel = String(c.contato?.telefone || '');
+      if (tel.includes('999990001')) return false;
+      return true;
+    });
 
     return conversasFiltradas.map((c: any) => {
       const contatoRaw = c.contato || {};

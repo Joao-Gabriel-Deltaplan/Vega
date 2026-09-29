@@ -205,12 +205,13 @@ export interface CampoTitular {
 export interface CorrecaoPendenteFicha {
   titularId: string;
   titularNome: string;
-  campoId: CampoTitularId | 'silenciar_alerta';
+  campoId: CampoTitularId | 'silenciar_alerta' | 'apagar_documento' | 'cadastrar_conhecimento' | 'substituir_conhecimento';
   campoLabel: string;
   valorAnterior: string;
   valorNovo: string;
   documentoId?: string;
   documentoTitulo?: string;
+  itemConhecimento?: any;
 }
 
 export interface FichaTitular {

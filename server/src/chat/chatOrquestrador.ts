@@ -8,12 +8,15 @@ import {
   obterTodosTitulares,
   obterTodosDocumentos,
   obterTodosConhecimentos,
+  adicionarConhecimento,
+  atualizarConhecimento,
   salvarOuAtualizarTitular,
   resolverTitularCadastrado,
   resolverTitularComAmbiguidade,
   removerDocumento,
   mapearLinhaDocumento,
 } from '../storage.js';
+import { indexarConhecimentoBackground } from '../indexador/indexadorAutomatico.js';
 import { salvarPendenciaDocumentoWhatsApp } from '../whatsapp/pendenciasWhatsAppService.js';
 import { normalizarNumeroCanonica } from '../whatsapp/usuarioWhatsAppService.js';
 import {
@@ -118,7 +121,23 @@ export type IntencaoChat =
   | 'silenciar_alerta'
   | 'consultar_checklist_faltantes'
   | 'apagar_documento'
+  | 'cadastrar_conhecimento'
   | 'fora_de_escopo';
+
+export interface DetalhesConhecimentoClassificado {
+  chavePix?: string;
+  tipoChavePix?: 'cpf' | 'cnpj' | 'telefone' | 'email' | 'aleatoria';
+  beneficiario?: string;
+  banco?: string;
+  url?: string;
+  nomeSistema?: string;
+  telefone?: string;
+  email?: string;
+  nome?: string;
+  cargo?: string;
+  setor?: string;
+  descricao?: string;
+}
 
 export interface ItemPedidoClassificado {
   intencao: IntencaoChat;
@@ -133,6 +152,10 @@ export interface ItemPedidoClassificado {
   pergunta_reescrita?: string;
   campo_corrigir?: string;
   valor_novo?: string;
+  tipo_conhecimento?: 'pix' | 'link' | 'contato' | 'outro';
+  titulo_conhecimento?: string;
+  detalhes_conhecimento?: DetalhesConhecimentoClassificado;
+  campo_faltante?: string;
 }
 
 export interface ClassificacaoChatResponse {
@@ -149,6 +172,10 @@ export interface ClassificacaoChatResponse {
   campo?: string;
   campo_corrigir?: string;
   valor_novo?: string;
+  tipo_conhecimento?: 'pix' | 'link' | 'contato' | 'outro';
+  titulo_conhecimento?: string;
+  detalhes_conhecimento?: DetalhesConhecimentoClassificado;
+  campo_faltante?: string;
   pedidos?: ItemPedidoClassificado[];
   tempoMs: number;
   tokensPrompt: number;
@@ -1148,6 +1175,32 @@ export function normalizarParaBusca(texto: string): string {
 }
 
 /**
+ * Deduz o tipo da chave PIX a partir do formato e conteúdo
+ */
+export function deduzirTipoChavePix(chaveRaw: string): 'cpf' | 'cnpj' | 'telefone' | 'email' | 'aleatoria' {
+  const limpa = (chaveRaw || '').trim();
+  if (limpa.includes('@')) return 'email';
+  const digitos = limpa.replace(/\D/g, '');
+  if (digitos.length === 14) return 'cnpj';
+  if (digitos.length === 11) {
+    // Se o 3º dígito após o DDD não for 9, é CPF
+    // No Brasil, celular é (XX) 9XXXX-XXXX -> digitos[2] === '9'
+    // Ex: 43859328832 -> digitos[2] é '8', portanto é CPF
+    if (limpa.includes('.') || limpa.includes('-') || digitos[2] !== '9') {
+      return 'cpf';
+    }
+    return 'telefone';
+  }
+  if (digitos.length === 10 || digitos.length === 12 || digitos.length === 13) {
+    return 'telefone';
+  }
+  if (limpa.length >= 30 && limpa.includes('-')) {
+    return 'aleatoria';
+  }
+  return 'cpf';
+}
+
+/**
  * Busca por nome nos títulos e dados da aba Conhecimento
  */
 export async function buscarConhecimentoPorNome(
@@ -1180,7 +1233,16 @@ export async function buscarConhecimentoPorNome(
           return { item: p, score: 100 };
         }
       }
-      // Se não especificou titular diferente e só existe 1 chave cadastrada
+
+      // Regra 22: NUNCA devolver chave de outra pessoa se um titular/sujeito foi citado!
+      const palavrasIgnoradas = new Set(['qual', 'o', 'a', 'os', 'as', 'pix', 'chave', 'de', 'do', 'da', 'dos', 'das', 'e', 'me', 'manda', 'passa', 'envia', 'salve', 'salva', 'anote', 'anota', 'por', 'favor', 'tem']);
+      const termosSignificativos = termoNorm.split(/\s+/).filter((w) => w.length >= 3 && !palavrasIgnoradas.has(w));
+
+      if (termosSignificativos.length > 0) {
+        return null;
+      }
+
+      // Se a mensagem foi puramente genérica ("qual o pix?", "me manda a chave pix") e só existe 1 chave
       if (itensPix.length === 1) {
         return { item: itensPix[0], score: 100 };
       }
@@ -1613,6 +1675,90 @@ export function posProcessarItemPedido(
     intencao = 'pergunta_conteudo';
   }
 
+  // Suporte a cadastrar_conhecimento (Regra 22)
+  const ehComandoCadastro =
+    /\b(salv[aeo]|salvar|anot[aeo]|anotar|guard[aeo]|guardar|cadastr[aeo]|cadastrar|armazen[aeo]|armazenar|registr[aeo]|registrar)\b/i.test(
+      itemNorm
+    ) ||
+    /\b(salv[aeo]|salvar|anot[aeo]|anotar|guard[aeo]|guardar|cadastr[aeo]|cadastrar|armazen[aeo]|armazenar|registr[aeo]|registrar)\b/i.test(
+      msgNorm
+    );
+  const citaItemConhecimento =
+    /\b(pix|chave\s*pix|telefone|contato|link|celular|whatsapp|url|site)\b/i.test(itemNorm) ||
+    /\b(pix|chave\s*pix|telefone|contato|link|celular|whatsapp|url|site)\b/i.test(msgNorm);
+
+  if (ehComandoCadastro && citaItemConhecimento) {
+    intencao = 'cadastrar_conhecimento';
+  }
+
+  let tipo_conhecimento = itemRaw.tipo_conhecimento || '';
+  let titulo_conhecimento = itemRaw.titulo_conhecimento || '';
+  let detalhes_conhecimento = itemRaw.detalhes_conhecimento ? { ...itemRaw.detalhes_conhecimento } : undefined;
+  let campo_faltante = itemRaw.campo_faltante || '';
+
+  if (intencao === 'cadastrar_conhecimento') {
+    if (!tipo_conhecimento) {
+      if (/\b(pix|chave\s*pix)\b/i.test(itemNorm) || /\b(pix|chave\s*pix)\b/i.test(msgNorm)) {
+        tipo_conhecimento = 'pix';
+      } else if (/\b(link|url|site|portal)\b/i.test(itemNorm) || /\b(link|url|site|portal)\b/i.test(msgNorm)) {
+        tipo_conhecimento = 'link';
+      } else if (/\b(telefone|contato|celular|ramal)\b/i.test(itemNorm) || /\b(telefone|contato|celular|ramal)\b/i.test(msgNorm)) {
+        tipo_conhecimento = 'contato';
+      } else {
+        tipo_conhecimento = 'outro';
+      }
+    }
+
+    if (tipo_conhecimento === 'pix') {
+      detalhes_conhecimento = detalhes_conhecimento || {};
+      if (!detalhes_conhecimento.chavePix) {
+        const matchDigitos = (perguntaCompleta + ' ' + mensagemUsuario).match(/\b(\d{11}|\d{14}|\d{10,13}|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|[0-9a-fA-F-]{32,36})\b/);
+        if (matchDigitos) {
+          detalhes_conhecimento.chavePix = matchDigitos[1];
+        }
+      }
+      if (detalhes_conhecimento.chavePix && !detalhes_conhecimento.tipoChavePix) {
+        detalhes_conhecimento.tipoChavePix = deduzirTipoChavePix(detalhes_conhecimento.chavePix);
+      }
+      if (!detalhes_conhecimento.beneficiario) {
+        if (pessoa) {
+          detalhes_conhecimento.beneficiario = pessoa;
+        } else {
+          const matchBenef = (perguntaCompleta + ' ' + mensagemUsuario).match(/\b(?:de|do|da|dos|das)\s+([A-ZÁÉÍÓÚÂÊÔÃÕa-záéíóúâêôãõç]+)\b/i);
+          if (matchBenef && !/\b(pix|chave|empresa|delta)\b/i.test(matchBenef[1])) {
+            detalhes_conhecimento.beneficiario = matchBenef[1].charAt(0).toUpperCase() + matchBenef[1].slice(1);
+            pessoa = detalhes_conhecimento.beneficiario;
+          }
+        }
+      }
+      if (!titulo_conhecimento) {
+        titulo_conhecimento = `Chave PIX do ${detalhes_conhecimento.beneficiario || pessoa || ''}`.trim();
+      }
+    } else if (tipo_conhecimento === 'contato') {
+      detalhes_conhecimento = detalhes_conhecimento || {};
+      if (!detalhes_conhecimento.telefone) {
+        const matchTel = (perguntaCompleta + ' ' + mensagemUsuario).match(/(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?\d{4,5}[-\s]?\d{4}/);
+        if (matchTel) {
+          detalhes_conhecimento.telefone = matchTel[0].trim();
+        }
+      }
+      if (!detalhes_conhecimento.nome) {
+        if (pessoa) {
+          detalhes_conhecimento.nome = pessoa;
+        } else {
+          const matchNome = (perguntaCompleta + ' ' + mensagemUsuario).match(/\b(?:de|do|da|dos|das)\s+([A-ZÁÉÍÓÚÂÊÔÃÕa-záéíóúâêôãõç]+)\b/i);
+          if (matchNome && !/\b(contato|telefone|celular|empresa|delta)\b/i.test(matchNome[1])) {
+            detalhes_conhecimento.nome = matchNome[1].charAt(0).toUpperCase() + matchNome[1].slice(1);
+            pessoa = detalhes_conhecimento.nome;
+          }
+        }
+      }
+      if (!titulo_conhecimento) {
+        titulo_conhecimento = `Telefone ${detalhes_conhecimento.nome || pessoa || ''}`.trim();
+      }
+    }
+  }
+
   return {
     intencao,
     pessoa: pessoa || undefined,
@@ -1626,6 +1772,10 @@ export function posProcessarItemPedido(
     pergunta_completa: perguntaCompleta,
     termo_busca: termoBusca || documento_citado || perguntaCompleta,
     pergunta_reescrita: perguntaCompleta,
+    tipo_conhecimento: tipo_conhecimento || undefined,
+    titulo_conhecimento: titulo_conhecimento || undefined,
+    detalhes_conhecimento,
+    campo_faltante: campo_faltante || undefined,
   };
 }
 
@@ -1670,11 +1820,27 @@ Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
 {
   "pedidos": [
     {
-      "intencao": "saudacao_ou_vago" | "pedir_arquivo" | "listar_documentos" | "dado_pessoal" | "pergunta_conteudo" | "corrigir_dado" | "consultar_vencimentos" | "silenciar_alerta" | "consultar_checklist_faltantes" | "apagar_documento" | "fora_de_escopo",
-      "pessoa": "nome do titular ou pessoa citada na mensagem (ex: Fulano, Nilceia) ou vazio",
+      "intencao": "saudacao_ou_vago" | "pedir_arquivo" | "listar_documentos" | "dado_pessoal" | "pergunta_conteudo" | "corrigir_dado" | "consultar_vencimentos" | "silenciar_alerta" | "consultar_checklist_faltantes" | "apagar_documento" | "cadastrar_conhecimento" | "fora_de_escopo",
+      "pessoa": "nome do titular ou pessoa citada na mensagem (ex: Fulano, Nilceia, Berna) ou vazio",
       "campos": ["lista de campos ou dados específicos solicitados (ex.: cpf, rg, filiacao, mae, pai, dataNascimento, endereco, estadoCivil, profissao, cnh, validadeCnh, categoriaCnh, orgaoEmissor, titulo_eleitor, pis, carteira_reservista, certidao_nascimento, passaporte) ou vazio"],
       "campo_corrigir": "nome do campo a ser corrigido ou vazio",
       "valor_novo": "novo valor correto informado pelo usuário ou vazio",
+      "tipo_conhecimento": "pix" | "link" | "contato" | "outro" | "",
+      "titulo_conhecimento": "título curto do item a cadastrar ou vazio",
+      "detalhes_conhecimento": {
+        "chavePix": "valor da chave PIX ou vazio",
+        "tipoChavePix": "cpf" | "cnpj" | "telefone" | "email" | "aleatoria" | "",
+        "beneficiario": "nome do titular/beneficiário da chave ou vazio",
+        "banco": "nome do banco se citado ou vazio",
+        "url": "link ou url completo ou vazio",
+        "nomeSistema": "nome do sistema ou site ou vazio",
+        "telefone": "número de telefone informado ou vazio",
+        "email": "e-mail informado ou vazio",
+        "nome": "nome do contato ou vazio",
+        "cargo": "cargo ou função se informada ou vazio",
+        "setor": "departamento ou setor se informado ou vazio"
+      },
+      "campo_faltante": "informação ausente que precisa ser perguntada (ex: tipo da chave) ou vazio",
       "documento_citado": "nome do documento físico específico citado (NUNCA termos de repositório como 'cofre', 'arquivo', 'documento') ou vazio",
       "documentos_citados": ["lista de documentos físicos citados ou vazio"],
       "pergunta_completa": "versão clara e completa desta solicitação específica sem perder informações",
@@ -1698,10 +1864,11 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
    - Pedidos de resumo, explicação ou perguntas sobre texto ("resuma", "explique", "data de casamento") são SEMPRE "pergunta_conteudo", NUNCA "pedir_arquivo".
 3. "dado_pessoal": Informações cadastrais de pessoas (CPF, RG, endereço residencial, estado civil, filiação/mãe/pai, profissão, validade da CNH, categoria da CNH, título de eleitor, PIS, carteira de reservista).
    - Mesmo com verbos de envio ("mande o título de eleitor", "passa o PIS do Fulano", "qual o CPF dele?"), É SEMPRE "dado_pessoal", NUNCA "pedir_arquivo".
-   - Distinção PIS vs PIX: "PIS" é campo cadastral de pessoa ("dado_pessoal", campos: ["pis"]). "PIX" é corporativo ("pergunta_conteudo").
+   - Distinção PIS vs PIX: "PIS" é campo cadastral de pessoa ("dado_pessoal", campos: ["pis"]). Consulta a "PIX" existente é "pergunta_conteudo". Pedidos para SALVAR, GUARDAR ou CADASTRAR PIX novo são OBRIGATORIAMENTE "cadastrar_conhecimento".
    - Sem titular citado: intencao: "dado_pessoal", pessoa: "", campos: [campo solicitado].
-4. "pergunta_conteudo": Perguntas sobre texto de documento arquivado ou instruções/itens da Base de Conhecimento:
-   - Base de Conhecimento: links de sistemas ("link do app"), contatos corporativos ("contato financeiro"), localização/rotas de obras e sedes ("como chegar na obra", "onde fica o escritório"), regras de negócio e chaves PIX ("qual o pix do Fulano/empresa").
+4. "pergunta_conteudo": Perguntas ou consultas sobre texto de documento arquivado ou instruções/itens existentes da Base de Conhecimento:
+   - Base de Conhecimento: consultas de links de sistemas ("link do app"), contatos corporativos ("contato financeiro"), localização/rotas de obras e sedes ("como chegar na obra", "onde fica o escritório"), regras de negócio e consultas de chaves PIX já cadastradas ("qual o pix do Fulano/empresa", "me manda a chave pix").
+   - IMPORTANTE: Pedidos para SALVAR, CADASTRAR, ANOTAR ou GUARDAR uma nova informação (PIX novo, novo telefone, novo link) são SEMPRE "cadastrar_conhecimento", NUNCA "pergunta_conteudo".
    - Fatos jurídicos vs Nascimento: datas de eventos registrados em documentos (dispensa militar, registro de casamento, vacinas) são ESTRITAMENTE "pergunta_conteudo", NUNCA "dado_pessoal" e JAMAIS respondidas com nascimento.
    - Resumos (Regra 20): pedidos de resumo são SEMPRE "pergunta_conteudo". Se citar documento ("resuma a ART"), preencha "documento_citado" e "termo_busca". Se for anafórico ("resuma esse documento"), deixe-os vazios ("").
    - Vacinas/Covid: perguntas sobre vacinas do cofre são SEMPRE "pergunta_conteudo", NUNCA "fora_de_escopo".
@@ -1710,15 +1877,19 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
 7. "silenciar_alerta": Desativar avisos de vencimento ("pare de alertar o CRT", "desative alertas da CNH"). Preencha "documento_citado" e "pessoa".
 8. "consultar_checklist_faltantes": Documentos pendentes ou checklist ("o que falta do Fulano?", "quais faltam da empresa X?", "o que está faltando?"). Preencha "pessoa" se citada.
 9. "apagar_documento": Excluir, descartar ou cancelar documento físico/foto salvo ou recente ("apaga o último documento", "apaga a foto", "cancela esse documento"). Preencha "documento_citado" e "pessoa" se citados.
-10. "fora_de_escopo": Apenas assuntos totalmente alheios à empresa (culinária, futebol, piadas). Vacinas, documentos e dados corporativos NUNCA são fora de escopo.
+10. "cadastrar_conhecimento": Pedidos para salvar, anotar, cadastrar, guardar ou registrar uma nova informação na Base de Conhecimento (chaves PIX, contatos, telefones, links de sistemas). Ex.: "salva o pix do berna é 43859328832", "anota o telefone do financeiro", "guarda esse link", "cadastra o contato do João".
+11. "fora_de_escopo": Apenas assuntos totalmente alheios à empresa (culinária, futebol, piadas). Vacinas, documentos e dados corporativos NUNCA são fora de escopo.
 
 REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
-- Nome citado prevalece: qualquer pessoa citada (cadastrada ou não, ex.: cônjuge como "Nilceia") prevalece sobre o histórico e define "pessoa".
+- Nome citado prevalece: qualquer pessoa citada (cadastrada ou não, ex.: cônjuge como "Nilceia", "Berna") prevalece sobre o histórico e define "pessoa".
 - Reconhecimento da Empresa Delta Plan: "Delta", "Delta Plan", "empresa", "escritório", "sede", "obra", "almoxarifado" referem-se à organização corporativa -> intencao: "pergunta_conteudo", pessoa: "".
 - O termo "Cofre" é repositório geral, NUNCA documento individual. Consultas sobre o cofre são SEMPRE "listar_documentos", documento_citado: "".
 - Uso do contexto: herdar titular do histórico APENAS quando a mensagem atual não contiver sujeito e usar pronomes ("ele", "dele") ou perguntas elípticas ("e a validade?", "e o CPF dele?").
 
 EXEMPLOS OBRIGATÓRIOS:
+- "Quero que salve, o pix do berna é 43859328832" -> {"pedidos": [{"intencao": "cadastrar_conhecimento", "pessoa": "Berna", "tipo_conhecimento": "pix", "titulo_conhecimento": "Chave PIX do Berna", "detalhes_conhecimento": {"chavePix": "43859328832", "tipoChavePix": "cpf", "beneficiario": "Berna"}, "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Salvar chave PIX do Berna 43859328832", "termo_busca": "pix Berna"}]}
+- "anota o telefone do Berna que é 11987654321" -> {"pedidos": [{"intencao": "cadastrar_conhecimento", "pessoa": "Berna", "tipo_conhecimento": "contato", "titulo_conhecimento": "Telefone do Berna", "detalhes_conhecimento": {"telefone": "11987654321", "nome": "Berna"}, "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Salvar telefone do Berna 11987654321", "termo_busca": "telefone Berna"}]}
+- "salva esse link do portal https://portal.delta.com.br" -> {"pedidos": [{"intencao": "cadastrar_conhecimento", "pessoa": "", "tipo_conhecimento": "link", "titulo_conhecimento": "Link do Portal", "detalhes_conhecimento": {"url": "https://portal.delta.com.br", "nomeSistema": "Portal Delta"}, "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Salvar link do portal https://portal.delta.com.br", "termo_busca": "Link Portal"}]}
 - "Eu quero saber onde que fica o escritório da Delta. E eu também quero saber o Pix do João Gabriel." -> {"pedidos": [{"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Onde fica o escritório da Delta Plan?", "termo_busca": "Escritorio Deltaplan"}, {"intencao": "pergunta_conteudo", "pessoa": "João Gabriel", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é a chave PIX do João Gabriel?", "termo_busca": "pix João Gabriel"}]}
 - "me envia o crea e a certidão de casamento do Thomaz" -> {"pedidos": [{"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CREA", "documentos_citados": ["CREA"], "pergunta_completa": "Enviar documento CREA do Thomaz", "termo_busca": "CREA Thomaz"}, {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "Certidão de Casamento", "documentos_citados": ["Certidão de Casamento"], "pergunta_completa": "Enviar certidão de casamento do Thomaz", "termo_busca": "Certidão de Casamento Thomaz"}]}
 - "qual o cpf do thomaz e me manda a certidão de casamento dele" -> {"pedidos": [{"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["cpf"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o CPF do Thomaz?", "termo_busca": "cpf Thomaz"}, {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "Certidão de Casamento", "documentos_citados": ["Certidão de Casamento"], "pergunta_completa": "Enviar certidão de casamento do Thomaz", "termo_busca": "Certidão de Casamento Thomaz"}]}
@@ -1756,7 +1927,6 @@ EXEMPLOS OBRIGATÓRIOS:
 - "quais documentos faltam da empresa X?" -> {"pedidos": [{"intencao": "consultar_checklist_faltantes", "pessoa": "Empresa X", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar documentos faltantes da Empresa X", "termo_busca": ""}]}
 - "o que está faltando?" -> {"pedidos": [{"intencao": "consultar_checklist_faltantes", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar documentos faltantes", "termo_busca": ""}]}
 - "apaga o último documento que mandei" -> {"pedidos": [{"intencao": "apagar_documento", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Apagar o último documento enviado", "termo_busca": ""}]}
-- "apaga a certidão de casamento do fulano" -> {"pedidos": [{"intencao": "apagar_documento", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "certidão de casamento", "documentos_citados": ["certidão de casamento"], "pergunta_completa": "Apagar certidão de casamento do Fulano", "termo_busca": "certidão de casamento Fulano"}]}
 `;
 
   // Limita o histórico recente às últimas 12 mensagens para contexto rico e sem custo excessivo
@@ -1821,6 +1991,10 @@ EXEMPLOS OBRIGATÓRIOS:
       pergunta_completa: primeiro.pergunta_completa,
       termo_busca: primeiro.termo_busca,
       pergunta_reescrita: primeiro.pergunta_reescrita || primeiro.pergunta_completa,
+      tipo_conhecimento: primeiro.tipo_conhecimento,
+      titulo_conhecimento: primeiro.titulo_conhecimento,
+      detalhes_conhecimento: primeiro.detalhes_conhecimento,
+      campo_faltante: primeiro.campo_faltante,
       pedidos: pedidosProcessados,
       tempoMs,
       tokensPrompt: response.usage?.prompt_tokens || 0,
@@ -2186,6 +2360,10 @@ async function executarProcessamentoMensagemChatInterno(dados: {
       pergunta_completa: p.pergunta_completa,
       termo_busca: p.termo_busca,
       pergunta_reescrita: p.pergunta_reescrita || p.pergunta_completa,
+      tipo_conhecimento: p.tipo_conhecimento,
+      titulo_conhecimento: p.titulo_conhecimento,
+      detalhes_conhecimento: p.detalhes_conhecimento,
+      campo_faltante: p.campo_faltante,
       pedidos: [p],
       tempoMs: 0,
       tokensPrompt: 0,
@@ -2563,6 +2741,105 @@ async function executarProcessamentoMensagemChatInterno(dados: {
       }
     }
 
+    // Confirmação ou cancelamento de cadastro/substituição na Base de Conhecimento
+    if (
+      correcaoPendente.campoId === ('cadastrar_conhecimento' as any) ||
+      correcaoPendente.campoId === ('substituir_conhecimento' as any)
+    ) {
+      const msgLimpa = mensagemUsuario.toLowerCase().trim();
+      const querConfirmar =
+        isConfirmacaoSimples(mensagemUsuario) ||
+        /^(sim|s|pode|confirmo|confirma|salva|salvar|pode salvar|substitui|substituir|com certeza|claro|ok|isso)/i.test(msgLimpa);
+      const querCancelar = /^(n[aã]o|n|cancela|cancelar|deixa|esquece|n[aã]o salva|n[aã]o precisa|mantem|manter)/i.test(msgLimpa);
+
+      if (querConfirmar) {
+        let itemSalvo: any = null;
+        const itemInfo = correcaoPendente.itemConhecimento;
+        if (correcaoPendente.campoId === 'substituir_conhecimento' && correcaoPendente.documentoId) {
+          itemSalvo = await atualizarConhecimento(correcaoPendente.documentoId, {
+            titulo: itemInfo?.titulo || correcaoPendente.valorNovo,
+            categoria: itemInfo?.categoria || 'Geral',
+            conteudo: itemInfo?.conteudo,
+            tipo: itemInfo?.tipo || 'regra',
+            dadosEstruturados: itemInfo?.dadosEstruturados,
+          });
+        } else if (itemInfo) {
+          itemSalvo = await adicionarConhecimento({
+            titulo: itemInfo.titulo || correcaoPendente.valorNovo,
+            categoria: itemInfo.categoria || 'Geral',
+            conteudo: itemInfo.conteudo,
+            tipo: itemInfo.tipo || 'regra',
+            dadosEstruturados: itemInfo.dadosEstruturados,
+          });
+        }
+
+        if (itemSalvo) {
+          indexarConhecimentoBackground(itemSalvo).catch((err) =>
+            console.warn('[ChatOrquestrador ⚠️] Erro ao indexar conhecimento:', err)
+          );
+        }
+
+        const tituloFinal = itemSalvo?.titulo || itemInfo?.titulo || correcaoPendente.valorNovo || 'Informação';
+        const textoSucesso =
+          correcaoPendente.campoId === 'substituir_conhecimento'
+            ? `Informações de *${tituloFinal}* atualizadas com sucesso na Base de Conhecimento.`
+            : `Informação *${tituloFinal}* cadastrada com sucesso na Base de Conhecimento.`;
+
+        etapas.push({
+          ordem: 2,
+          nome: 'Cadastro na Base de Conhecimento Confirmado',
+          descricao: `Item "${tituloFinal}" salvo na Base de Conhecimento pelo administrador ${contato.nome}.`,
+          tempoMs: 1,
+        });
+
+        const rastroConh = criarRastroFinal({
+          tipoBusca: 'nome_conhecimento',
+          docsEncontrados: [],
+          docUsado: tituloFinal,
+          enviouAnexo: false,
+          respostaFinal: textoSucesso,
+          modelo: 'Motor Interno',
+        });
+
+        return {
+          textoResposta: textoSucesso,
+          origem: 'motor',
+          intencaoDetectada: 'cadastrar_conhecimento',
+          perguntaReescrita: `Cadastro confirmado: ${tituloFinal}`,
+          rastro: rastroConh,
+        };
+      }
+
+      if (querCancelar) {
+        const tituloItem = correcaoPendente.itemConhecimento?.titulo || correcaoPendente.valorNovo || 'informação';
+        const textoCancelado = `Operação cancelada. A informação *${tituloItem}* não foi salva na Base de Conhecimento.`;
+
+        etapas.push({
+          ordem: 2,
+          nome: 'Cadastro Cancelado pelo Usuário',
+          descricao: `Cadastro da informação "${tituloItem}" cancelado pelo usuário.`,
+          tempoMs: 1,
+        });
+
+        const rastroCanc = criarRastroFinal({
+          tipoBusca: 'nome_conhecimento',
+          docsEncontrados: [],
+          docUsado: tituloItem,
+          enviouAnexo: false,
+          respostaFinal: textoCancelado,
+          modelo: 'Motor Interno',
+        });
+
+        return {
+          textoResposta: textoCancelado,
+          origem: 'motor',
+          intencaoDetectada: 'cadastrar_conhecimento',
+          perguntaReescrita: `Cadastro cancelado: ${tituloItem}`,
+          rastro: rastroCanc,
+        };
+      }
+    }
+
     if (correcaoPendente.campoId === ('silenciar_alerta' as any) && correcaoPendente.documentoId) {
       await silenciarAlertasDocumento(correcaoPendente.documentoId, true);
       const textoSucesso = `Os alertas de vencimento do documento *${correcaoPendente.documentoTitulo || 'solicitado'}* foram desativados. Se o documento for substituído futuramente, os alertas voltarão a funcionar.`;
@@ -2590,7 +2867,13 @@ async function executarProcessamentoMensagemChatInterno(dados: {
     }
 
     const titular = await obterTitularPorNome(correcaoPendente.titularNome);
-    if (titular && correcaoPendente.campoId !== 'silenciar_alerta') {
+    if (
+      titular &&
+      correcaoPendente.campoId !== 'silenciar_alerta' &&
+      correcaoPendente.campoId !== 'apagar_documento' &&
+      correcaoPendente.campoId !== ('cadastrar_conhecimento' as any) &&
+      correcaoPendente.campoId !== ('substituir_conhecimento' as any)
+    ) {
       const campoKey = correcaoPendente.campoId as CampoTitularId;
       const dataHojeStr = new Date().toLocaleDateString('pt-BR');
       titular.campos[campoKey] = {
@@ -2825,7 +3108,12 @@ async function executarProcessamentoMensagemChatInterno(dados: {
     Boolean(classificacao.campos && classificacao.campos.includes('pix')) ||
     (/\b(endere[cç]o)\b/i.test(msgNorm) && citaEmpresaNaMensagem);
 
-  if (!ehDadoPessoalSemTitular && (ehPerguntaConhecimentoEstruturado || intencao === 'pergunta_conteudo')) {
+  if (
+    intencao !== 'cadastrar_conhecimento' &&
+    intencao !== 'apagar_documento' &&
+    !ehDadoPessoalSemTitular &&
+    (ehPerguntaConhecimentoEstruturado || intencao === 'pergunta_conteudo')
+  ) {
     const matchK =
       (await buscarConhecimentoPorNome(classificacao.termo_busca, todosConhecimentos)) ||
       (await buscarConhecimentoPorNome(pergunta_reescrita, todosConhecimentos)) ||
@@ -2895,6 +3183,31 @@ async function executarProcessamentoMensagemChatInterno(dados: {
         origem: 'motor',
         intencaoDetectada: 'pergunta_conteudo',
         perguntaReescrita: classificacao.pergunta_completa || pergunta_reescrita || 'Consulta de chave PIX',
+        buscaUsada: 'Base de Conhecimento Corporativo',
+        similaridade: '0%',
+        rastro,
+      };
+    }
+
+    // Se o pedido era especificamente de contato/telefone e não foi localizado no Conhecimento (Regra 22)
+    const ehPedidoEspecificoContato = /\b(contato|telefone|celular|whatsapp|email|e-mail|ramal)\b/i.test(msgNorm);
+    if (ehPedidoEspecificoContato && pessoa) {
+      const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+      const textoSemContato = `${prefixoSaudacao}Não encontrei contato cadastrado de *${pessoa}* na Base de Conhecimento.`;
+
+      const rastro = criarRastroFinal({
+        tipoBusca: 'nome_conhecimento',
+        docsEncontrados: [],
+        enviouAnexo: false,
+        respostaFinal: textoSemContato,
+        modelo: 'Motor Interno',
+      });
+
+      return {
+        textoResposta: textoSemContato,
+        origem: 'motor',
+        intencaoDetectada: 'pergunta_conteudo',
+        perguntaReescrita: classificacao.pergunta_completa || pergunta_reescrita || `Consulta de contato de ${pessoa}`,
         buscaUsada: 'Base de Conhecimento Corporativo',
         similaridade: '0%',
         rastro,
@@ -4509,6 +4822,429 @@ async function executarProcessamentoMensagemChatInterno(dados: {
         valorNovo: 'excluído',
         documentoId: docAlvo.id,
         documentoTitulo: docAlvo.titulo,
+      },
+    };
+  }
+
+  // ============================================================================
+  // CASO 2.5: CADASTRAR CONHECIMENTO (Base de Conhecimento pelo WhatsApp/Chat)
+  // ============================================================================
+  if (intencao === 'cadastrar_conhecimento') {
+    // 1. Verificação rígida de permissão: apenas perfil admin pode cadastrar
+    const ehAdmin =
+      (contato as any)?.perfil === 'admin' ||
+      contato.nivelAcesso === 'diretoria' ||
+      contato.ficha?.nivelAcesso === 'diretoria';
+
+    if (!ehAdmin) {
+      const textoBloqueio =
+        'Você não tem permissão para cadastrar informações na Base de Conhecimento da VEGA. Apenas administradores podem realizar cadastros.';
+      etapas.push({
+        ordem: 2,
+        nome: 'Bloqueio de Permissão (Base de Conhecimento)',
+        descricao: `Tentativa de cadastro na Base de Conhecimento por usuário não administrador (${contato.nome}).`,
+        tempoMs: 1,
+      });
+      const rastroBloq = criarRastroFinal({
+        tipoBusca: 'nome_conhecimento',
+        docsEncontrados: [],
+        enviouAnexo: false,
+        respostaFinal: textoBloqueio,
+        modelo: 'Motor Interno',
+      });
+      return {
+        textoResposta: textoBloqueio,
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: 'Cadastro não autorizado na Base de Conhecimento',
+        rastro: rastroBloq,
+      };
+    }
+
+    const tipoConhecimento = classificacao.tipo_conhecimento || 'outro';
+    const detalhes = classificacao.detalhes_conhecimento || {};
+    const pessoaAlvo = classificacao.pessoa || detalhes.beneficiario || detalhes.nome || '';
+    let tituloItem = classificacao.titulo_conhecimento || '';
+    let conteudoFinal = '';
+    let dadosEstruturados: any = undefined;
+    let textoPerguntaFaltante = '';
+    let textoConfirmacao = '';
+
+    // A) Processar por tipo de conhecimento
+    if (tipoConhecimento === 'pix') {
+      let chave = (detalhes.chavePix || '').trim();
+      // Fallback: se a chave não veio nos detalhes, tentar extrair da mensagem
+      if (!chave) {
+        const matchCpfCnpj = mensagemUsuario.match(/\b\d{11,14}\b/);
+        const matchEmail = mensagemUsuario.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+        const matchTel = mensagemUsuario.match(/(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)?9?\d{4}[-\s]?\d{4}/);
+        if (matchCpfCnpj) chave = matchCpfCnpj[0];
+        else if (matchEmail) chave = matchEmail[0];
+        else if (matchTel) chave = matchTel[0].replace(/\D/g, '');
+      }
+
+      let tipoChave = (detalhes.tipoChavePix || '').trim().toLowerCase();
+      if (chave && !tipoChave) {
+        tipoChave = deduzirTipoChavePix(chave);
+      }
+
+      if (!chave) {
+        textoPerguntaFaltante = 'Qual é a chave PIX que você deseja salvar na Base de Conhecimento?';
+      } else if (!tipoChave) {
+        textoPerguntaFaltante = `Identifiquei a chave PIX *${chave}*, mas qual é o tipo dela (CPF, CNPJ, telefone, e-mail ou chave aleatória)?`;
+      }
+
+      if (!textoPerguntaFaltante) {
+        const beneficiario = detalhes.beneficiario || pessoaAlvo || '';
+        const banco = detalhes.banco || '';
+        if (!tituloItem) {
+          tituloItem = beneficiario ? `Chave PIX do ${beneficiario}` : `Chave PIX ${chave}`;
+        }
+        conteudoFinal = `Chave PIX: ${chave}\nTipo: ${tipoChave.toUpperCase()}${beneficiario ? `\nTitular: ${beneficiario}` : ''}${banco ? `\nBanco: ${banco}` : ''}`;
+        dadosEstruturados = {
+          chave,
+          tipoChave,
+          titular: beneficiario,
+          banco,
+        };
+        const alvoFormatado = beneficiario ? `chave PIX do ${beneficiario}` : `chave PIX`;
+        textoConfirmacao = `Vou salvar a *${alvoFormatado}*: *${chave}* (tipo: ${tipoChave.toUpperCase()}${banco ? `, banco: ${banco}` : ''}). Confirma?`;
+      }
+    } else if (tipoConhecimento === 'contato') {
+      let telefone = (detalhes.telefone || '').trim();
+      let email = (detalhes.email || '').trim();
+      let nomeContato = detalhes.nome || pessoaAlvo || '';
+
+      if (!telefone) {
+        const matchTel = mensagemUsuario.match(/(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)?9?\d{4}[-\s]?\d{4}/);
+        if (matchTel) telefone = matchTel[0].replace(/\D/g, '');
+      }
+      if (!email) {
+        const matchEmail = mensagemUsuario.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+        if (matchEmail) email = matchEmail[0];
+      }
+
+      if (!telefone && !email) {
+        textoPerguntaFaltante = nomeContato
+          ? `Qual é o telefone ou e-mail de *${nomeContato}* que você deseja cadastrar?`
+          : 'Qual é o telefone ou e-mail do contato que você deseja salvar?';
+      }
+
+      if (!textoPerguntaFaltante) {
+        if (!nomeContato) nomeContato = 'Contato';
+        if (!tituloItem) {
+          tituloItem = `Telefone ${nomeContato}`;
+        }
+        conteudoFinal = `Nome: ${nomeContato}${telefone ? `\nTelefone: ${telefone}` : ''}${email ? `\nE-mail: ${email}` : ''}${detalhes.cargo ? `\nCargo: ${detalhes.cargo}` : ''}${detalhes.setor ? `\nSetor: ${detalhes.setor}` : ''}`;
+        dadosEstruturados = {
+          nome: nomeContato,
+          telefone,
+          email,
+          funcao: detalhes.cargo || (detalhes as any).funcao || '',
+          cargo: detalhes.cargo || '',
+          setor: detalhes.setor || '',
+        };
+        const canal =
+          telefone && email
+            ? `telefone *${telefone}* e e-mail *${email}*`
+            : telefone
+            ? `telefone *${telefone}*`
+            : `e-mail *${email}*`;
+        textoConfirmacao = `Vou salvar o *contato de ${nomeContato}*: ${canal}. Confirma?`;
+      }
+    } else if (tipoConhecimento === 'link') {
+      let url = (detalhes.url || '').trim();
+      if (!url) {
+        const matchUrl = mensagemUsuario.match(/https?:\/\/[^\s]+/i);
+        if (matchUrl) url = matchUrl[0];
+      }
+      const nomeSistema = detalhes.nomeSistema || '';
+
+      if (!url) {
+        textoPerguntaFaltante = 'Qual é o link ou URL que você deseja salvar na Base de Conhecimento?';
+      }
+
+      if (!textoPerguntaFaltante) {
+        if (!tituloItem) {
+          tituloItem = nomeSistema ? `Link do ${nomeSistema}` : `Link ${url}`;
+        }
+        conteudoFinal = `Link / Sistema: ${nomeSistema || tituloItem}\nURL: ${url}`;
+        dadosEstruturados = {
+          link: url,
+          nomeSistema,
+          finalidade: '',
+        };
+        textoConfirmacao = `Vou salvar o *link ${nomeSistema ? `do ${nomeSistema}` : ''}*: *${url}*. Confirma?`;
+      }
+    } else {
+      if (!tituloItem) tituloItem = classificacao.termo_busca || 'Informação';
+      conteudoFinal = mensagemUsuario;
+      textoConfirmacao = `Vou salvar *${tituloItem}* na Base de Conhecimento. Confirma?`;
+    }
+
+    // Se faltou informação essencial, perguntar antes de prosseguir
+    if (textoPerguntaFaltante) {
+      etapas.push({
+        ordem: 2,
+        nome: 'Solicitação de Campo Faltante',
+        descricao: `Solicitada informação complementar para cadastro na Base de Conhecimento: "${textoPerguntaFaltante}".`,
+        tempoMs: 1,
+      });
+      const rastroFaltante = criarRastroFinal({
+        tipoBusca: 'nome_conhecimento',
+        docsEncontrados: [],
+        enviouAnexo: false,
+        respostaFinal: textoPerguntaFaltante,
+        modelo: 'Motor Interno',
+      });
+      return {
+        textoResposta: textoPerguntaFaltante,
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: 'Identificação de campo pendente para cadastro',
+        rastro: rastroFaltante,
+      };
+    }
+
+    // 2. Verificar se já existe item com mesmo nome/chave na Base de Conhecimento (Requisito 4)
+    const todosConhecimentos = await obterTodosConhecimentos();
+    let itemExistente: ItemConhecimento | null = null;
+
+    if (tituloItem) {
+      const titNorm = normalizarParaBusca(tituloItem);
+      for (const k of todosConhecimentos) {
+        const kTitNorm = normalizarParaBusca(k.titulo);
+        if (
+          titNorm === kTitNorm ||
+          (titNorm.length >= 5 && kTitNorm.includes(titNorm)) ||
+          (kTitNorm.length >= 5 && titNorm.includes(kTitNorm))
+        ) {
+          itemExistente = k;
+          break;
+        }
+      }
+    }
+
+    if (!itemExistente && tipoConhecimento === 'pix' && dadosEstruturados?.chave) {
+      const chaveLimpa = dadosEstruturados.chave.replace(/\D/g, '');
+      for (const k of todosConhecimentos) {
+        if (k.tipo === 'pix' && (k.dadosEstruturados as any)?.chave) {
+          const kChaveLimpa = String((k.dadosEstruturados as any).chave).replace(/\D/g, '');
+          if (
+            (chaveLimpa && chaveLimpa === kChaveLimpa) ||
+            (k.dadosEstruturados as any).chave.toLowerCase() === dadosEstruturados.chave.toLowerCase()
+          ) {
+            itemExistente = k;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!itemExistente && tipoConhecimento === 'contato' && (pessoaAlvo || dadosEstruturados?.telefone)) {
+      const telLimpo = (dadosEstruturados?.telefone || '').replace(/\D/g, '');
+      const nomeAlvoNorm = pessoaAlvo ? normalizarParaBusca(pessoaAlvo) : '';
+      for (const k of todosConhecimentos) {
+        if (k.tipo === 'contato') {
+          const kTelLimpo = ((k.dadosEstruturados as any)?.telefone || '').replace(/\D/g, '');
+          const kNomeNorm = (k.dadosEstruturados as any)?.nome
+            ? normalizarParaBusca((k.dadosEstruturados as any).nome)
+            : '';
+          if (
+            (telLimpo && telLimpo === kTelLimpo) ||
+            (nomeAlvoNorm &&
+              kNomeNorm &&
+              (nomeAlvoNorm === kNomeNorm ||
+                nomeAlvoNorm.includes(kNomeNorm) ||
+                kNomeNorm.includes(nomeAlvoNorm)))
+          ) {
+            itemExistente = k;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!itemExistente && tipoConhecimento === 'link' && dadosEstruturados?.link) {
+      for (const k of todosConhecimentos) {
+        if (
+          k.tipo === 'link' &&
+          (k.dadosEstruturados as any)?.link?.toLowerCase() === dadosEstruturados.link.toLowerCase()
+        ) {
+          itemExistente = k;
+          break;
+        }
+      }
+    }
+
+    // Se já existe, perguntar se substitui
+    if (itemExistente) {
+      const textoSubstituicao = `Já existe um item cadastrado como *${itemExistente.titulo}*. Deseja substituir as informações existentes? Responda *Sim* para confirmar ou *Não* para cancelar.`;
+
+      const itemParaSalvar: any = {
+        titulo: tituloItem || itemExistente.titulo,
+        categoria:
+          tipoConhecimento === 'pix'
+            ? 'Financeiro'
+            : tipoConhecimento === 'link'
+            ? 'Sistemas'
+            : tipoConhecimento === 'contato'
+            ? 'Contatos'
+            : 'Geral',
+        conteudo: conteudoFinal,
+        tipo:
+          tipoConhecimento === 'pix'
+            ? 'pix'
+            : tipoConhecimento === 'link'
+            ? 'link'
+            : tipoConhecimento === 'contato'
+            ? 'contato'
+            : 'regra',
+        dadosEstruturados,
+      };
+
+      if (contato.telefone) {
+        try {
+          const numCanonica = normalizarNumeroCanonica(contato.telefone);
+          const conversaId = `wa-${numCanonica}`;
+          await salvarPendenciaDocumentoWhatsApp({
+            conversaId,
+            remetenteNumero: contato.telefone,
+            remetenteJid: `${numCanonica}@s.whatsapp.net`,
+            documentoId: '',
+            tipoPendencia: 'substituicao_conhecimento' as any,
+            dadosDetectados: {
+              tipoItem: tipoConhecimento,
+              tituloItem: tituloItem || itemExistente.titulo,
+              itemIdExistente: itemExistente.id,
+              pessoaAlvo,
+              titulo: itemParaSalvar.titulo,
+              categoria: itemParaSalvar.categoria,
+              conteudo: itemParaSalvar.conteudo,
+              tipo: itemParaSalvar.tipo,
+              dadosEstruturados: itemParaSalvar.dadosEstruturados,
+            },
+          });
+        } catch (ePend) {
+          console.warn('[ChatOrquestrador ⚠️] Erro ao salvar pendência de substituição de conhecimento:', ePend);
+        }
+      }
+
+      etapas.push({
+        ordem: 2,
+        nome: 'Item Existente na Base de Conhecimento',
+        descricao: `Identificado item duplicado "${itemExistente.titulo}". Solicitada confirmação para substituição.`,
+        tempoMs: 1,
+      });
+
+      const rastroSubst = criarRastroFinal({
+        tipoBusca: 'nome_conhecimento',
+        docsEncontrados: [],
+        docUsado: itemExistente.titulo,
+        enviouAnexo: false,
+        respostaFinal: textoSubstituicao,
+        modelo: 'Motor Interno',
+      });
+
+      return {
+        textoResposta: textoSubstituicao,
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: `Substituir item existente: ${itemExistente.titulo}`,
+        rastro: rastroSubst,
+        correcaoPendente: {
+          titularId: '',
+          titularNome: pessoaAlvo || 'Base de Conhecimento',
+          campoId: 'substituir_conhecimento' as any,
+          campoLabel: 'substituição na Base de Conhecimento',
+          valorAnterior: itemExistente.titulo,
+          valorNovo: tituloItem || itemExistente.titulo,
+          documentoId: itemExistente.id,
+          documentoTitulo: itemExistente.titulo,
+          itemConhecimento: itemParaSalvar,
+        },
+      };
+    }
+
+    // Se NÃO existe duplicado, formula a confirmação padrão
+    const itemParaSalvar: any = {
+      titulo: tituloItem,
+      categoria:
+        tipoConhecimento === 'pix'
+          ? 'Financeiro'
+          : tipoConhecimento === 'link'
+          ? 'Sistemas'
+          : tipoConhecimento === 'contato'
+          ? 'Contatos'
+          : 'Geral',
+      conteudo: conteudoFinal,
+      tipo:
+        tipoConhecimento === 'pix'
+          ? 'pix'
+          : tipoConhecimento === 'link'
+          ? 'link'
+          : tipoConhecimento === 'contato'
+          ? 'contato'
+          : 'regra',
+      dadosEstruturados,
+    };
+
+    if (contato.telefone) {
+      try {
+        const numCanonica = normalizarNumeroCanonica(contato.telefone);
+        const conversaId = `wa-${numCanonica}`;
+        await salvarPendenciaDocumentoWhatsApp({
+          conversaId,
+          remetenteNumero: contato.telefone,
+          remetenteJid: `${numCanonica}@s.whatsapp.net`,
+          documentoId: '',
+          tipoPendencia: 'cadastro_conhecimento' as any,
+          dadosDetectados: {
+            tipoItem: tipoConhecimento,
+            tituloItem,
+            pessoaAlvo,
+            titulo: itemParaSalvar.titulo,
+            categoria: itemParaSalvar.categoria,
+            conteudo: itemParaSalvar.conteudo,
+            tipo: itemParaSalvar.tipo,
+            dadosEstruturados: itemParaSalvar.dadosEstruturados,
+          },
+        });
+      } catch (ePend) {
+        console.warn('[ChatOrquestrador ⚠️] Erro ao salvar pendência de cadastro de conhecimento:', ePend);
+      }
+    }
+
+    etapas.push({
+      ordem: 2,
+      nome: 'Confirmação Prévia de Cadastro',
+      descricao: `Identificado cadastro de conhecimento ("${tituloItem}"). Solicitando confirmação antes de gravar.`,
+      tempoMs: 1,
+    });
+
+    const rastroConf = criarRastroFinal({
+      tipoBusca: 'nome_conhecimento',
+      docsEncontrados: [],
+      docUsado: tituloItem,
+      enviouAnexo: false,
+      respostaFinal: textoConfirmacao,
+      modelo: 'Motor Interno',
+    });
+
+    return {
+      textoResposta: textoConfirmacao,
+      origem: 'motor',
+      intencaoDetectada: 'cadastrar_conhecimento',
+      perguntaReescrita: `Confirmar cadastro: ${tituloItem}`,
+      rastro: rastroConf,
+      correcaoPendente: {
+        titularId: '',
+        titularNome: pessoaAlvo || 'Base de Conhecimento',
+        campoId: 'cadastrar_conhecimento' as any,
+        campoLabel: 'cadastro na Base de Conhecimento',
+        valorAnterior: '',
+        valorNovo: tituloItem,
+        itemConhecimento: itemParaSalvar,
       },
     };
   }

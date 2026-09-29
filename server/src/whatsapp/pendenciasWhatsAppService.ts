@@ -1,7 +1,15 @@
 import OpenAI from 'openai';
 import { getSupabaseClient } from '../db/supabaseClient.js';
 import { chamarChatComTelemetria } from '../ai/telemetriaIaService.js';
-import { salvarOuAtualizarTitular, obterTodosTitulares, resolverTitularCadastrado, removerDocumento } from '../storage.js';
+import {
+  salvarOuAtualizarTitular,
+  obterTodosTitulares,
+  resolverTitularCadastrado,
+  removerDocumento,
+  adicionarConhecimento,
+  atualizarConhecimento,
+} from '../storage.js';
+import { indexarConhecimentoBackground } from '../indexador/indexadorAutomatico.js';
 import { formatarHorarioBrasilia } from '../utils/dataHoraUtils.js';
 
 export type TipoPendenciaWhatsApp =
@@ -11,7 +19,9 @@ export type TipoPendenciaWhatsApp =
   | 'falta_ambos'
   | 'novo_titular'
   | 'duplicidade'
-  | 'confirmacao_exclusao';
+  | 'confirmacao_exclusao'
+  | 'cadastro_conhecimento'
+  | 'substituicao_conhecimento';
 
 export interface PendenciaDocumentoWhatsApp {
   id: string;
@@ -151,6 +161,114 @@ export async function processarRespostaPendenciaWhatsApp(
   console.log(
     `[Pendencias WhatsApp 🔍] Processando resposta para pendência "${tipoPendencia}" de "${nomeUsuario}" (Perfil: ${perfilUsuario}): "${textoLimpo}"`
   );
+
+  // -------------------------------------------------------------
+  // CASO ESPECIAL: CONFIRMAÇÃO DE CADASTRO OU SUBSTITUIÇÃO NA BASE DE CONHECIMENTO
+  // (Regra 22: Confirmação prévia obrigatória e permissão de admin)
+  // -------------------------------------------------------------
+  if (tipoPendencia === 'cadastro_conhecimento' || tipoPendencia === 'substituicao_conhecimento') {
+    if (perfilUsuario !== 'admin') {
+      await supabase.from('pendencias_documento_whatsapp').delete().eq('id', pendencia.id);
+      return 'Você não tem permissão para cadastrar informações na Base de Conhecimento da VEGA. Apenas administradores podem realizar cadastros.';
+    }
+
+    const dados = pendencia.dados_detectados || {};
+    const tituloItem = dados.titulo || 'informação';
+    const tipoItem = dados.tipo || 'regra';
+    const pessoaAlvo = dados.pessoa || dados.dadosEstruturados?.titular || dados.dadosEstruturados?.beneficiario || dados.dadosEstruturados?.nome || '';
+
+    let querConfirmar = false;
+    let querCancelar = false;
+
+    if (openai) {
+      try {
+        const respConf = await chamarChatComTelemetria(
+          openai,
+          {
+            model: 'gpt-5.4-mini',
+            messages: [
+              {
+                role: 'system',
+                content: `O usuário foi perguntado se confirma salvar ou substituir a informação "${tituloItem}" na Base de Conhecimento.
+Classifique a resposta do usuário em:
+- "confirmar" (se ele disser sim, confirmar, salva, salvar, pode salvar, ok, com certeza, pode, confirma, substitui, pode substituir, claro)
+- "cancelar" (se ele disser não, cancelar, deixa, não salva, esquece, cancela, não precisa, não quero)
+- "outro" (se fizer outra pergunta ou mudar de assunto)
+Retorne estritamente JSON: { "decisao": "confirmar" | "cancelar" | "outro" }`,
+              },
+              { role: 'user', content: textoLimpo },
+            ],
+            response_format: { type: 'json_object' },
+            temperature: 0.1,
+          },
+          { motivo: 'whatsapp_pendencia_confirmar_conhecimento' }
+        );
+        const parsedConf = JSON.parse(respConf.choices[0]?.message?.content || '{}');
+        if (parsedConf.decisao === 'confirmar') querConfirmar = true;
+        else if (parsedConf.decisao === 'cancelar') querCancelar = true;
+      } catch (errConf) {
+        console.warn('[Pendencias WhatsApp ⚠️] Erro ao classificar confirmação de conhecimento com IA:', errConf);
+      }
+    }
+
+    if (!querConfirmar && !querCancelar) {
+      if (/^(sim|s|pode|confirmo|confirma|salva|salvar|pode salvar|substitui|substituir|com certeza|claro|ok|isso)/i.test(textoLimpo)) {
+        querConfirmar = true;
+      } else if (/^(n[aã]o|n|cancela|cancelar|deixa|esquece|n[aã]o salva|n[aã]o precisa)/i.test(textoLimpo)) {
+        querCancelar = true;
+      }
+    }
+
+    if (querConfirmar) {
+      let itemSalvo: any;
+      if (tipoPendencia === 'substituicao_conhecimento' && dados.itemIdExistente) {
+        itemSalvo = await atualizarConhecimento(dados.itemIdExistente, {
+          titulo: dados.titulo,
+          categoria: dados.categoria,
+          conteudo: dados.conteudo,
+          tipo: dados.tipo as any,
+          dadosEstruturados: dados.dadosEstruturados,
+        });
+      } else {
+        itemSalvo = await adicionarConhecimento({
+          titulo: dados.titulo,
+          categoria: dados.categoria,
+          conteudo: dados.conteudo,
+          tipo: dados.tipo as any,
+          dadosEstruturados: dados.dadosEstruturados,
+        });
+      }
+
+      if (itemSalvo) {
+        try {
+          await indexarConhecimentoBackground(itemSalvo);
+        } catch (eIdx) {
+          console.warn('[Pendencias WhatsApp ⚠️] Falha na indexação em background de conhecimento:', eIdx);
+        }
+      }
+
+      await supabase.from('pendencias_documento_whatsapp').delete().eq('id', pendencia.id);
+
+      if (tipoItem === 'pix') {
+        const benef = pessoaAlvo ? ` de *${pessoaAlvo}*` : '';
+        return `Chave PIX${benef} salva com sucesso na Base de Conhecimento!`;
+      } else if (tipoItem === 'contato') {
+        const cont = pessoaAlvo ? ` de *${pessoaAlvo}*` : '';
+        return `Contato${cont} salvo com sucesso na Base de Conhecimento!`;
+      } else {
+        return `*${tituloItem}* salvo com sucesso na Base de Conhecimento!`;
+      }
+    }
+
+    if (querCancelar) {
+      await supabase.from('pendencias_documento_whatsapp').delete().eq('id', pendencia.id);
+      return 'Operação cancelada. A informação não foi salva na Base de Conhecimento.';
+    }
+
+    // Se o usuário falou de outro assunto, cancela a pendência e deixa seguir para o chat geral
+    await supabase.from('pendencias_documento_whatsapp').delete().eq('id', pendencia.id);
+    return null;
+  }
 
   // -------------------------------------------------------------
   // CASO ESPECIAL: CONFIRMAÇÃO DE EXCLUSÃO DE DOCUMENTO
