@@ -220,11 +220,10 @@ export async function buscarConhecimento(
       }
     }
 
-    // 4. Termos no Conteúdo da Instrução -> 60 (ou 75 se match forte de múltiplas palavras-chave)
-    // Exemplo: "qual o prazo de implantação dos projetos de IA"
+    // 4. Termos no Conteúdo da Instrução -> max 60 (Ponto 12: nunca atingir >= 70 apenas por palavras no conteúdo)
     if (textoLimpo.length >= 3) {
       if (conteudoNorm.includes(textoLimpo)) {
-        score = Math.max(score, 75);
+        score = Math.max(score, 60);
       } else {
         const palavrasBusca = textoLimpo.split(/\s+/).filter((p) => p.length >= 3);
         if (palavrasBusca.length > 0) {
@@ -232,9 +231,9 @@ export async function buscarConhecimento(
           const proporcaoConteudo = presentesNoConteudo.length / palavrasBusca.length;
 
           if (proporcaoConteudo >= 0.75 && presentesNoConteudo.length >= 2) {
-            score = Math.max(score, 75); // Match conceitual forte no conteúdo
+            score = Math.max(score, 55);
           } else if (proporcaoConteudo >= 0.5) {
-            score = Math.max(score, 60);
+            score = Math.max(score, 40);
           }
         }
       }

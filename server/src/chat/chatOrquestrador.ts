@@ -550,8 +550,29 @@ export function localizarDocumentoCitadoNoCofre(
     .replace(/[\u0300-\u036f]/g, '')
     .trim();
 
-  // 1. Match direto no catálogo completo por título ou arquivo (independente de titular suposto)
+  // 1. Match direto por correspondência exata do título ou arquivo completo
   for (const doc of todosDocs) {
+    const docTitNorm = doc.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    const docArqNorm = doc.arquivo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    if (docTitNorm === termoNorm || docArqNorm === termoNorm) {
+      if (!titularAlvo || titularCorresponde(doc.titular, titularAlvo) || docTitNorm.includes(termoNorm)) {
+        return doc;
+      }
+    }
+  }
+
+  // 2. Se houver titularAlvo válido, restringe o catálogo estritamente a ele (Regras 8 e 20)
+  // Se o titular não tiver documentos cadastrados, NUNCA restaurar o catálogo geral!
+  const catalogo = titularAlvo
+    ? todosDocs.filter((d) => titularCorresponde(d.titular, titularAlvo))
+    : todosDocs;
+
+  if (catalogo.length === 0) {
+    return null;
+  }
+
+  // 3. Match no catálogo do titular por título ou arquivo (respeitando o titular informado)
+  for (const doc of catalogo) {
     const docTitNorm = doc.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
     const docArqNorm = doc.arquivo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
     if (docTitNorm === termoNorm || docArqNorm === termoNorm || termoNorm === docTitNorm || termoNorm === docArqNorm) {
@@ -561,15 +582,6 @@ export function localizarDocumentoCitadoNoCofre(
     if (termoNorm.length >= 4 && (docTitNorm.includes(termoNorm) || termoNorm.includes(docTitNorm))) {
       return doc;
     }
-  }
-
-  // Se houver titularAlvo válido, tenta filtrar, mas se o filtro esvaziar, mantém o catálogo completo
-  let catalogo = titularAlvo
-    ? todosDocs.filter((d) => titularCorresponde(d.titular, titularAlvo))
-    : todosDocs;
-
-  if (catalogo.length === 0) {
-    catalogo = todosDocs;
   }
 
   // 2. Se o termo cita sigla técnica ou tipo específico (ART, RRT, CREA, CNH, CRT, etc.)
@@ -586,7 +598,12 @@ export function localizarDocumentoCitadoNoCofre(
 
     if (tipoIdentificado) {
       const tipoIdNorm = tipoIdentificado.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-      if (tipoNorm === tipoIdNorm || titNorm.includes(tipoIdNorm) || arqNorm.includes(tipoIdNorm)) {
+      if (
+        tipoNorm === tipoIdNorm ||
+        titNorm.includes(tipoIdNorm) ||
+        arqNorm.includes(tipoIdNorm) ||
+        (tipoIdNorm.includes('dispensa') && (titNorm.includes('dispensa') || arqNorm.includes('dispensa')))
+      ) {
         return true;
       }
     }
@@ -630,9 +647,6 @@ export function localizarDocumentoCitadoNoCofre(
   for (const doc of catalogo) {
     const docTitNorm = doc.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
     if (palavrasTermo.length >= 2 && palavrasTermo.every((p) => docTitNorm.includes(p))) {
-      return doc;
-    }
-    if (palavrasTermo.length >= 1 && palavrasTermo.some((p) => p.length >= 5 && docTitNorm.includes(p))) {
       return doc;
     }
   }
@@ -1226,9 +1240,14 @@ export async function buscarConhecimentoPorNome(
         const partesTitular = titular ? titular.split(/\s+/).filter((pt: string) => pt.length >= 3) : [];
         const matchPartes = partesTitular.length > 0 && partesTitular.some((pt: string) => termoNorm.includes(pt));
 
+        const titItemSemGenerico = titItem.replace(/\b(chave|pix)\b/g, '').trim();
+        const bateuTitItem =
+          (titItemSemGenerico.length >= 3 && termoNorm.includes(titItemSemGenerico)) ||
+          (termoNorm.includes(titItem) && titItemSemGenerico.length >= 3);
+
         if (
           (titular && (termoNorm.includes(titular) || titular.includes(termoNorm) || matchPartes)) ||
-          (titItem && (termoNorm.includes(titItem) || titItem.includes(termoNorm)))
+          bateuTitItem
         ) {
           return { item: p, score: 100 };
         }
@@ -1244,6 +1263,21 @@ export async function buscarConhecimentoPorNome(
 
       // Se a mensagem foi puramente genérica ("qual o pix?", "me manda a chave pix") e só existe 1 chave
       if (itensPix.length === 1) {
+        const dados = (itensPix[0].dadosEstruturados as any) || {};
+        const tipoChave = (dados.tipoChave || '').toLowerCase();
+        const titular = (dados.titular || '').toLowerCase();
+        const titItem = (itensPix[0].titulo || '').toLowerCase();
+
+        const ehPessoaFisica =
+          tipoChave === 'cpf' ||
+          (!/delta\s*plan|ltda|eireli|me\b|epp\b|engenharia/i.test(titular) &&
+            !/delta\s*plan|empresa|sede/i.test(titItem));
+
+        // Ponto 4: Pergunta genérica de PIX sem titular deve perguntar de quem é se for de pessoa física!
+        if (ehPessoaFisica) {
+          return null;
+        }
+
         return { item: itensPix[0], score: 100 };
       }
     }
@@ -1346,9 +1380,38 @@ export async function buscarConhecimentoPorNome(
         return { item: consolidado, score: 100 };
       }
 
-      // Se só existir 1 local cadastrado e a pessoa perguntou onde fica ou como chegar
+      // 3. Se houver termos específicos na pergunta que não casaram com nenhum local, NUNCA entregar!
+      // (Princípio Geral: nunca entregar local divergente do pedido)
+      const palavrasIgnoradasLocal = new Set([
+        'onde', 'fica', 'e', 'é', 'como', 'chegar', 'chego', 'qual', 'o', 'a', 'os', 'as',
+        'de', 'do', 'da', 'dos', 'das', 'endereco', 'endereço', 'local', 'localizacao',
+        'localização', 'por', 'favor', 'delta', 'plan', 'deltaplan', 'empresa', 'escritorio',
+        'escritório', 'sede'
+      ]);
+      const termosEspecificosLocal = termoNorm
+        .split(/\s+/)
+        .filter((w) => w.length >= 3 && !palavrasIgnoradasLocal.has(w));
+
+      if (termosEspecificosLocal.length > 0) {
+        return null;
+      }
+
+      // Se a consulta for puramente genérica sobre a sede/escritório da empresa e existir 1 local compatível
       if (itensLocal.length === 1) {
-        return { item: itensLocal[0], score: 100 };
+        const d = (itensLocal[0].dadosEstruturados as any) || {};
+        const tit = normalizarParaBusca(itensLocal[0].titulo || '');
+        const nomeL = normalizarParaBusca(d.nomeLocal || '');
+        const ehSedeOuEscritorio =
+          tit.includes('escritorio') ||
+          tit.includes('sede') ||
+          tit.includes('delta') ||
+          nomeL.includes('escritorio') ||
+          nomeL.includes('sede') ||
+          nomeL.includes('delta');
+
+        if (ehSedeOuEscritorio) {
+          return { item: itensLocal[0], score: 100 };
+        }
       }
     }
   }
@@ -1443,11 +1506,19 @@ export function posProcessarItemPedido(
   let pessoaCitadaNaMensagem: string | undefined = undefined;
   if (pessoa) {
     const pNorm = normalizarParaBusca(pessoa);
-    if (
-      itemNorm.includes(pNorm) ||
-      msgNorm.includes(pNorm) ||
-      pNorm.split(/\s+/).some((parte: string) => parte.length >= 3 && (itemNorm.includes(parte) || msgNorm.includes(parte)))
-    ) {
+    const palavrasComunsIgnoradas = new Set(['servico', 'servicos', 'engenharia', 'empresa', 'ltda', 'me', 'eireli', 'construcoes', 'comercio']);
+    const partesRelevantes = pNorm.split(/\s+/).filter((parte) => parte.length >= 3 && !palavrasComunsIgnoradas.has(parte));
+
+    // Ponto 7: Match por nome completo ou por partes relevantes exclusivas (sem casar palavras genéricas avulsas como "serviços")
+    const matchCompleto = itemNorm.includes(pNorm) || msgNorm.includes(pNorm);
+    const matchParteRelevante =
+      partesRelevantes.length > 0 &&
+      partesRelevantes.some((parte) => {
+        const reg = new RegExp(`\\b${parte}\\b`, 'i');
+        return reg.test(itemNorm) || reg.test(msgNorm);
+      });
+
+    if (matchCompleto || matchParteRelevante) {
       pessoaCitadaNaMensagem = pessoa;
     }
   }
@@ -1458,12 +1529,16 @@ export function posProcessarItemPedido(
     if (matchPessoa) {
       const candidato = matchPessoa[1].trim();
       const candNorm = normalizarParaBusca(candidato);
-      const ehPalavraIgnorada = /\b(documento|pdf|arquivo|certidao|contrato|alvara|cnh|rg|empresa|delta|deltaplan|registro|casamento|nascimento|mae|pai|filiacao|resumo|vacina|covid|escrit[oó]rio|sede|filial|obra|almoxarifado|dep[oó]sito|canteiro|local|localiza[cç][aã]o|sistema|app|portal|chave|pix|conta|banco|contato|suporte)\b/i.test(candNorm);
+      const ehPalavraIgnorada = /\b(documento|pdf|arquivo|certidao|contrato|alvara|cnh|rg|empresa|delta|deltaplan|registro|casamento|nascimento|mae|pai|filiacao|resumo|vacina|covid|escrit[oó]rio|sede|filial|obra|almoxarifado|dep[oó]sito|canteiro|local|localiza[cç][aã]o|sistema|app|portal|chave|pix|conta|banco|contato|suporte|servico|servicos|militar)\b/i.test(candNorm);
       if (!ehPalavraIgnorada) {
         pessoaCitadaNaMensagem = candidato;
       }
     }
   }
+
+  const temPronomeExplicitoGeral =
+    /\b(dele|dela|ele|ela|do mesmo|da mesma)\b/i.test(itemNorm) ||
+    /\b(dele|dela|ele|ela|do mesmo|da mesma)\b/i.test(msgNorm);
 
   // Regra 16 com Tolerância de Grafia e Apelidos:
   if (pessoaCitadaNaMensagem) {
@@ -1477,7 +1552,7 @@ export function posProcessarItemPedido(
       pessoa = pessoaCitadaNaMensagem;
     }
     origemPessoa = 'mensagem_atual';
-  } else if (pessoa) {
+  } else if (temPronomeExplicitoGeral && pessoa) {
     const resAmb = resolverTitularComAmbiguidade(pessoa, titulares);
     if (resAmb.ambiguo) {
       ambiguidadeTitulares = resAmb.candidatos.map((t) => t.nome);
@@ -1486,6 +1561,10 @@ export function posProcessarItemPedido(
     } else {
       pessoa = '';
     }
+    origemPessoa = 'contexto';
+  } else {
+    pessoa = '';
+    origemPessoa = undefined;
   }
 
   const ehPedidoCertidao = /\bcertid[aã]o\b/i.test(itemNorm);
@@ -1506,12 +1585,11 @@ export function posProcessarItemPedido(
     { campo: 'titulo_eleitor', regex: /\b(t[ií]tulo(\s*de)?\s*eleitor(al)?|n[uú]mero\s*do\s*t[ií]tulo)\b/i },
     { campo: 'pis', regex: /\b(pis|pasep|nis)\b/i },
     { campo: 'carteira_reservista', regex: /\b(reservista|certificado\s*de\s*reservista|carteira\s*de\s*reservista)\b/i },
-    { campo: 'certidao_nascimento', regex: /\b(certid[aã]o\s*de\s*nascimento)\b/i },
     { campo: 'passaporte', regex: /\b(passaporte|n[uú]mero\s*do\s*passaporte)\b/i },
   ];
 
   const camposDetectadosRegex: string[] = [];
-  if (!ehPedidoCertidao || itemNorm.includes('certidao de nascimento')) {
+  if (!ehPedidoCertidao) {
     for (const p of padroesCampos) {
       if (p.regex.test(itemNorm)) {
         camposDetectadosRegex.push(p.campo);
@@ -1571,18 +1649,41 @@ export function posProcessarItemPedido(
     pessoa = titularExplicitoMsg;
     origemPessoa = 'mensagem_atual';
   } else {
-    // Contexto só deve ser usado quando não contiver sujeito e estiver na janela
-    const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
-    if (titularDoHistorico) {
-      const temPronomeOuCampo = /\b(ele|dele|dela|ela)\b/i.test(itemNorm) || camposDetectadosRegex.length > 0 || ehMensagemCorrecao;
-      if (pessoa || temPronomeOuCampo) {
+    // Ponto 13 / Regra 14: Campo detectado sem titular na mensagem NÃO PODE herdar do histórico.
+    // Só pronome explícito ("dele", "dela", "ele", "ela") ou em mensagens de correção herda.
+    const temPronomeExplicito = temPronomeExplicitoGeral || ehMensagemCorrecao;
+    if (temPronomeExplicito) {
+      const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
+      if (titularDoHistorico) {
         pessoa = titularDoHistorico;
         origemPessoa = 'contexto';
+      } else {
+        pessoa = '';
+        origemPessoa = undefined;
       }
     } else {
       pessoa = '';
       origemPessoa = undefined;
     }
+  }
+
+  // Ponto 13 / Regra 14: Se detectou campos cadastrais sem titular citado e sem pronome explícito:
+  // Força intencao = 'dado_pessoal' e limpa titular e documento citado para perguntar o titular
+  if (
+    camposDetectadosRegex.length > 0 &&
+    !ehPedidoCertidao &&
+    !pessoaCitadaNaMensagem &&
+    !titularExplicitoMsg &&
+    !temPronomeExplicitoGeral &&
+    !ehMensagemCorrecao &&
+    !citaEmpresaNaMensagem
+  ) {
+    intencao = 'dado_pessoal';
+    campos = Array.from(new Set([...campos, ...camposDetectadosRegex]));
+    pessoa = '';
+    origemPessoa = undefined;
+    documento_citado = '';
+    documentos_citados = [];
   }
 
   if (ehMensagemCorrecao) {
@@ -1884,7 +1985,7 @@ REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - Nome citado prevalece: qualquer pessoa citada (cadastrada ou não, ex.: cônjuge como "Nilceia", "Berna") prevalece sobre o histórico e define "pessoa".
 - Reconhecimento da Empresa Delta Plan: "Delta", "Delta Plan", "empresa", "escritório", "sede", "obra", "almoxarifado" referem-se à organização corporativa -> intencao: "pergunta_conteudo", pessoa: "".
 - O termo "Cofre" é repositório geral, NUNCA documento individual. Consultas sobre o cofre são SEMPRE "listar_documentos", documento_citado: "".
-- Uso do contexto: herdar titular do histórico APENAS quando a mensagem atual não contiver sujeito e usar pronomes ("ele", "dele") ou perguntas elípticas ("e a validade?", "e o CPF dele?").
+- Uso do contexto (Regra 14): NUNCA herdar titular do histórico para dados pessoais sem sujeito explícito na mensagem atual. Herdar titular do histórico APENAS quando houver pronome explícito ("ele", "ela", "dele", "dela", "do mesmo", "da mesma"). Perguntas como "qual o CPF?", "me passa o RG", "qual a data de nascimento?" NÃO herdam titular do histórico -> deixe "pessoa": "".
 
 EXEMPLOS OBRIGATÓRIOS:
 - "Quero que salve, o pix do berna é 43859328832" -> {"pedidos": [{"intencao": "cadastrar_conhecimento", "pessoa": "Berna", "tipo_conhecimento": "pix", "titulo_conhecimento": "Chave PIX do Berna", "detalhes_conhecimento": {"chavePix": "43859328832", "tipoChavePix": "cpf", "beneficiario": "Berna"}, "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Salvar chave PIX do Berna 43859328832", "termo_busca": "pix Berna"}]}
@@ -2956,7 +3057,7 @@ async function executarProcessamentoMensagemChatInterno(dados: {
     const todosTitulares = await obterTodosTitulares();
     const titularAlvo = todosTitulares.find((t) => textoAntigo.includes(t.nome.toLowerCase())) ||
       todosTitulares.find((t) => textoAntigo.includes(extrairPrimeiroNome(t.nome).toLowerCase())) ||
-      todosTitulares[0];
+      null;
 
     let respostaDado = '';
     const nomeTit = titularAlvo ? extrairPrimeiroNome(titularAlvo.nome) : '';
@@ -3167,8 +3268,9 @@ async function executarProcessamentoMensagemChatInterno(dados: {
     const ehPedidoEspecificoPix = /\b(pix|chave\s*pix)\b/i.test(msgNorm) || Boolean(classificacao.campos && classificacao.campos.includes('pix'));
     if (ehPedidoEspecificoPix) {
       const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
-      const alvo = pessoa ? ` de *${pessoa}*` : '';
-      const textoSemPix = `${prefixoSaudacao}Não encontrei chave PIX cadastrada${alvo} na Base de Conhecimento.`;
+      const textoSemPix = pessoa
+        ? `${prefixoSaudacao}Não encontrei chave PIX cadastrada de *${pessoa}* na Base de Conhecimento.`
+        : `${prefixoSaudacao}De quem você precisa da chave PIX?`;
 
       const rastro = criarRastroFinal({
         tipoBusca: 'nome_conhecimento',
@@ -3853,7 +3955,7 @@ async function executarProcessamentoMensagemChatInterno(dados: {
     // BLOQUEIO RÍGIDO POR TIPO: Se o usuário pediu um tipo de documento específico que não existe no cofre,
     // NUNCA acionar a rede vetorial que traria documentos divergentes (ex.: certidão de casamento para nascimento)
     const tipoPedidoDetectado = buscaDoc.tipoPedido || (termoBuscaArquivo ? identificarTipoPedido(termoBuscaArquivo) : null);
-    if (tipoPedidoDetectado && buscaDoc.status === 'nenhum') {
+    if (tipoPedidoDetectado && (buscaDoc.status === 'nenhum' || buscaDoc.status === 'oferta_outro_titular')) {
       const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
       const todosTitulares = await obterTodosTitulares();
       const titularExtraidoMsg = extrairTitularExplicito(mensagemUsuario, todosTitulares.map((t) => t.nome));
@@ -4678,22 +4780,46 @@ async function executarProcessamentoMensagemChatInterno(dados: {
     const docCitadoIa = (classificacao.documento_citado || '').trim();
     const termoBuscaIa = (classificacao.termo_busca || '').trim();
     const titularBusca = classificacao.pessoa || pessoa;
+    const ehPedidoExclusaoEspecifico = Boolean(
+      docCitadoIa || (termoBuscaIa && !/\b(ultimo|último|foto|arquivo|documento)\b/i.test(termoBuscaIa))
+    );
 
-    if (docCitadoIa || (termoBuscaIa && !/\b(ultimo|último|foto|arquivo|documento)\b/i.test(termoBuscaIa))) {
+    if (ehPedidoExclusaoEspecifico) {
       const termoDoc = docCitadoIa || termoBuscaIa;
       const busca = await buscarDocumentos(termoDoc, contato, todosDocs, titularBusca);
       if (busca.status === 'unico' && busca.resultados[0]) {
         docAlvo = busca.resultados[0];
       }
-    }
 
-    // B. Se não identificou por documento citado, busca pelo documento mais recente enviado pelo usuário
-    if (!docAlvo) {
+      // Se o usuário pediu para apagar um documento específico e ele NÃO foi localizado:
+      // REGRA ABSOLUTA (Ponto 3): Jamais propor apagar outro documento do Cofre!
+      if (!docAlvo) {
+        const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+        const textoSemDoc = `${prefixoSaudacao}Não encontrei esse documento no Cofre para exclusão.`;
+
+        const rastro = criarRastroFinal({
+          tipoBusca: 'nome_cofre',
+          docsEncontrados: [],
+          enviouAnexo: false,
+          respostaFinal: textoSemDoc,
+          modelo: 'Motor Interno',
+        });
+
+        return {
+          textoResposta: textoSemDoc,
+          origem: 'motor',
+          intencaoDetectada: 'apagar_documento',
+          perguntaReescrita: classificacao.pergunta_completa || mensagemUsuario,
+          rastro,
+        };
+      }
+    } else {
+      // B. Pedido genérico de exclusão recente ("apaga o último que mandei", "apaga a foto que enviei agora")
+      // Busca ESTRITAMENTE pelo documento recente enviado pelo próprio usuário remetente via metadata
       try {
         const supabase = getSupabaseClient();
         const telLimpo = contato.telefone ? contato.telefone.replace(/\D/g, '') : '';
 
-        // 1. Tenta buscar documento recente com metadata do remetente
         if (telLimpo) {
           const { data: docsRemetente } = await supabase
             .from('documentos')
@@ -4716,20 +4842,7 @@ async function executarProcessamentoMensagemChatInterno(dados: {
             }
           }
         }
-
-        // 2. Se não encontrou por metadata, pega o documento mais recente no Cofre
-        if (!docAlvo) {
-          const { data: docsGerais } = await supabase
-            .from('documentos')
-            .select('*')
-            .filter('tipo', 'not.ilike', '%conhecimento%')
-            .order('created_at', { ascending: false })
-            .limit(1);
-
-          if (docsGerais && docsGerais.length > 0) {
-            docAlvo = mapearLinhaDocumento(docsGerais[0]);
-          }
-        }
+        // REGRA ABSOLUTA (Ponto 3): NUNCA fazer fallback para docsGerais[0] (documento aleatório de outro usuário)!
       } catch (errBuscaRecente) {
         console.warn('[Chat Orquestrador ⚠️] Falha ao buscar documento recente no Supabase:', errBuscaRecente);
       }
@@ -5254,8 +5367,12 @@ async function executarProcessamentoMensagemChatInterno(dados: {
   // ============================================================================
   if (intencao === 'dado_pessoal') {
     const inicioFicha = Date.now();
-    const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
-    const nomePessoa = classificacao.pessoa || pessoa || titularDoHistorico || null;
+    const temPronomeExplicito = /\b(dele|dela|ele|ela|do mesmo|da mesma)\b/i.test(mensagemUsuario);
+    const titularDoHistorico = temPronomeExplicito ? extrairUltimoTitularDoHistorico(historicoRecente) : null;
+    const nomePessoa =
+      (classificacao.origemPessoa === 'mensagem_atual' ? classificacao.pessoa : null) ||
+      (temPronomeExplicito ? (classificacao.pessoa || pessoa || titularDoHistorico) : null) ||
+      null;
     const titular = nomePessoa ? await obterTitularPorNome(nomePessoa) : null;
 
     // Regra 16: Se a mensagem citou expressamente uma pessoa que NÃO é titular cadastrado:
@@ -6096,19 +6213,41 @@ DIRETRIZES OBRIGATÓRIAS:
 
     let pessoaIdAlvo: string | null = null;
     const todosTitulares = await obterTodosTitulares();
-    const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
-    const titularDoContato = todosTitulares.find(
-      (t) =>
-        contato?.nome &&
-        (t.nome.toLowerCase().includes(contato.nome.toLowerCase().trim()) ||
-          contato.nome.toLowerCase().includes(t.nome.toLowerCase().trim()))
-    )?.nome;
-    const pessoaIdentificada =
-      classificacao.pessoa || pessoa || titularDoHistorico || titularDoContato || null;
-    if (pessoaIdentificada) {
-      const titResolvido = resolverTitularCadastrado(pessoaIdentificada, todosTitulares);
-      if (titResolvido) {
-        pessoaIdAlvo = titResolvido.id;
+
+    // Ponto 14: Pergunta corporativa NUNCA pode ser restrita ao titular do contato nem a pessoa física
+    const ehTemaCorporativo =
+      REGEX_EMPRESA.test(mensagemUsuario) ||
+      /\b(delta|deltaplan|empresa|sede|escrit[oó]rio|obra|proposta|or[cç]amento|contrato\s*social|distrato|alvar[aá]|faturamento|cnpj|social|pol[ií]tica|norma|procedimento|regras?)\b/i.test(
+        mensagemUsuario
+      );
+
+    if (!ehTemaCorporativo) {
+      const temPronomeExplicito = /\b(dele|dela|ele|ela|do mesmo|da mesma)\b/i.test(mensagemUsuario);
+      const temPronomePrimeiraPessoa = /\b(meu|minha|meus|minhas|comigo|eu|fui|estou|sou|tenho)\b/i.test(
+        mensagemUsuario
+      );
+
+      const titularDoHistorico = temPronomeExplicito ? extrairUltimoTitularDoHistorico(historicoRecente) : null;
+      const titularDoContato = temPronomePrimeiraPessoa
+        ? todosTitulares.find(
+            (t) =>
+              contato?.nome &&
+              (t.nome.toLowerCase().includes(contato.nome.toLowerCase().trim()) ||
+                contato.nome.toLowerCase().includes(t.nome.toLowerCase().trim()))
+          )?.nome
+        : null;
+
+      const pessoaIdentificada =
+        (classificacao.origemPessoa === 'mensagem_atual' ? classificacao.pessoa : null) ||
+        (temPronomeExplicito ? (classificacao.pessoa || pessoa || titularDoHistorico) : null) ||
+        titularDoContato ||
+        null;
+
+      if (pessoaIdentificada) {
+        const titResolvido = resolverTitularCadastrado(pessoaIdentificada, todosTitulares);
+        if (titResolvido) {
+          pessoaIdAlvo = titResolvido.id;
+        }
       }
     }
 
@@ -6192,7 +6331,6 @@ DIRETRIZES OBRIGATÓRIAS:
     // ou dados de documentos pessoais (vacinas, covid, imunizacao), a VEGA NUNCA assume ninguem
     // nem busca trechos de titular arbitrario: pergunta diretamente o titular.
     const regexDadoPessoalSensivel = /\b(cpf|rg|identidade|endere[cç]o|mora|resid[eê]ncia|m[aã]e|pai|filia[cç][aã]o|nascimento|data\s*(de\s*)?nascimento|vacina|vacinas|vacina[cç][aã]o|covid(-?19)?|imuniza[cç][aã]o|doses?)\b/i;
-    const ehTemaCorporativo = /\b(delta|deltaplan|empresa|escrit[oó]rio|sede|obra|proposta|contrato|or[cç]amento)\b/i.test(mensagemUsuario);
     if (!pessoaIdAlvo && !classificacao.pessoa && regexDadoPessoalSensivel.test(mensagemUsuario) && !ehTemaCorporativo) {
       const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
       const textoPerguntaTitular = formatarPerguntaDadoPessoalSemTitular(

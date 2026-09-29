@@ -77,14 +77,14 @@ async function executarTestes() {
   console.log(`Intenção: ${res2.intencaoDetectada}`);
   console.log(`Dados Estruturados:`, res2.dadosEstruturados);
 
-  const t2ChaveOk = res2.textoResposta.includes('14996863115');
-  const t2EstruturadoOk = res2.dadosEstruturados?.chavePix === '14996863115';
+  const t2PerguntaDeQuem = res2.textoResposta.toLowerCase().includes('de quem você precisa da chave pix') || res2.textoResposta.toLowerCase().includes('de quem');
+  const t2NaoEntregouSemTitular = !res2.textoResposta.includes('14996863115');
 
-  if (t2ChaveOk && t2EstruturadoOk) {
-    console.log('✅ TESTE 2 PASSOU: Pedido genérico de chave PIX retornou a chave cadastrada com dados estruturados.\n');
+  if (t2PerguntaDeQuem && t2NaoEntregouSemTitular) {
+    console.log('✅ TESTE 2 PASSOU: Pedido genérico de chave PIX de PF perguntou de quem é, sem entregar direto (Ponto 4).\n');
     sucessos++;
   } else {
-    console.error('❌ TESTE 2 FALHOU:', { t2ChaveOk, t2EstruturadoOk });
+    console.error('❌ TESTE 2 FALHOU:', { t2PerguntaDeQuem, t2NaoEntregouSemTitular });
   }
 
   // TESTE 3: "qual o PIS do Thomaz"

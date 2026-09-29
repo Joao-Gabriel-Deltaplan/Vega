@@ -423,18 +423,8 @@ export function resolverTitularComAmbiguidade(
     return { titular: null, ambiguo: true, candidatos: candidatosTolerancia };
   }
 
-  // 6. Match por partes significativas de pessoas jurídicas (ex: "Empresa" -> "Serviços Empresa Ltda")
-  for (const t of titulares) {
-    const tNomeNorm = t.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    if (tNomeNorm.includes(norm) || norm.includes(tNomeNorm)) {
-      return { titular: t, ambiguo: false, candidatos: [t] };
-    }
-    const partesPJ = tNomeNorm.split(/\s+/).filter((p) => p.length >= 4 && !['servicos', 'engenharia', 'ltda', 'brasil'].includes(p));
-    for (const p of partesPJ) {
-      if (norm.includes(p)) return { titular: t, ambiguo: false, candidatos: [t] };
-    }
-  }
-
+  // 6. Não encontrou correspondência inequívoca (nome exato, apelido, primeiro nome ou tolerância fonética).
+  // Retorna null para permitir tratamento estrito de pessoas não cadastradas (Regra 16).
   return { titular: null, ambiguo: false, candidatos: [] };
 }
 

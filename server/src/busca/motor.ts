@@ -262,7 +262,7 @@ export function identificarTipoPedido(textoOriginal: string): string | null {
   if (/\b(obito|[oó]bito|certid[aã]o de [oó]bito)\b/i.test(norm)) return 'Certidão de Óbito';
   if (/\b(certid[aã]o|certid[oõ]es)\b/i.test(norm)) return 'Certidão';
   if (/\b(passaporte)\b/i.test(norm)) return 'Passaporte';
-  if (/\b(reservista|carteira de reservista|certificado de reservista)\b/i.test(norm)) return 'Carteira de Reservista';
+  if (/\b(reservista|carteira de reservista|certificado de reservista|dispensa|dispensa militar|dispensa de incorporacao|incorporacao|servico militar)\b/i.test(norm)) return 'Certificado de Dispensa de Incorporação';
   if (/\b(titulo de eleitor|titulo eleitoral)\b/i.test(norm)) return 'Título de Eleitor';
   if (/\b(pis|pasep|nis)\b/i.test(norm)) return 'PIS';
   if (/\b(art|anota[cç][aã]o de responsabilidade t[eé]cnica)\b/i.test(norm)) return 'ART';
@@ -300,7 +300,7 @@ const TERMOS_NAO_TITULARES = new Set([
   'residencia', 'identidade', 'imposto', 'proposta', 'minuta', 'contrato',
   'estatuto', 'conselho', 'habilitacao', 'saude', 'delta', 'deltaplan', 'plan',
   'rg', 'cpf', 'cnh', 'crea', 'crt', 'ctps', 'cnpj', 'dre', 'certidao', 'certidoes',
-  'art', 'rrt'
+  'art', 'rrt', 'servico', 'servicos', 'militar', 'dispensa', 'incorporacao', 'quando', 'fui'
 ]);
 
 /**
@@ -341,7 +341,7 @@ export function extrairTitularExplicito(texto: string, titularesDisponiveis?: st
       (p) =>
         p.length >= 4 &&
         !TERMOS_NAO_TITULARES.has(normalizarTexto(p)) &&
-        !['servicos', 'engenharia', 'empreendimentos', 'ltda', 'brasil', 'grupo'].includes(normalizarTexto(p))
+        !['servico', 'servicos', 'engenharia', 'empreendimentos', 'ltda', 'brasil', 'grupo'].includes(normalizarTexto(p))
     );
     for (const parte of partes) {
       const parteNorm = normalizarTexto(parte);
@@ -359,6 +359,9 @@ export function extrairTitularExplicito(texto: string, titularesDisponiveis?: st
 
   for (const palavra of palavrasTexto) {
     for (const titular of titulares) {
+      const primeiroNomeTit = titular.split(/\s+/)[0]?.toLowerCase();
+      if (primeiroNomeTit && TERMOS_NAO_TITULARES.has(normalizarTexto(primeiroNomeTit))) continue;
+
       if (nomesSaoEquivalentesComTolerancia(palavra, titular)) {
         if (!candidatosTolerancia.includes(titular)) {
           candidatosTolerancia.push(titular);
@@ -569,44 +572,23 @@ export async function buscarDocumentos(
     }
 
     // Não encontrou documento deste tipo para o próprio contato.
-    // 1. Verifica se há o MESMO TIPO de outro titular que o contato PODE ver
-    const docsOutroTitular = catalogo.filter((d) => {
-      const normTipo = normalizarTexto(d.tipo || '');
-      const normTitulo = normalizarTexto(d.titulo || '');
-      return (
-        d.tipo?.toUpperCase() === tipoPedido.toUpperCase() ||
-        d.titulo.toUpperCase().includes(tipoPedido.toUpperCase()) ||
-        normTipo === normTipoPedido ||
-        normTitulo.includes(normTipoPedido) ||
-        normTipoPedido.includes(normTipo)
-      );
-    });
-
-    if (docsOutroTitular.length > 0) {
-      const docOutro = docsOutroTitular[0];
-      return {
-        status: 'oferta_outro_titular',
-        resultados: [],
-        documentoEquivalente: docOutro,
-        score: 65,
-        tipoPedido,
-        titularEncontrado: docOutro.titular,
-      };
-    }
-
-    // 2. Não há documento do mesmo tipo no cofre. Verifica se há EQUIVALENTE que contém o dado!
+    // REGRA 8 e PRINCÍPIO GERAL: Se pediu documento pessoal e não possui no Cofre,
+    // NUNCA oferecer documento de outra pessoa nem ativar busca vetorial divergente.
+    // Verifica apenas se há EQUIVALENTE do próprio titular que contenha o dado!
     const tiposQueContem = Object.entries(mapaEquivalencias)
       .filter(([_, dadosContidos]) =>
         dadosContidos.some((dado) => dado.toUpperCase() === tipoPedido.toUpperCase())
       )
       .map(([tipoOrigem]) => tipoOrigem.toUpperCase());
 
-    const docsEquivalentes = catalogo.filter((d) =>
-      tiposQueContem.includes((d.tipo || '').toUpperCase())
+    const docsEquivContato = catalogo.filter(
+      (d) =>
+        tiposQueContem.includes((d.tipo || '').toUpperCase()) &&
+        titularCorresponde(d.titular, titularVinculado)
     );
 
-    if (docsEquivalentes.length > 0) {
-      const docEquiv = docsEquivalentes[0];
+    if (docsEquivContato.length > 0) {
+      const docEquiv = docsEquivContato[0];
       return {
         status: 'oferta_equivalente',
         resultados: [],
@@ -617,7 +599,13 @@ export async function buscarDocumentos(
       };
     }
 
-    return { status: 'nenhum', resultados: [], score: 0, tipoPedido };
+    return {
+      status: 'nenhum',
+      resultados: [],
+      score: 0,
+      tipoPedido,
+      titularEncontrado: titularVinculado,
+    };
   }
 
   // =========================================================================
@@ -761,36 +749,13 @@ export async function buscarDocumentos(
     }
 
     // Nenhum documento deste tipo existe no cofre.
-    // Consulta o mapa de equivalências!
-    const tiposQueContem = Object.entries(mapaEquivalencias)
-      .filter(([_, dadosContidos]) =>
-        dadosContidos.some((dado) => dado.toUpperCase() === tipoPedido.toUpperCase())
-      )
-      .map(([tipoOrigem]) => tipoOrigem.toUpperCase());
-
-    const docsEquivalentes = catalogo.filter((d) =>
-      tiposQueContem.includes((d.tipo || '').toUpperCase())
-    );
-
-    if (docsEquivalentes.length > 0) {
-      const docEquiv = docsEquivalentes[0];
-      return {
-        status: 'oferta_equivalente',
-        resultados: [],
-        documentoEquivalente: docEquiv,
-        score: 65,
-        tipoPedido,
-        titularEncontrado: docEquiv.titular,
-      };
-    }
-
-    // Bloqueio Rígido por Tipo: se pediu um tipo específico e não existe no Cofre,
-    // NUNCA cair na busca flexível para entregar documento de outro tipo
+    // REGRA GERAL (Ponto 9): Sem titular especificado, NUNCA oferecer documento equivalente de titular arbitrário!
+    // Bloqueio Rígido por Tipo: se pediu um tipo específico e não existe no Cofre, nunca cair na busca flexível
     return {
       status: 'nenhum',
       resultados: [],
       score: 0,
-      tipoPedido,
+      tipoPedido: tipoPedido || undefined,
     };
   }
 

@@ -118,28 +118,32 @@ export function verificarDadoDisponivelEmOutroDocumento(
     tipoNorm.includes('endereco') ||
     tipoNorm.includes('comprovante de residencia')
   ) {
-    const docDados = docsDoTitular.find(
+    const docResidencia = docsDoTitular.find(
       (d) =>
-        d.titulo.toLowerCase().includes('dados') ||
-        d.titulo.toLowerCase().includes('residencia')
+        d.titulo.toLowerCase().includes('residencia') ||
+        (d.tipo && d.tipo.toLowerCase().includes('residencia'))
     );
-    if (docDados) {
+    if (docResidencia) {
       return {
         dadoNome: 'endereço',
-        documentoFonte: docDados.titulo,
-        fraseOferta: `Se precisar só do endereço, ele consta no documento ${docDados.titulo}. Quer que eu informe?`,
+        documentoFonte: docResidencia.titulo,
+        fraseOferta: `Se precisar só do endereço, ele consta no documento ${docResidencia.titulo}. Quer que eu informe?`,
       };
     }
   }
 
   // 3. Pedido de Título de Eleitor
   if (tipoNorm.includes('eleitor') || tipoNorm.includes('titulo')) {
-    const docDados = docsDoTitular.find((d) => d.titulo.toLowerCase().includes('dados'));
-    if (docDados) {
+    const docEleitor = docsDoTitular.find(
+      (d) =>
+        d.titulo.toLowerCase().includes('eleitor') ||
+        (d.tipo && d.tipo.toLowerCase().includes('eleitor'))
+    );
+    if (docEleitor) {
       return {
         dadoNome: 'número do título de eleitor',
-        documentoFonte: docDados.titulo,
-        fraseOferta: `Se precisar só do número do título de eleitor, ele consta no documento ${docDados.titulo}. Quer que eu informe?`,
+        documentoFonte: docEleitor.titulo,
+        fraseOferta: `Se precisar só do número do título de eleitor, ele consta no documento ${docEleitor.titulo}. Quer que eu informe?`,
       };
     }
   }
