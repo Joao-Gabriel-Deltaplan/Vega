@@ -722,14 +722,26 @@ export function extrairDadosEstruturadosDeItemConhecimento(item: ItemConheciment
   };
 
   if (tipo === 'link') {
-    const match = item.conteudo?.match(/https?:\/\/[^\s]+/i);
-    if (match) dados.link = match[0].replace(/[.,;)]+$/, '');
+    const d = (item.dadosEstruturados as any) || {};
+    dados.link = d.link || (item.conteudo?.match(/https?:\/\/[^\s]+/) ? item.conteudo.match(/https?:\/\/[^\s]+/)?.[0] : undefined);
   } else if (tipo === 'pix') {
-    const matchChave = item.conteudo?.match(/(?:chave|pix|cpf|cnpj|email|telefone|chave aleat[oó]ria)?[:\s]+([a-zA-Z0-9.\-_@+]+)/i);
-    if (matchChave) dados.chavePix = matchChave[1];
+    const d = (item.dadosEstruturados as any) || {};
+    dados.chavePix = d.chave || d.chavePix;
+    dados.tipoChavePix = d.tipoChave || d.tipoChavePix;
+    dados.titularPix = d.titular || d.titularPix;
+    dados.bancoPix = d.banco || d.bancoPix;
+    if (!dados.chavePix) {
+      const matchChave = item.conteudo?.match(/(?:chave|pix|cpf|cnpj|email|telefone|chave aleat[oó]ria)?[:\s]+([a-zA-Z0-9.\-_@+]+)/i);
+      if (matchChave) dados.chavePix = matchChave[1];
+    }
   } else if (tipo === 'contato') {
-    const matchTel = item.conteudo?.match(/(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)?\d{4,5}[-\s]?\d{4}/);
-    if (matchTel) dados.telefone = matchTel[0];
+    const d = (item.dadosEstruturados as any) || {};
+    dados.telefone = d.telefone || d.celular || d.whatsapp;
+    dados.setor = d.funcao || d.setor;
+    if (!dados.telefone) {
+      const matchTel = item.conteudo?.match(/(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)?\d{4,5}[-\s]?\d{4}/);
+      if (matchTel) dados.telefone = matchTel[0];
+    }
   } else if (tipo === 'local') {
     const d = (item.dadosEstruturados as any) || {};
     dados.nomeLocal = d.nomeLocal || item.titulo;
@@ -1120,21 +1132,24 @@ export async function buscarConhecimentoPorNome(
   // A) Consulta de Chave PIX
   if (termoNorm.includes('pix')) {
     const itensPix = conhecimentos.filter(
-      (c) => c.tipo === 'pix' || c.titulo.toLowerCase().includes('pix')
+      (c) => c.tipo === 'pix' || c.titulo.toLowerCase().includes('pix') || c.categoria?.toLowerCase() === 'financeiro'
     );
     if (itensPix.length > 0) {
       for (const p of itensPix) {
         const dados = (p.dadosEstruturados as any) || {};
         const titular = dados.titular ? normalizarParaBusca(dados.titular) : '';
         const titItem = normalizarParaBusca(p.titulo);
+        const partesTitular = titular ? titular.split(/\s+/).filter((pt: string) => pt.length >= 3) : [];
+        const matchPartes = partesTitular.length > 0 && partesTitular.some((pt: string) => termoNorm.includes(pt));
+
         if (
-          (titular && termoNorm.includes(titular)) ||
-          (titItem && termoNorm.includes(titItem))
+          (titular && (termoNorm.includes(titular) || titular.includes(termoNorm) || matchPartes)) ||
+          (titItem && (termoNorm.includes(titItem) || titItem.includes(termoNorm)))
         ) {
           return { item: p, score: 100 };
         }
       }
-      // Se não especificou titular mas só existe 1 chave cadastrada
+      // Se não especificou titular diferente e só existe 1 chave cadastrada
       if (itensPix.length === 1) {
         return { item: itensPix[0], score: 100 };
       }
@@ -1370,7 +1385,12 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
      * Campos cadastrais (título de eleitor, PIS, CPF, filiação, mãe, pai, data de nascimento, estado civil, profissão, endereço, órgão emissor, validade da CNH, categoria da CNH) NÃO SÃO documentos físicos avulsos no Cofre!
      * Qualquer pedido desses campos — MESMO QUE VENHA COM VERBOS DE ENVIO ("me mande o título de eleitor do Thomaz", "me envia o PIS do Fulano", "manda o CPF dele", "me passa a filiação", "mande o título") — É ESTRITAMENTE "dado_pessoal", NUNCA "pedir_arquivo"!
      * "pedir_arquivo" só se aplica a documentos físicos reais existentes ou solicitados como arquivos (ex: "me manda o contrato", "envia a certidão de casamento", "manda o CREA", "solta a CNH", "envia o PDF do imposto de renda").
-5. "pergunta_conteudo": Perguntas sobre o conteúdo de documentos ("resuma esse documento em 10 linhas", "o que esse documento fala sobre águas fluviais?", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?", "quais dias eu tomei as vacinas da covid?", "quais vacinas ele tomou?", "qual o endereço do Fulano?", "o que diz na página 2?").
+   - DISTINÇÃO ESSENCIAL: PIS vs PIX:
+     * "PIS" (ou PIS/PASEP) é campo cadastral de pessoa física ("dado_pessoal"). Ex: "qual o PIS do Thomaz", "me mande o PIS do Fulano" -> intencao: "dado_pessoal", campos: ["pis"].
+     * "PIX" (ou chave PIX) NÃO é documento físico nem dado cadastral de documento do cofre; é informação corporativa da Base de Conhecimento ("pergunta_conteudo"). Ex: "qual o pix do João Gabriel", "me manda a chave pix", "qual o pix da empresa" -> intencao: "pergunta_conteudo", termo_busca: "pix [pessoa/empresa]".
+5. "pergunta_conteudo": Perguntas sobre o conteúdo de documentos e itens da Base de Conhecimento Corporativo (regras de negócio, instruções, links de sistemas/portais, contatos corporativos, chaves PIX, localizações/endereços corporativos de obras e escritórios).
+   - ITENS ESTRUTURADOS DA BASE DE CONHECIMENTO (PIX, LINKS, CONTATOS, LOCAIS):
+     * Pedidos de chaves PIX ("qual o pix do João Gabriel", "me manda a chave pix", "qual o pix da empresa"), links de sistemas/portais ("link do sistema de máquinas", "portal de clientes"), contatos/telefones corporativos ("contato do financeiro", "telefone do comercial") ou locais/endereços corporativos ("onde fica o escritório central", "como chegar na obra solar") são SEMPRE "pergunta_conteudo", NUNCA "dado_pessoal", NUNCA "pedir_arquivo" e NUNCA "fora_de_escopo"!
    - REGRA DE FATOS JURÍDICOS E DOCUMENTAIS VS NASCIMENTO (REGRA 9):
      * Perguntas sobre datas de eventos registrados em documentos (ex: data de dispensa do serviço militar / reservista, data de registro do casamento, datas de vacinas) são ESTRITAMENTE "pergunta_conteudo", NUNCA "dado_pessoal" e JAMAIS devem ser respondidas com data de nascimento! Preencha "documento_citado" e "termo_busca" correspondente ao fato.
    - REGRA DE DOCUMENTO CITADO EM RESUMO OU CONTEÚDO (REGRA 20):
@@ -1405,6 +1425,9 @@ EXEMPLOS OBRIGATÓRIOS:
 - "me mande o título de eleitor do thomaz" -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["titulo_eleitor"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o título de eleitor do Thomaz?", "termo_busca": "titulo eleitor Thomaz"}
 - "qual o PIS do fulano?" -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["pis"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o PIS do Fulano?", "termo_busca": "pis Fulano"}
 - "me passa o PIS do thomaz" -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["pis"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o PIS do Thomaz?", "termo_busca": "pis Thomaz"}
+- "qual o pix do João Gabriel" -> {"intencao": "pergunta_conteudo", "pessoa": "João Gabriel", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é a chave PIX do João Gabriel?", "termo_busca": "pix João Gabriel"}
+- "me mande o pix do joão gabriel" -> {"intencao": "pergunta_conteudo", "pessoa": "João Gabriel", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é a chave PIX do João Gabriel?", "termo_busca": "pix João Gabriel"}
+- "me manda a chave pix" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é a chave PIX?", "termo_busca": "chave pix"}
 - "show, agora me envie o pdf" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
 - "contrato de locação" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "contrato de locação", "documentos_citados": ["contrato de locação"], "pergunta_completa": "Enviar documento contrato de locação", "termo_busca": "contrato de locação"}
 - "me envia o crea e a certidão de casamento do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CREA, Certidão de Casamento", "documentos_citados": ["CREA", "Certidão de Casamento"], "pergunta_completa": "Enviar documentos CREA e Certidão de Casamento do Fulano", "termo_busca": "CREA, Certidão de Casamento"}
@@ -1979,9 +2002,10 @@ async function executarProcessamentoMensagemChatInterno(dados: {
   documentoIdDireto?: string;
 }): Promise<ResultadoChatOrquestrador> {
   const inicioTotal = Date.now();
-  const { mensagemUsuario, historicoRecente, contato, documentoIdDireto } = dados;
+  const { mensagemUsuario, historicoRecente, documentoIdDireto } = dados;
+  const contato = dados.contato || { id: 'anonimo', nome: '', telefone: '', canal: 'whatsapp' as const };
   const documentosDisponiveis = dados.documentosDisponiveis || [];
-  const primeiroNome = extrairPrimeiroNome(contato.nome);
+  const primeiroNome = extrairPrimeiroNome(contato?.nome || '');
   const vocativo = primeiroNome ? `, ${primeiroNome}` : '';
 
   // CASO ESPECIAL: Clique direto em opção ou documento sugerido
@@ -2470,9 +2494,11 @@ async function executarProcessamentoMensagemChatInterno(dados: {
   // ============================================================================
   const todosConhecimentos = await obterTodosConhecimentos();
   const msgNorm = normalizarParaBusca(mensagemUsuario);
-  const ehPerguntaLocalizacao = /\b(onde\s*fica|como\s*chego|como\s*chegar|localiza[cç][aã]o|rota|waze|maps|google\s*maps|qual\s*o\s*endere[cç]o|me\s*passa\s*o\s*endere[cç]o|endere[cç]o\s*d[aoe]|onde\s*[eé]|como\s*ir)\b/i.test(msgNorm);
+  const ehPerguntaConhecimentoEstruturado =
+    /\b(pix|chave\s*pix|link|sistema|portal|acesso|ramal|contato|onde\s*fica|como\s*chego|como\s*chegar|localiza[cç][aã]o|rota|waze|maps|google\s*maps|qual\s*o\s*endere[cç]o|me\s*passa\s*o\s*endere[cç]o|endere[cç]o\s*d[aoe]|onde\s*[eé]|como\s*ir)\b/i.test(msgNorm) ||
+    Boolean(classificacao.campos && classificacao.campos.includes('pix'));
 
-  if (ehPerguntaLocalizacao || intencao === 'pergunta_conteudo' || (intencao === 'dado_pessoal' && !pessoa)) {
+  if (ehPerguntaConhecimentoEstruturado || intencao === 'pergunta_conteudo' || (intencao === 'dado_pessoal' && !pessoa)) {
     const matchK =
       (await buscarConhecimentoPorNome(classificacao.termo_busca, todosConhecimentos)) ||
       (await buscarConhecimentoPorNome(pergunta_reescrita, todosConhecimentos)) ||
@@ -2519,6 +2545,32 @@ async function executarProcessamentoMensagemChatInterno(dados: {
         similaridade: `${score}%`,
         rastro,
         dadosEstruturados: extrairDadosEstruturadosDeItemConhecimento(item),
+      };
+    }
+
+    // Se o pedido era especificamente de chave PIX e não foi localizada no Conhecimento
+    const ehPedidoEspecificoPix = /\b(pix|chave\s*pix)\b/i.test(msgNorm) || Boolean(classificacao.campos && classificacao.campos.includes('pix'));
+    if (ehPedidoEspecificoPix) {
+      const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+      const alvo = pessoa ? ` de *${pessoa}*` : '';
+      const textoSemPix = `${prefixoSaudacao}Não encontrei chave PIX cadastrada${alvo} na Base de Conhecimento.`;
+
+      const rastro = criarRastroFinal({
+        tipoBusca: 'nome_conhecimento',
+        docsEncontrados: [],
+        enviouAnexo: false,
+        respostaFinal: textoSemPix,
+        modelo: 'Motor Interno',
+      });
+
+      return {
+        textoResposta: textoSemPix,
+        origem: 'motor',
+        intencaoDetectada: 'pergunta_conteudo',
+        perguntaReescrita: classificacao.pergunta_completa || pergunta_reescrita || 'Consulta de chave PIX',
+        buscaUsada: 'Base de Conhecimento Corporativo',
+        similaridade: '0%',
+        rastro,
       };
     }
   }

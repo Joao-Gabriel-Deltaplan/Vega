@@ -5,6 +5,7 @@ import {
   obterPrecoMinutoAudio,
   obterTodosTitulares,
   obterTodosDocumentos,
+  obterTodosConhecimentos,
 } from '../storage.js';
 import { registrarAviso, notificarRecuperacaoServico } from '../avisos/avisosFalhaService.js';
 
@@ -303,20 +304,22 @@ export async function obterAudioBufferEvolution(
   };
 }
 
-const SIGLAS_FIXAS_DOMINIO = 'CREA, CRT, ART, RRT, CTPS, CNH, CPF, RG, DIRPF';
+const SIGLAS_FIXAS_DOMINIO = 'CREA, CRT, ART, RRT, CTPS, CNH, CPF, RG, DIRPF, PIX, PIS';
 const NOMES_INSTITUCIONAIS = 'Delta Plan, VEGA';
-const CAMPOS_CONSULTAVEIS_DOMINIO = 'título de eleitor, PIS, filiação, nome da mãe, nome do pai, estado civil, órgão emissor, data de nascimento, validade da CNH, categoria da CNH, endereço, profissão';
+const CAMPOS_CONSULTAVEIS_DOMINIO = 'chave PIX, transferência PIX, pagamento PIX, PIX, título de eleitor, PIS (Programa de Integração Social), PIS/PASEP, filiação, nome da mãe, nome do pai, estado civil, órgão emissor, data de nascimento, validade da CNH, categoria da CNH, endereço, profissão';
 
 /**
  * Monta dinamicamente o prompt contextual para o modelo de transcrição da OpenAI (gpt-transcribe / Whisper).
  * Respeita estritamente o limite de 224 tokens (~800 caracteres), priorizando titulares cadastrados,
- * apelidos, campos consultáveis e tipos de documentos do Cofre, enriquecidos com siglas corporativas e termos institucionais.
+ * apelidos, campos consultáveis, itens de conhecimento (chaves PIX/links) e tipos de documentos do Cofre,
+ * enriquecidos com siglas corporativas e termos institucionais.
  */
 export async function montarPromptContextualTranscricao(): Promise<string> {
   try {
-    const [titulares, docs] = await Promise.all([
+    const [titulares, docs, conhecimentos] = await Promise.all([
       obterTodosTitulares(),
       obterTodosDocumentos(),
+      obterTodosConhecimentos(),
     ]);
 
     // 1. Nomes e apelidos dos titulares cadastrados no Supabase
@@ -345,18 +348,30 @@ export async function montarPromptContextualTranscricao(): Promise<string> {
       }
     }
 
-    // 3. Montagem do prompt respeitando ordem de prioridade
+    // 3. Títulos dos itens da Base de Conhecimento (Chaves PIX, links de sistemas, contatos)
+    const titulosConhecimento: string[] = [];
+    for (const c of conhecimentos) {
+      if (c.titulo && !titulosConhecimento.includes(c.titulo.trim())) {
+        titulosConhecimento.push(c.titulo.trim());
+      }
+    }
+
+    // 4. Montagem do prompt respeitando ordem de prioridade
     const partes: string[] = [
       `${NOMES_INSTITUCIONAIS}. Termos e siglas: ${SIGLAS_FIXAS_DOMINIO}.`,
       `Campos: ${CAMPOS_CONSULTAVEIS_DOMINIO}.`,
     ];
+
+    if (titulosConhecimento.length > 0) {
+      partes.push(`Conhecimento: ${titulosConhecimento.slice(0, 5).join(', ')}.`);
+    }
 
     if (nomesEApelidosTitulares.length > 0) {
       partes.push(`Titulares: ${nomesEApelidosTitulares.slice(0, 10).join(', ')}.`);
     }
 
     if (tiposEDocs.length > 0) {
-      partes.push(`Documentos: ${tiposEDocs.slice(0, 15).join(', ')}.`);
+      partes.push(`Documentos: ${tiposEDocs.slice(0, 12).join(', ')}.`);
     }
 
     let promptFinal = partes.join(' ');
