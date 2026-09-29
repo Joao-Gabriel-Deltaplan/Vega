@@ -120,6 +120,21 @@ export type IntencaoChat =
   | 'apagar_documento'
   | 'fora_de_escopo';
 
+export interface ItemPedidoClassificado {
+  intencao: IntencaoChat;
+  pessoa?: string;
+  origemPessoa?: 'mensagem_atual' | 'contexto';
+  campos?: string[];
+  documento_citado?: string;
+  documentos_citados?: string[];
+  ambiguidadeTitulares?: string[];
+  pergunta_completa: string;
+  termo_busca: string;
+  pergunta_reescrita?: string;
+  campo_corrigir?: string;
+  valor_novo?: string;
+}
+
 export interface ClassificacaoChatResponse {
   intencao: IntencaoChat;
   pessoa?: string;
@@ -134,6 +149,7 @@ export interface ClassificacaoChatResponse {
   campo?: string;
   campo_corrigir?: string;
   valor_novo?: string;
+  pedidos?: ItemPedidoClassificado[];
   tempoMs: number;
   tokensPrompt: number;
   tokensCompletion: number;
@@ -256,6 +272,16 @@ export function montarPrefixoSaudacao(msg: string, primeiroNome?: string): strin
     return `${saudacao}, ${primeiroNome.trim()}! `;
   }
   return `${saudacao}! `;
+}
+
+/**
+ * Remove saudações repetidas do início de textos em pedidos subsequentes de um lote unificado.
+ */
+export function removerSaudacaoInicial(texto: string): string {
+  if (!texto) return '';
+  return texto
+    .replace(/^(?:ol[aá]|oi|bom\s*dia|boa\s*tarde|boa\s*noite)(?:,\s*[^!\n.,]+)?[:!.,\s]*/i, '')
+    .trim();
 }
 
 /**
@@ -1326,8 +1352,286 @@ export function extrairUltimoTitularDoHistorico(historicoRecente: Mensagem[]): s
 }
 
 /**
+ * Pós-processa e aplica todas as regras de segurança e normalização em um pedido individual classificado.
+ */
+export function posProcessarItemPedido(
+  itemRaw: any,
+  mensagemUsuario: string,
+  titulares: FichaTitular[],
+  docs: DocumentoRegistro[],
+  conhecimentos: ItemConhecimento[],
+  historicoRecente: Mensagem[]
+): ItemPedidoClassificado {
+  const perguntaCompleta = itemRaw.pergunta_completa || mensagemUsuario;
+  const textoAnalise = [perguntaCompleta, itemRaw.termo_busca, itemRaw.documento_citado].filter(Boolean).join(' ');
+  const itemNorm = normalizarParaBusca(textoAnalise);
+  const msgNorm = normalizarParaBusca(mensagemUsuario);
+
+  let intencao: IntencaoChat = itemRaw.intencao || 'pergunta_conteudo';
+  let pessoa = itemRaw.pessoa || '';
+  let origemPessoa: 'mensagem_atual' | 'contexto' | undefined = undefined;
+  let campos: string[] = Array.isArray(itemRaw.campos) ? itemRaw.campos : [];
+  let campo_corrigir = itemRaw.campo_corrigir || '';
+  let valor_novo = itemRaw.valor_novo || '';
+  let documento_citado = itemRaw.documento_citado || '';
+  let documentos_citados: string[] = Array.isArray(itemRaw.documentos_citados) ? itemRaw.documentos_citados : [];
+  let ambiguidadeTitulares: string[] = [];
+
+  // 1. Identifica se uma pessoa foi citada diretamente no pedido ou na mensagem
+  let pessoaCitadaNaMensagem: string | undefined = undefined;
+  if (pessoa) {
+    const pNorm = normalizarParaBusca(pessoa);
+    if (
+      itemNorm.includes(pNorm) ||
+      msgNorm.includes(pNorm) ||
+      pNorm.split(/\s+/).some((parte: string) => parte.length >= 3 && (itemNorm.includes(parte) || msgNorm.includes(parte)))
+    ) {
+      pessoaCitadaNaMensagem = pessoa;
+    }
+  }
+
+  // Fallback de detecção por regex para casos como "da Nilceia", "do Marcos", "de Fulano"
+  if (!pessoaCitadaNaMensagem) {
+    const matchPessoa = (perguntaCompleta + ' ' + mensagemUsuario).match(/\b(?:de|da|do|dos|das)\s+([A-ZÁÉÍÓÚÂÊÔÃÕ][a-záéíóúâêôãõç]+(?:\s+[A-ZÁÉÍÓÚÂÊÔÃÕ][a-záéíóúâêôãõç]+)*)/);
+    if (matchPessoa) {
+      const candidato = matchPessoa[1].trim();
+      const candNorm = normalizarParaBusca(candidato);
+      const ehPalavraIgnorada = /\b(documento|pdf|arquivo|certidao|contrato|alvara|cnh|rg|empresa|delta|deltaplan|registro|casamento|nascimento|mae|pai|filiacao|resumo|vacina|covid|escrit[oó]rio|sede|filial|obra|almoxarifado|dep[oó]sito|canteiro|local|localiza[cç][aã]o|sistema|app|portal|chave|pix|conta|banco|contato|suporte)\b/i.test(candNorm);
+      if (!ehPalavraIgnorada) {
+        pessoaCitadaNaMensagem = candidato;
+      }
+    }
+  }
+
+  // Regra 16 com Tolerância de Grafia e Apelidos:
+  if (pessoaCitadaNaMensagem) {
+    const resAmb = resolverTitularComAmbiguidade(pessoaCitadaNaMensagem, titulares);
+    if (resAmb.ambiguo) {
+      ambiguidadeTitulares = resAmb.candidatos.map((t) => t.nome);
+      pessoa = pessoaCitadaNaMensagem;
+    } else if (resAmb.titular) {
+      pessoa = resAmb.titular.nome;
+    } else {
+      pessoa = pessoaCitadaNaMensagem;
+    }
+    origemPessoa = 'mensagem_atual';
+  } else if (pessoa) {
+    const resAmb = resolverTitularComAmbiguidade(pessoa, titulares);
+    if (resAmb.ambiguo) {
+      ambiguidadeTitulares = resAmb.candidatos.map((t) => t.nome);
+    } else if (resAmb.titular) {
+      pessoa = resAmb.titular.nome;
+    } else {
+      pessoa = '';
+    }
+  }
+
+  const ehPedidoCertidao = /\bcertid[aã]o\b/i.test(itemNorm);
+
+  // Mapeamento e detecção de segurança para campos cadastrais e dados específicos
+  const padroesCampos: { campo: string; regex: RegExp }[] = [
+    { campo: 'endereco', regex: /\b(endere[cç]o|mora|resid[eê]ncia)\b/i },
+    { campo: 'estadoCivil', regex: /\b(estado\s*civil|casad[oa]|solteir[oa]|divorciad[oa])\b/i },
+    { campo: 'rg', regex: /\b(rg|identidade)\b/i },
+    { campo: 'profissao', regex: /\b(profiss[aã]o|cargo|ocupa[cç][aã]o)\b/i },
+    { campo: 'cpf', regex: /\b(cpf)\b/i },
+    { campo: 'filiacao', regex: /\b(m[aã]e|pai|pais|filia[cç][aã]o)\b/i },
+    { campo: 'dataNascimento', regex: /\b(data\s*(de\s*)?nascimento|quando\s*nasceu|ano\s*de\s*nascimento|idade)\b/i },
+    { campo: 'validadeCnh', regex: /\b(validade(\s*da\s*cnh)?|vencimento)\b/i },
+    { campo: 'categoriaCnh', regex: /\b(categoria(\s*da\s*cnh)?)\b/i },
+    { campo: 'cnh', regex: /\b(n[uú]mero\s*da\s*cnh|numero\s*da\s*cnh)\b/i },
+    { campo: 'orgaoEmissor', regex: /\b([oó]rg[aã]o(\s*emissor)?)\b/i },
+    { campo: 'titulo_eleitor', regex: /\b(t[ií]tulo(\s*de)?\s*eleitor(al)?|n[uú]mero\s*do\s*t[ií]tulo)\b/i },
+    { campo: 'pis', regex: /\b(pis|pasep|nis)\b/i },
+    { campo: 'carteira_reservista', regex: /\b(reservista|certificado\s*de\s*reservista|carteira\s*de\s*reservista)\b/i },
+    { campo: 'certidao_nascimento', regex: /\b(certid[aã]o\s*de\s*nascimento)\b/i },
+    { campo: 'passaporte', regex: /\b(passaporte|n[uú]mero\s*do\s*passaporte)\b/i },
+  ];
+
+  const camposDetectadosRegex: string[] = [];
+  if (!ehPedidoCertidao || itemNorm.includes('certidao de nascimento')) {
+    for (const p of padroesCampos) {
+      if (p.regex.test(itemNorm)) {
+        camposDetectadosRegex.push(p.campo);
+      }
+    }
+  }
+
+  // Detecção expressa de sujeitos no pedido
+  const citaEmpresaNaMensagem = REGEX_EMPRESA.test(itemNorm);
+  const titularExplicitoMsg = extrairTitularExplicito(itemNorm);
+
+  // Detecção de correção
+  const REGEX_CORRECAO = /\b(est[aá]\s*errad[oa]|t[aá]\s*errad[oa]|n[aã]o\s*[eé]|incorret[oa]|corrija|corrigir|alterar|mudar\s*para|o\s*certo\s*[eé]|o\s*correto\s*[eé])\b/i;
+  const ehMensagemCorrecao =
+    REGEX_CORRECAO.test(itemNorm) ||
+    intencao === 'corrigir_dado' ||
+    (/\bvalidade\b/i.test(itemNorm) && /\b\d{2}\/\d{2}\/\d{4}\b/.test(itemNorm));
+
+  // Detecção de silenciar alerta
+  const REGEX_SILENCIAR = /\b(pare\s*de\s*alerta(r)?|n[aã]o\s*alerte(\s*mais)?|desative(\s*os)?\s*alerta(s)?|desativar\s*alerta(s)?|silenciar\s*alerta(s)?|parar\s*de\s*alerta(r)?)\b/i;
+  const ehSilenciarAlerta = REGEX_SILENCIAR.test(itemNorm) || intencao === 'silenciar_alerta';
+
+  let termoBusca = itemRaw.termo_busca || documento_citado || perguntaCompleta;
+
+  if (ehSilenciarAlerta) {
+    intencao = 'silenciar_alerta';
+    if (!pessoa && (pessoaCitadaNaMensagem || titularExplicitoMsg)) {
+      pessoa = pessoaCitadaNaMensagem || titularExplicitoMsg || '';
+      origemPessoa = 'mensagem_atual';
+    }
+    if (!documento_citado) {
+      if (/\bcrt\b/i.test(itemNorm)) documento_citado = 'CRT';
+      else if (/\bcrea\b/i.test(itemNorm)) documento_citado = 'CREA';
+      else if (/\bcnh\b/i.test(itemNorm)) documento_citado = 'CNH';
+    }
+  } else if (intencao === 'consultar_checklist_faltantes' && !ehMensagemCorrecao) {
+    if (pessoaCitadaNaMensagem || titularExplicitoMsg) {
+      pessoa = pessoaCitadaNaMensagem || titularExplicitoMsg || '';
+      origemPessoa = 'mensagem_atual';
+    }
+  } else if (intencao === 'consultar_vencimentos' && !ehMensagemCorrecao) {
+    pessoa = '';
+    campos = [];
+    origemPessoa = undefined;
+  } else if (citaEmpresaNaMensagem) {
+    pessoa = '';
+    intencao = 'pergunta_conteudo';
+    campos = [];
+    origemPessoa = undefined;
+    if (/\b(endere[cç]o|mora|resid[eê]ncia|localiza|onde\s*fica)\b/i.test(itemNorm)) {
+      termoBusca = 'Escritório Deltaplan';
+    }
+  } else if (pessoaCitadaNaMensagem) {
+    pessoa = pessoaCitadaNaMensagem;
+    origemPessoa = 'mensagem_atual';
+  } else if (titularExplicitoMsg) {
+    pessoa = titularExplicitoMsg;
+    origemPessoa = 'mensagem_atual';
+  } else {
+    // Contexto só deve ser usado quando não contiver sujeito e estiver na janela
+    const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
+    if (titularDoHistorico) {
+      const temPronomeOuCampo = /\b(ele|dele|dela|ela)\b/i.test(itemNorm) || camposDetectadosRegex.length > 0 || ehMensagemCorrecao;
+      if (pessoa || temPronomeOuCampo) {
+        pessoa = titularDoHistorico;
+        origemPessoa = 'contexto';
+      }
+    } else {
+      pessoa = '';
+      origemPessoa = undefined;
+    }
+  }
+
+  if (ehMensagemCorrecao) {
+    intencao = 'corrigir_dado';
+    if (!campo_corrigir && camposDetectadosRegex.length > 0) {
+      campo_corrigir = camposDetectadosRegex[0];
+    }
+    if (!valor_novo) {
+      const matchData = (perguntaCompleta + ' ' + mensagemUsuario).match(/\b(\d{2}\/\d{2}\/\d{4})\b/);
+      if (matchData) {
+        valor_novo = matchData[1];
+      } else {
+        const matchValor = (perguntaCompleta + ' ' + mensagemUsuario).match(/(?:é|e|para|sendo|correto é|certo é|na verdade é)\s+([^.,\n]+)/i);
+        if (matchValor) {
+          valor_novo = matchValor[1].trim();
+        }
+      }
+    }
+  }
+
+  if (intencao === 'dado_pessoal' && !citaEmpresaNaMensagem) {
+    if (camposDetectadosRegex.length > 0) {
+      campos = Array.from(new Set([...campos, ...camposDetectadosRegex]));
+    }
+    documento_citado = '';
+    documentos_citados = [];
+  }
+
+  // Proteção: resumo vs pedir_arquivo
+  const ehPerguntaExplicacaoOuResumo =
+    /\b(resum[aeo]|resumo|expliq?u?e|fala\s+sobre|diz\s+sobre|o\s+que\s+(fala|diz|tem|consta)\s+n[oa]|conteudo|qual\s+o\s+conteudo|sobre\s+o\s+que\s+[eé]|quantas\s+linhas|em\s+\d+\s+linhas)\b/i.test(
+      itemNorm
+    );
+
+  if (ehPerguntaExplicacaoOuResumo && intencao === 'pedir_arquivo') {
+    intencao = 'pergunta_conteudo';
+    const sanitizadoResumo = sanitizarPedidoResumoOuConteudo(perguntaCompleta);
+    if (!sanitizadoResumo.apenasReferenciaContexto) {
+      if (!documento_citado) {
+        const tipoIdentificado = identificarTipoPedido(perguntaCompleta);
+        const termoCandidato = tipoIdentificado || sanitizadoResumo.termoLimpo;
+        if (termoCandidato && !/\b(cofre|arquivo|documento)\b/i.test(termoCandidato)) {
+          documento_citado = termoCandidato;
+          termoBusca = documento_citado;
+        }
+      }
+    } else {
+      documento_citado = '';
+      termoBusca = '';
+    }
+  }
+
+  // Múltiplos documentos citados no texto do pedido
+  const multiplosNoTexto = identificarMultiplosDocumentosNoTexto(perguntaCompleta, docs, pessoa);
+  if (!ehPerguntaExplicacaoOuResumo && intencao !== 'listar_documentos' && intencao !== 'dado_pessoal' && multiplosNoTexto.length > 1) {
+    intencao = 'pedir_arquivo';
+    documentos_citados = multiplosNoTexto.map((d) => d.titulo);
+    documento_citado = multiplosNoTexto.map((d) => d.titulo).join(', ');
+    termoBusca = documento_citado;
+  }
+
+  // Sanitização de comando genérico de envio
+  if (documento_citado) {
+    const sanitizadoCitado = sanitizarPedidoArquivo(documento_citado);
+    if (sanitizadoCitado.apenasComandoEnvio) {
+      documento_citado = '';
+      termoBusca = '';
+    }
+  }
+
+  // Proteção: saudação vs pergunta de conteúdo
+  const padroesConteudo = [
+    /\bo que (tem|diz|consta|ha|ha) em\b/i,
+    /\bo que (diz|fala|tem)\b/i,
+    /\bme fal[ae] sobre\b/i,
+    /\bqual(is)? a(s)? regra(s)?\b/i,
+    /\bqual(is)? a(s)? politica(s)?\b/i,
+    /\bqual(is)? o(s)? endereco(s)?\b/i,
+    /\bonde fica\b/i,
+  ];
+  const temPadraoConteudo = padroesConteudo.some((p) => p.test(itemNorm));
+  const temTituloConhecimento = conhecimentos.some((c) =>
+    itemNorm.includes(normalizarParaBusca(c.titulo))
+  );
+  const temTituloDoc = docs.some((d) =>
+    itemNorm.includes(normalizarParaBusca(d.titulo))
+  );
+
+  if (intencao === 'saudacao_ou_vago' && (temPadraoConteudo || temTituloConhecimento || temTituloDoc)) {
+    intencao = 'pergunta_conteudo';
+  }
+
+  return {
+    intencao,
+    pessoa: pessoa || undefined,
+    origemPessoa,
+    campos: campos.length > 0 ? campos : undefined,
+    campo_corrigir: campo_corrigir || undefined,
+    valor_novo: valor_novo || undefined,
+    documento_citado: documento_citado || undefined,
+    documentos_citados: documentos_citados.length > 0 ? documentos_citados : undefined,
+    ambiguidadeTitulares: ambiguidadeTitulares.length > 1 ? ambiguidadeTitulares : undefined,
+    pergunta_completa: perguntaCompleta,
+    termo_busca: termoBusca || documento_citado || perguntaCompleta,
+    pergunta_reescrita: perguntaCompleta,
+  };
+}
+
+/**
  * 1. CLASSIFICAÇÃO E REESCRITA COM UMA ÚNICA CHAMADA AO gpt-5.4-mini (JSON, temp 0.1)
- * Otimizado: envia apenas os títulos necessários e as últimas 4 mensagens (Meta: < 1.500 tokens).
+ * Suporta mensagens com um único pedido ou múltiplos pedidos agrupados em lista.
  */
 export async function classificarEReescreverMensagem(
   mensagemUsuario: string,
@@ -1364,16 +1668,24 @@ Tipos de documentos no cofre: ${listaTiposDocs}.
 
 Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
 {
-  "intencao": "saudacao_ou_vago" | "pedir_arquivo" | "listar_documentos" | "dado_pessoal" | "pergunta_conteudo" | "corrigir_dado" | "consultar_vencimentos" | "silenciar_alerta" | "consultar_checklist_faltantes" | "apagar_documento" | "fora_de_escopo",
-  "pessoa": "nome do titular ou pessoa citada na mensagem (ex: Fulano, Nilceia) ou vazio",
-  "campos": ["lista de campos ou dados específicos solicitados (ex.: cpf, rg, filiacao, mae, pai, dataNascimento, endereco, estadoCivil, profissao, cnh, validadeCnh, categoriaCnh, orgaoEmissor, titulo_eleitor, pis, carteira_reservista, certidao_nascimento, passaporte ou qualquer outro campo/dado perguntado) ou vazio"],
-  "campo_corrigir": "nome do campo a ser corrigido (ex: profissao, cpf, rg, etc.) ou vazio",
-  "valor_novo": "novo valor correto informado pelo usuário ou vazio",
-  "documento_citado": "nome do documento físico específico citado (NUNCA termos de repositório como 'cofre', 'arquivo', 'documento') ou vazio",
-  "documentos_citados": ["lista de documentos físicos citados na mensagem atual (ex: ['CREA', 'Certidão de Casamento']) ou vazio"],
-  "pergunta_completa": "versão clara e completa da pergunta sem perder nenhuma informação",
-  "termo_busca": "versão curta para busca por nome de arquivo ou tópico"
+  "pedidos": [
+    {
+      "intencao": "saudacao_ou_vago" | "pedir_arquivo" | "listar_documentos" | "dado_pessoal" | "pergunta_conteudo" | "corrigir_dado" | "consultar_vencimentos" | "silenciar_alerta" | "consultar_checklist_faltantes" | "apagar_documento" | "fora_de_escopo",
+      "pessoa": "nome do titular ou pessoa citada na mensagem (ex: Fulano, Nilceia) ou vazio",
+      "campos": ["lista de campos ou dados específicos solicitados (ex.: cpf, rg, filiacao, mae, pai, dataNascimento, endereco, estadoCivil, profissao, cnh, validadeCnh, categoriaCnh, orgaoEmissor, titulo_eleitor, pis, carteira_reservista, certidao_nascimento, passaporte) ou vazio"],
+      "campo_corrigir": "nome do campo a ser corrigido ou vazio",
+      "valor_novo": "novo valor correto informado pelo usuário ou vazio",
+      "documento_citado": "nome do documento físico específico citado (NUNCA termos de repositório como 'cofre', 'arquivo', 'documento') ou vazio",
+      "documentos_citados": ["lista de documentos físicos citados ou vazio"],
+      "pergunta_completa": "versão clara e completa desta solicitação específica sem perder informações",
+      "termo_busca": "versão curta para busca por nome de arquivo ou tópico"
+    }
+  ]
 }
+
+REGRAS RÍGIDAS PARA MÚLTIPLOS PEDIDOS:
+- Se a mensagem contiver mais de um pedido, pergunta ou solicitação distinta (seja do mesmo tipo ou de tipos diferentes, ou mensagens agrupadas como 'onde fica o escritório e qual o pix', 'manda a CNH e a certidão', 'qual o CPF do Thomaz e a certidão de casamento dele'), retorne CADA pedido como um item separado na lista "pedidos", rigorosamente na ordem em que aparecem.
+- Se for apenas um pedido ou pergunta, a lista "pedidos" deve conter exatamente 1 único item.
 
 REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
 0. "listar_documentos": Inventário ou catálogo geral ("o que tem no cofre?", "quais documentos você tem?", "o que temos guardado?", "listar o cofre", "quais documentos existem?").
@@ -1407,44 +1719,44 @@ REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - Uso do contexto: herdar titular do histórico APENAS quando a mensagem atual não contiver sujeito e usar pronomes ("ele", "dele") ou perguntas elípticas ("e a validade?", "e o CPF dele?").
 
 EXEMPLOS OBRIGATÓRIOS:
-- "o que tem no cofre?" -> {"intencao": "listar_documentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Listar documentos disponíveis no cofre", "termo_busca": ""}
-- "quais documentos do fulano você tem?" -> {"intencao": "listar_documentos", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Listar documentos do Fulano", "termo_busca": "Fulano"}
-- "me mande o endereço do escritório da Delta Plan" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o endereço do escritório da Delta Plan?", "termo_busca": "Escritorio Deltaplan"}
-- "resuma a art de serviços menegazzo" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "ART de serviços menegazzo", "documentos_citados": ["ART de serviços menegazzo"], "pergunta_completa": "Resumir a ART de serviços menegazzo", "termo_busca": "ART de serviços menegazzo"}
-- "resuma esse documento" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Resumir o documento do contexto", "termo_busca": ""}
-- "quando fui dispensado do serviço militar?" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "dispensa militar", "documentos_citados": [], "pergunta_completa": "Quando ocorreu a dispensa do serviço militar?", "termo_busca": "dispensa servico militar"}
-- "qual a data de registro de casamento do Thomaz?" -> {"intencao": "pergunta_conteudo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "certidão de casamento", "documentos_citados": [], "pergunta_completa": "Qual é a data de registro de casamento do Thomaz?", "termo_busca": "registro casamento Thomaz"}
-- "qual o pix do João Gabriel" -> {"intencao": "pergunta_conteudo", "pessoa": "João Gabriel", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é a chave PIX do João Gabriel?", "termo_busca": "pix João Gabriel"}
-- "me manda a chave pix" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é a chave PIX?", "termo_busca": "chave pix"}
-- "qual o link do sistema de máquinas?" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o link do App de Portfólio das Máquinas?", "termo_busca": "App de Portfólio das Máquinas"}
-- "qual o contato do financeiro?" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o contato do departamento financeiro?", "termo_busca": "financeiro"}
-- "como chegar na obra residencial solar?" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Como chegar na obra residencial solar?", "termo_busca": "obra residencial solar"}
-- "o que tem em Regra de Negócio: Proposta Comercial" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o conteúdo do documento ou instrução Regra de Negócio: Proposta Comercial?", "termo_busca": "Proposta Comercial"}
-- "quais dias eu tomei as vacinas da covid?" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Quais dias foram tomadas as vacinas da covid?", "termo_busca": "vacina covid"}
-- "me mande o título de eleitor do thomaz" -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["titulo_eleitor"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o título de eleitor do Thomaz?", "termo_busca": "titulo eleitor Thomaz"}
-- "me passa o PIS do thomaz" -> {"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["pis"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o PIS do Thomaz?", "termo_busca": "pis Thomaz"}
-- "qual cpf?" -> {"intencao": "dado_pessoal", "pessoa": "", "campos": ["cpf"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o CPF?", "termo_busca": "cpf"}
-- "qual o endereço?" -> {"intencao": "dado_pessoal", "pessoa": "", "campos": ["endereco"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o endereço residencial?", "termo_busca": "endereco"}
-- "qual o nome da mãe da Nilceia?" -> {"intencao": "dado_pessoal", "pessoa": "Nilceia", "campos": ["filiacao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Quem é a mãe da Nilceia?", "termo_busca": "filiacao Nilceia"}
-- "e o RG dele?" (após falar de um titular) -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["rg"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o RG do Fulano?", "termo_busca": "Fulano"}
-- "me envie esses documentos do fulano: endereço, estado civil e profissão" -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["endereco", "estadoCivil", "profissao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Quais são o endereço, estado civil e profissão do Fulano?", "termo_busca": "Fulano"}
-- "show, agora me envie o pdf" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}
-- "contrato de locação" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "contrato de locação", "documentos_citados": ["contrato de locação"], "pergunta_completa": "Enviar documento contrato de locação", "termo_busca": "contrato de locação"}
-- "me envia o crea e a certidão de casamento do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CREA, Certidão de Casamento", "documentos_citados": ["CREA", "Certidão de Casamento"], "pergunta_completa": "Enviar documentos CREA e Certidão de Casamento do Fulano", "termo_busca": "CREA, Certidão de Casamento"}
-- "sim" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Confirmar envio do documento oferecido", "termo_busca": ""}
-- "o primeiro" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Escolher primeira opção de documento oferecido", "termo_busca": ""}
-- "qual é a CNH do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CNH", "documentos_citados": ["CNH"], "pergunta_completa": "Enviar documento CNH do Fulano", "termo_busca": "CNH Fulano"}
-- "desative os alertas da CNH do Thomaz" -> {"intencao": "silenciar_alerta", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CNH", "documentos_citados": ["CNH"], "pergunta_completa": "Desativar alertas de vencimento da CNH do Thomaz", "termo_busca": "CNH"}
-- "o que vence este mês?" -> {"intencao": "consultar_vencimentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar documentos que vencem este mês", "termo_busca": ""}
-- "a profissão do fulano está errada, é Técnico em Eletrotécnica" -> {"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "profissao", "valor_novo": "Técnico em Eletrotécnica", "campos": ["profissao"], "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Corrigir profissão do Fulano para Técnico em Eletrotécnica", "termo_busca": ""}
-- "está errado, é 10/05/2030" (após VEGA responder validade) -> {"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "validadeCnh", "valor_novo": "10/05/2030", "campos": ["validadeCnh"], "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Corrigir validade da CNH do Fulano para 10/05/2030", "termo_busca": ""}
-- "o que falta do fulano?" -> {"intencao": "consultar_checklist_faltantes", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar documentos faltantes do Fulano", "termo_busca": ""}
-- "quais documentos faltam da empresa X?" -> {"intencao": "consultar_checklist_faltantes", "pessoa": "Empresa X", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar documentos faltantes da Empresa X", "termo_busca": ""}
-- "o que está faltando?" -> {"intencao": "consultar_checklist_faltantes", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar documentos faltantes", "termo_busca": ""}
-- "apaga o último documento que mandei" -> {"intencao": "apagar_documento", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Apagar o último documento enviado", "termo_busca": ""}
-- "apaga a certidão de casamento do fulano" -> {"intencao": "apagar_documento", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "certidão de casamento", "documentos_citados": ["certidão de casamento"], "pergunta_completa": "Apagar certidão de casamento do Fulano", "termo_busca": "certidão de casamento Fulano"}
-
-
+- "Eu quero saber onde que fica o escritório da Delta. E eu também quero saber o Pix do João Gabriel." -> {"pedidos": [{"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Onde fica o escritório da Delta Plan?", "termo_busca": "Escritorio Deltaplan"}, {"intencao": "pergunta_conteudo", "pessoa": "João Gabriel", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é a chave PIX do João Gabriel?", "termo_busca": "pix João Gabriel"}]}
+- "me envia o crea e a certidão de casamento do Thomaz" -> {"pedidos": [{"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CREA", "documentos_citados": ["CREA"], "pergunta_completa": "Enviar documento CREA do Thomaz", "termo_busca": "CREA Thomaz"}, {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "Certidão de Casamento", "documentos_citados": ["Certidão de Casamento"], "pergunta_completa": "Enviar certidão de casamento do Thomaz", "termo_busca": "Certidão de Casamento Thomaz"}]}
+- "qual o cpf do thomaz e me manda a certidão de casamento dele" -> {"pedidos": [{"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["cpf"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o CPF do Thomaz?", "termo_busca": "cpf Thomaz"}, {"intencao": "pedir_arquivo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "Certidão de Casamento", "documentos_citados": ["Certidão de Casamento"], "pergunta_completa": "Enviar certidão de casamento do Thomaz", "termo_busca": "Certidão de Casamento Thomaz"}]}
+- "o que tem no cofre?" -> {"pedidos": [{"intencao": "listar_documentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Listar documentos disponíveis no cofre", "termo_busca": ""}]}
+- "quais documentos do fulano você tem?" -> {"pedidos": [{"intencao": "listar_documentos", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Listar documentos do Fulano", "termo_busca": "Fulano"}]}
+- "me mande o endereço do escritório da Delta Plan" -> {"pedidos": [{"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o endereço do escritório da Delta Plan?", "termo_busca": "Escritorio Deltaplan"}]}
+- "resuma a art de serviços menegazzo" -> {"pedidos": [{"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "ART de serviços menegazzo", "documentos_citados": ["ART de serviços menegazzo"], "pergunta_completa": "Resumir a ART de serviços menegazzo", "termo_busca": "ART de serviços menegazzo"}]}
+- "resuma esse documento" -> {"pedidos": [{"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Resumir o documento do contexto", "termo_busca": ""}]}
+- "quando fui dispensado do serviço militar?" -> {"pedidos": [{"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "dispensa militar", "documentos_citados": [], "pergunta_completa": "Quando ocorreu a dispensa do serviço militar?", "termo_busca": "dispensa servico militar"}]}
+- "qual a data de registro de casamento do Thomaz?" -> {"pedidos": [{"intencao": "pergunta_conteudo", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "certidão de casamento", "documentos_citados": [], "pergunta_completa": "Qual é a data de registro de casamento do Thomaz?", "termo_busca": "registro casamento Thomaz"}]}
+- "qual o pix do João Gabriel" -> {"pedidos": [{"intencao": "pergunta_conteudo", "pessoa": "João Gabriel", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é a chave PIX do João Gabriel?", "termo_busca": "pix João Gabriel"}]}
+- "me manda a chave pix" -> {"pedidos": [{"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é a chave PIX?", "termo_busca": "chave pix"}]}
+- "qual o link do sistema de máquinas?" -> {"pedidos": [{"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o link do App de Portfólio das Máquinas?", "termo_busca": "App de Portfólio das Máquinas"}]}
+- "qual o contato do financeiro?" -> {"pedidos": [{"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o contato do departamento financeiro?", "termo_busca": "financeiro"}]}
+- "como chegar na obra residencial solar?" -> {"pedidos": [{"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Como chegar na obra residencial solar?", "termo_busca": "obra residencial solar"}]}
+- "o que tem em Regra de Negócio: Proposta Comercial" -> {"pedidos": [{"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o conteúdo do documento ou instrução Regra de Negócio: Proposta Comercial?", "termo_busca": "Proposta Comercial"}]}
+- "quais dias eu tomei as vacinas da covid?" -> {"pedidos": [{"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Quais dias foram tomadas as vacinas da covid?", "termo_busca": "vacina covid"}]}
+- "me mande o título de eleitor do thomaz" -> {"pedidos": [{"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["titulo_eleitor"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o título de eleitor do Thomaz?", "termo_busca": "titulo eleitor Thomaz"}]}
+- "me passa o PIS do thomaz" -> {"pedidos": [{"intencao": "dado_pessoal", "pessoa": "Thomaz", "campos": ["pis"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o PIS do Thomaz?", "termo_busca": "pis Thomaz"}]}
+- "qual cpf?" -> {"pedidos": [{"intencao": "dado_pessoal", "pessoa": "", "campos": ["cpf"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o CPF?", "termo_busca": "cpf"}]}
+- "qual o endereço?" -> {"pedidos": [{"intencao": "dado_pessoal", "pessoa": "", "campos": ["endereco"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o endereço residencial?", "termo_busca": "endereco"}]}
+- "qual o nome da mãe da Nilceia?" -> {"pedidos": [{"intencao": "dado_pessoal", "pessoa": "Nilceia", "campos": ["filiacao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Quem é a mãe da Nilceia?", "termo_busca": "filiacao Nilceia"}]}
+- "e o RG dele?" (após falar de um titular) -> {"pedidos": [{"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["rg"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o RG do Fulano?", "termo_busca": "Fulano"}]}
+- "me envie esses documentos do fulano: endereço, estado civil e profissão" -> {"pedidos": [{"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["endereco", "estadoCivil", "profissao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Quais são o endereço, estado civil e profissão do Fulano?", "termo_busca": "Fulano"}]}
+- "show, agora me envie o pdf" -> {"pedidos": [{"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Enviar documento do contexto", "termo_busca": ""}]}
+- "contrato de locação" -> {"pedidos": [{"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "contrato de locação", "documentos_citados": ["contrato de locação"], "pergunta_completa": "Enviar documento contrato de locação", "termo_busca": "contrato de locação"}]}
+- "sim" -> {"pedidos": [{"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Confirmar envio do documento oferecido", "termo_busca": ""}]}
+- "o primeiro" -> {"pedidos": [{"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Escolher primeira opção de documento oferecido", "termo_busca": ""}]}
+- "qual é a CNH do fulano" -> {"pedidos": [{"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CNH", "documentos_citados": ["CNH"], "pergunta_completa": "Enviar documento CNH do Fulano", "termo_busca": "CNH Fulano"}]}
+- "desative os alertas da CNH do Thomaz" -> {"pedidos": [{"intencao": "silenciar_alerta", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CNH", "documentos_citados": ["CNH"], "pergunta_completa": "Desativar alertas de vencimento da CNH do Thomaz", "termo_busca": "CNH"}]}
+- "o que vence este mês?" -> {"pedidos": [{"intencao": "consultar_vencimentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar documentos que vencem este mês", "termo_busca": ""}]}
+- "a profissão do fulano está errada, é Técnico em Eletrotécnica" -> {"pedidos": [{"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "profissao", "valor_novo": "Técnico em Eletrotécnica", "campos": ["profissao"], "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Corrigir profissão do Fulano para Técnico em Eletrotécnica", "termo_busca": ""}]}
+- "está errado, é 10/05/2030" (após VEGA responder validade) -> {"pedidos": [{"intencao": "corrigir_dado", "pessoa": "Fulano", "campo_corrigir": "validadeCnh", "valor_novo": "10/05/2030", "campos": ["validadeCnh"], "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Corrigir validade da CNH do Fulano para 10/05/2030", "termo_busca": ""}]}
+- "o que falta do fulano?" -> {"pedidos": [{"intencao": "consultar_checklist_faltantes", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar documentos faltantes do Fulano", "termo_busca": ""}]}
+- "quais documentos faltam da empresa X?" -> {"pedidos": [{"intencao": "consultar_checklist_faltantes", "pessoa": "Empresa X", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar documentos faltantes da Empresa X", "termo_busca": ""}]}
+- "o que está faltando?" -> {"pedidos": [{"intencao": "consultar_checklist_faltantes", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar documentos faltantes", "termo_busca": ""}]}
+- "apaga o último documento que mandei" -> {"pedidos": [{"intencao": "apagar_documento", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Apagar o último documento enviado", "termo_busca": ""}]}
+- "apaga a certidão de casamento do fulano" -> {"pedidos": [{"intencao": "apagar_documento", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "certidão de casamento", "documentos_citados": ["certidão de casamento"], "pergunta_completa": "Apagar certidão de casamento do Fulano", "termo_busca": "certidão de casamento Fulano"}]}
 `;
 
   // Limita o histórico recente às últimas 12 mensagens para contexto rico e sem custo excessivo
@@ -1469,7 +1781,7 @@ EXEMPLOS OBRIGATÓRIOS:
         ],
         response_format: { type: 'json_object' },
         temperature: 0.1,
-        max_completion_tokens: 300,
+        max_completion_tokens: 600,
       },
       { motivo: 'chat_classificador' }
     );
@@ -1477,290 +1789,39 @@ EXEMPLOS OBRIGATÓRIOS:
     const parsed = JSON.parse(response.choices[0]?.message?.content || '{}');
     const tempoMs = Date.now() - inicio;
 
-    const msgNorm = normalizarParaBusca(mensagemUsuario);
-
-    // Identifica se uma pessoa foi citada diretamente na mensagem atual
-    let pessoaCitadaNaMensagem: string | undefined = undefined;
-    if (parsed.pessoa) {
-      const pNorm = normalizarParaBusca(parsed.pessoa);
-      if (
-        msgNorm.includes(pNorm) ||
-        pNorm.split(/\s+/).some((parte: string) => parte.length >= 3 && msgNorm.includes(parte))
-      ) {
-        pessoaCitadaNaMensagem = parsed.pessoa;
-      }
-    }
-
-    // Fallback de detecção por regex para casos como "da Nilceia", "do Marcos", "de Fulano"
-    if (!pessoaCitadaNaMensagem) {
-      const matchPessoa = mensagemUsuario.match(/\b(?:de|da|do|dos|das)\s+([A-ZÁÉÍÓÚÂÊÔÃÕ][a-záéíóúâêôãõç]+(?:\s+[A-ZÁÉÍÓÚÂÊÔÃÕ][a-záéíóúâêôãõç]+)*)/);
-      if (matchPessoa) {
-        const candidato = matchPessoa[1].trim();
-        const candNorm = normalizarParaBusca(candidato);
-        const ehPalavraIgnorada = /\b(documento|pdf|arquivo|certidao|contrato|alvara|cnh|rg|empresa|delta|deltaplan|registro|casamento|nascimento|mae|pai|filiacao|resumo|vacina|covid|escrit[oó]rio|sede|filial|obra|almoxarifado|dep[oó]sito|canteiro|local|localiza[cç][aã]o|sistema|app|portal|chave|pix|conta|banco|contato|suporte)\b/i.test(candNorm);
-        if (!ehPalavraIgnorada) {
-          pessoaCitadaNaMensagem = candidato;
-        }
-      }
-    }
-
-    let origemPessoa: 'mensagem_atual' | 'contexto' | undefined = undefined;
-    let ambiguidadeTitulares: FichaTitular[] = [];
-
-    // Regra 16 com Tolerância de Grafia e Apelidos:
-    // Nome citado na mensagem sempre prevalece sobre o contexto.
-    // Se casar com um titular cadastrado (exato, por apelido ou por tolerância S/Z, TH/T, acentos),
-    // normalizamos para o nome oficial do titular. Se for ambíguo, sinalizamos ambiguidade.
-    if (pessoaCitadaNaMensagem) {
-      const resAmb = resolverTitularComAmbiguidade(pessoaCitadaNaMensagem, titulares);
-      if (resAmb.ambiguo) {
-        ambiguidadeTitulares = resAmb.candidatos;
-        parsed.pessoa = pessoaCitadaNaMensagem;
-      } else if (resAmb.titular) {
-        parsed.pessoa = resAmb.titular.nome;
-      } else {
-        parsed.pessoa = pessoaCitadaNaMensagem;
-      }
-      origemPessoa = 'mensagem_atual';
-    } else if (parsed.pessoa) {
-      // Se parsed.pessoa veio da LLM mas não está textualmente na mensagem atual,
-      // verificamos se casa com algum titular cadastrado válido (com tolerância)
-      const resAmb = resolverTitularComAmbiguidade(parsed.pessoa, titulares);
-      if (resAmb.ambiguo) {
-        ambiguidadeTitulares = resAmb.candidatos;
-      } else if (resAmb.titular) {
-        parsed.pessoa = resAmb.titular.nome;
-      } else {
-        parsed.pessoa = '';
-      }
-    }
-
-    const ehPedidoCertidao = /\bcertid[aã]o\b/i.test(msgNorm);
-
-    // Mapeamento e detecção de segurança para campos cadastrais e dados específicos
-    const padroesCampos: { campo: string; regex: RegExp }[] = [
-      { campo: 'endereco', regex: /\b(endere[cç]o|mora|resid[eê]ncia)\b/i },
-      { campo: 'estadoCivil', regex: /\b(estado\s*civil|casad[oa]|solteir[oa]|divorciad[oa])\b/i },
-      { campo: 'rg', regex: /\b(rg|identidade)\b/i },
-      { campo: 'profissao', regex: /\b(profiss[aã]o|cargo|ocupa[cç][aã]o)\b/i },
-      { campo: 'cpf', regex: /\b(cpf)\b/i },
-      { campo: 'filiacao', regex: /\b(m[aã]e|pai|pais|filia[cç][aã]o)\b/i },
-      { campo: 'dataNascimento', regex: /\b(data\s*(de\s*)?nascimento|quando\s*nasceu|ano\s*de\s*nascimento|idade)\b/i },
-      { campo: 'validadeCnh', regex: /\b(validade(\s*da\s*cnh)?|vencimento)\b/i },
-      { campo: 'categoriaCnh', regex: /\b(categoria(\s*da\s*cnh)?)\b/i },
-      { campo: 'cnh', regex: /\b(n[uú]mero\s*da\s*cnh|numero\s*da\s*cnh)\b/i },
-      { campo: 'orgaoEmissor', regex: /\b([oó]rg[aã]o(\s*emissor)?)\b/i },
-      { campo: 'titulo_eleitor', regex: /\b(t[ií]tulo(\s*de)?\s*eleitor(al)?|n[uú]mero\s*do\s*t[ií]tulo)\b/i },
-      { campo: 'pis', regex: /\b(pis|pasep|nis)\b/i },
-      { campo: 'carteira_reservista', regex: /\b(reservista|certificado\s*de\s*reservista|carteira\s*de\s*reservista)\b/i },
-      { campo: 'certidao_nascimento', regex: /\b(certid[aã]o\s*de\s*nascimento)\b/i },
-      { campo: 'passaporte', regex: /\b(passaporte|n[uú]mero\s*do\s*passaporte)\b/i },
-    ];
-
-    const camposDetectadosRegex: string[] = [];
-    if (!ehPedidoCertidao || msgNorm.includes('certidao de nascimento')) {
-      for (const p of padroesCampos) {
-        if (p.regex.test(msgNorm)) {
-          camposDetectadosRegex.push(p.campo);
-        }
-      }
-    }
-
-    // Detecção expressa de sujeitos na mensagem atual
-    const REGEX_EMPRESA = /\b(delta|deltaplan|delta\s*plan|empresa|escrit[oó]rio|escritorio|sede|filial|obra|almoxarifado|canteiro|construtora)\b/i;
-    const citaEmpresaNaMensagem = REGEX_EMPRESA.test(msgNorm);
-    const titularExplicitoMsg = extrairTitularExplicito(msgNorm);
-
-    // Detecção de intenção de correção de dado cadastral
-    const REGEX_CORRECAO = /\b(est[aá]\s*errad[oa]|t[aá]\s*errad[oa]|n[aã]o\s*[eé]|incorret[oa]|corrija|corrigir|alterar|mudar\s*para|o\s*certo\s*[eé]|o\s*correto\s*[eé])\b/i;
-    const ehMensagemCorrecao =
-      REGEX_CORRECAO.test(msgNorm) ||
-      parsed.intencao === 'corrigir_dado' ||
-      (/\bvalidade\b/i.test(msgNorm) && /\b\d{2}\/\d{2}\/\d{4}\b/.test(msgNorm));
-
-    // Detecção de parar de alertar / silenciar alertas
-    const REGEX_SILENCIAR = /\b(pare\s*de\s*alerta(r)?|n[aã]o\s*alerte(\s*mais)?|desative(\s*os)?\s*alerta(s)?|desativar\s*alerta(s)?|silenciar\s*alerta(s)?|parar\s*de\s*alerta(r)?)\b/i;
-    const ehSilenciarAlerta = REGEX_SILENCIAR.test(msgNorm) || parsed.intencao === 'silenciar_alerta';
-
-    if (ehSilenciarAlerta) {
-      parsed.intencao = 'silenciar_alerta';
-      if (!parsed.pessoa && (pessoaCitadaNaMensagem || titularExplicitoMsg)) {
-        parsed.pessoa = pessoaCitadaNaMensagem || titularExplicitoMsg;
-        origemPessoa = 'mensagem_atual';
-      }
-      if (!parsed.documento_citado) {
-        if (/\bcrt\b/i.test(msgNorm)) parsed.documento_citado = 'CRT';
-        else if (/\bcrea\b/i.test(msgNorm)) parsed.documento_citado = 'CREA';
-        else if (/\bcnh\b/i.test(msgNorm)) parsed.documento_citado = 'CNH';
-      }
-    } else if (parsed.intencao === 'consultar_checklist_faltantes' && !ehMensagemCorrecao) {
-      if (pessoaCitadaNaMensagem || titularExplicitoMsg) {
-        parsed.pessoa = pessoaCitadaNaMensagem || titularExplicitoMsg;
-        origemPessoa = 'mensagem_atual';
-      }
-    } else if (parsed.intencao === 'consultar_vencimentos' && !ehMensagemCorrecao) {
-      parsed.pessoa = '';
-      parsed.campos = [];
-      origemPessoa = undefined;
-    } else if (citaEmpresaNaMensagem) {
-      // Regra 1 e 2: Se a mensagem atual cita a empresa, ela SEMPRE substitui o sujeito anterior.
-      // Intenção é pergunta_conteudo e pessoa é nula.
-      parsed.pessoa = '';
-      parsed.intencao = 'pergunta_conteudo';
-      parsed.campos = [];
-      origemPessoa = undefined;
-      if (/\b(endere[cç]o|mora|resid[eê]ncia|localiza|onde\s*fica)\b/i.test(msgNorm)) {
-        parsed.termo_busca = 'Escritório Deltaplan';
-        parsed.pergunta_completa = 'Qual é o endereço do escritório da Deltaplan?';
-      }
-    } else if (pessoaCitadaNaMensagem) {
-      // Regra 16: Citou expressamente uma pessoa na mensagem atual (mesmo não sendo titular cadastrado)
-      parsed.pessoa = pessoaCitadaNaMensagem;
-      origemPessoa = 'mensagem_atual';
-    } else if (titularExplicitoMsg) {
-      // Citou expressamente um titular cadastrado na mensagem atual
-      parsed.pessoa = titularExplicitoMsg;
-      origemPessoa = 'mensagem_atual';
+    let pedidosRaw: any[] = [];
+    if (Array.isArray(parsed.pedidos) && parsed.pedidos.length > 0) {
+      pedidosRaw = parsed.pedidos;
+    } else if (parsed.intencao) {
+      pedidosRaw = [parsed];
     } else {
-      // Mensagem atual NÃO cita nem a empresa nem pessoa explicitamente
-      // Contexto só deve ser usado quando a mensagem não tem sujeito nenhum e está dentro da janela de 30 mensagens
-      const titularDoHistorico = extrairUltimoTitularDoHistorico(historicoRecente);
-      if (titularDoHistorico) {
-        const temPronomeOuCampo = /\b(ele|dele|dela|ela)\b/i.test(msgNorm) || camposDetectadosRegex.length > 0 || ehMensagemCorrecao;
-        if (parsed.pessoa || temPronomeOuCampo) {
-          parsed.pessoa = titularDoHistorico;
-          origemPessoa = 'contexto';
-        }
-      } else {
-        // Se estiver fora da janela das últimas 30 mensagens ou sem titular no histórico, limpa a pessoa
-        parsed.pessoa = '';
-        origemPessoa = undefined;
-      }
+      pedidosRaw = [{ intencao: 'pergunta_conteudo', pergunta_completa: mensagemUsuario, termo_busca: mensagemUsuario }];
     }
 
-    if (ehMensagemCorrecao) {
-      parsed.intencao = 'corrigir_dado';
-      if (!parsed.campo_corrigir) {
-        if (camposDetectadosRegex.length > 0) {
-          parsed.campo_corrigir = camposDetectadosRegex[0];
-        } else {
-          // Tenta identificar o campo da última mensagem do assistente
-          const ultimaMsgAss = [...(historicoRecente || [])].reverse().find((m) => m.remetente === 'assistente');
-          const textoAssNorm = normalizarParaBusca(ultimaMsgAss?.texto || '');
-          for (const p of padroesCampos) {
-            if (p.regex.test(textoAssNorm)) {
-              parsed.campo_corrigir = p.campo;
-              break;
-            }
-          }
-        }
-      }
-
-      // Se valor_novo ainda estiver vazio, tenta extrair por regex na mensagem atual
-      if (!parsed.valor_novo) {
-        const matchData = mensagemUsuario.match(/\b(\d{2}\/\d{2}\/\d{4})\b/);
-        if (matchData) {
-          parsed.valor_novo = matchData[1];
-        } else {
-          const matchValor = mensagemUsuario.match(/(?:é|e|para|sendo|correto é|certo é|na verdade é)\s+([^.,\n]+)/i);
-          if (matchValor) {
-            parsed.valor_novo = matchValor[1].trim();
-          }
-        }
-      }
-    }
-
-    // Se a intenção for dado_pessoal, garante o preenchimento de campos detectados
-    if (parsed.intencao === 'dado_pessoal' && !citaEmpresaNaMensagem) {
-      if (camposDetectadosRegex.length > 0) {
-        const camposSet = new Set([...(parsed.campos || []), ...camposDetectadosRegex]);
-        parsed.campos = Array.from(camposSet);
-      }
-      parsed.documento_citado = '';
-      parsed.documentos_citados = [];
-    }
-
-    // REGRA DE PROTEÇÃO: Se a IA classificou como pedir_arquivo mas o usuário pediu resumo ou explicação de documento, converte para pergunta_conteudo
-    const ehPerguntaExplicacaoOuResumo =
-      /\b(resum[aeo]|resumo|expliq?u?e|fala\s+sobre|diz\s+sobre|o\s+que\s+(fala|diz|tem|consta)\s+n[oa]|conteudo|qual\s+o\s+conteudo|sobre\s+o\s+que\s+[eé]|quantas\s+linhas|em\s+\d+\s+linhas)\b/i.test(
-        msgNorm
-      );
-
-    if (ehPerguntaExplicacaoOuResumo && parsed.intencao === 'pedir_arquivo') {
-      parsed.intencao = 'pergunta_conteudo';
-      // REGRA 20: Prevalência Absoluta de Documento Citado sobre o Contexto
-      const sanitizadoResumo = sanitizarPedidoResumoOuConteudo(mensagemUsuario);
-      if (!sanitizadoResumo.apenasReferenciaContexto) {
-        if (!parsed.documento_citado) {
-          const tipoIdentificado = identificarTipoPedido(mensagemUsuario);
-          const termoCandidato = tipoIdentificado || sanitizadoResumo.termoLimpo;
-          if (termoCandidato && !/\b(cofre|arquivo|documento)\b/i.test(termoCandidato)) {
-            parsed.documento_citado = termoCandidato;
-            parsed.termo_busca = parsed.documento_citado;
-          }
-        }
-      } else {
-        parsed.documento_citado = '';
-        parsed.termo_busca = '';
-      }
-    }
-
-    // Múltiplos documentos citados no texto (ex: "me envia o crea e a certidão de casamento")
-    const multiplosNoTexto = identificarMultiplosDocumentosNoTexto(mensagemUsuario, docs, parsed.pessoa);
-    if (!ehPerguntaExplicacaoOuResumo && parsed.intencao !== 'listar_documentos' && parsed.intencao !== 'dado_pessoal' && multiplosNoTexto.length > 1) {
-      parsed.intencao = 'pedir_arquivo';
-      parsed.documentos_citados = multiplosNoTexto.map((d) => d.titulo);
-      parsed.documento_citado = multiplosNoTexto.map((d) => d.titulo).join(', ');
-      parsed.termo_busca = parsed.documento_citado;
-    }
-
-    // Se documento_citado for apenas comando de envio genérico (ex: "pdf", "arquivo", cortesia residual), limpa para usar contexto
-    if (parsed.documento_citado) {
-      const sanitizadoCitado = sanitizarPedidoArquivo(parsed.documento_citado);
-      if (sanitizadoCitado.apenasComandoEnvio) {
-        parsed.documento_citado = '';
-        parsed.termo_busca = '';
-      }
-    }
-
-    // REGRA DE PROTEÇÃO 3: Verificação de saudação vs pergunta de conteúdo
-    const padroesConteudo = [
-      /\bo que (tem|diz|consta|ha|ha) em\b/i,
-      /\bo que (diz|fala|tem)\b/i,
-      /\bme fal[ae] sobre\b/i,
-      /\bqual(is)? a(s)? regra(s)?\b/i,
-      /\bqual(is)? a(s)? politica(s)?\b/i,
-      /\bqual(is)? o(s)? endereco(s)?\b/i,
-      /\bonde fica\b/i,
-    ];
-    const temPadraoConteudo = padroesConteudo.some((p) => p.test(msgNorm));
-    const temTituloConhecimento = conhecimentos.some((c) =>
-      msgNorm.includes(normalizarParaBusca(c.titulo))
-    );
-    const temTituloDoc = docs.some((d) =>
-      msgNorm.includes(normalizarParaBusca(d.titulo))
+    const pedidosProcessados: ItemPedidoClassificado[] = pedidosRaw.map((raw) =>
+      posProcessarItemPedido(raw, mensagemUsuario, titulares, docs, conhecimentos, historicoRecente)
     );
 
-    if (parsed.intencao === 'saudacao_ou_vago' && (temPadraoConteudo || temTituloConhecimento || temTituloDoc)) {
-      parsed.intencao = 'pergunta_conteudo';
-    }
-
-    const perguntaCompleta = parsed.pergunta_completa || mensagemUsuario;
-    const termoBusca = parsed.termo_busca || parsed.documento_citado || perguntaCompleta;
+    const primeiro = pedidosProcessados[0] || {
+      intencao: 'pergunta_conteudo' as IntencaoChat,
+      pergunta_completa: mensagemUsuario,
+      termo_busca: mensagemUsuario,
+    };
 
     return {
-      intencao: parsed.intencao || 'pergunta_conteudo',
-      pessoa: parsed.pessoa || undefined,
-      origemPessoa: parsed.pessoa ? (origemPessoa || (titularExplicitoMsg ? 'mensagem_atual' : 'contexto')) : undefined,
-      campos: parsed.campos && parsed.campos.length > 0 ? parsed.campos : undefined,
-      campo_corrigir: parsed.campo_corrigir || undefined,
-      valor_novo: parsed.valor_novo || undefined,
-      documento_citado: parsed.documento_citado || undefined,
-      documentos_citados: parsed.documentos_citados && parsed.documentos_citados.length > 0 ? parsed.documentos_citados : undefined,
-      ambiguidadeTitulares: ambiguidadeTitulares.length > 1 ? ambiguidadeTitulares.map((t) => t.nome) : undefined,
-      pergunta_completa: perguntaCompleta,
-      termo_busca: termoBusca,
-      pergunta_reescrita: perguntaCompleta,
+      intencao: primeiro.intencao,
+      pessoa: primeiro.pessoa,
+      origemPessoa: primeiro.origemPessoa,
+      campos: primeiro.campos,
+      campo_corrigir: primeiro.campo_corrigir,
+      valor_novo: primeiro.valor_novo,
+      documento_citado: primeiro.documento_citado,
+      documentos_citados: primeiro.documentos_citados,
+      ambiguidadeTitulares: primeiro.ambiguidadeTitulares,
+      pergunta_completa: primeiro.pergunta_completa,
+      termo_busca: primeiro.termo_busca,
+      pergunta_reescrita: primeiro.pergunta_reescrita || primeiro.pergunta_completa,
+      pedidos: pedidosProcessados,
       tempoMs,
       tokensPrompt: response.usage?.prompt_tokens || 0,
       tokensCompletion: response.usage?.completion_tokens || 0,
@@ -1773,6 +1834,13 @@ EXEMPLOS OBRIGATÓRIOS:
       pergunta_completa: mensagemUsuario,
       termo_busca: mensagemUsuario,
       pergunta_reescrita: mensagemUsuario,
+      pedidos: [
+        {
+          intencao: 'pergunta_conteudo',
+          pergunta_completa: mensagemUsuario,
+          termo_busca: mensagemUsuario,
+        },
+      ],
       tempoMs: Date.now() - inicio,
       tokensPrompt: 0,
       tokensCompletion: 0,
@@ -1985,6 +2053,7 @@ async function executarProcessamentoMensagemChatInterno(dados: {
   contato: Contato;
   documentosDisponiveis?: DocumentoRegistro[];
   documentoIdDireto?: string;
+  pedidoPreClassificado?: ItemPedidoClassificado;
 }): Promise<ResultadoChatOrquestrador> {
   const inicioTotal = Date.now();
   const { mensagemUsuario, historicoRecente, documentoIdDireto } = dados;
@@ -2100,7 +2169,202 @@ async function executarProcessamentoMensagemChatInterno(dados: {
   // ETAPA 1 (ARQUITETURAL): Classificação e Reescrita Contextual pela IA
   // TODA mensagem de texto ou áudio passa primeiro pela IA!
   // ============================================================================
-  const classificacao = await classificarEReescreverMensagem(mensagemUsuario, historicoRecente, openai);
+  let classificacao: ClassificacaoChatResponse;
+
+  if (dados.pedidoPreClassificado) {
+    const p = dados.pedidoPreClassificado;
+    classificacao = {
+      intencao: p.intencao,
+      pessoa: p.pessoa,
+      origemPessoa: p.origemPessoa,
+      campos: p.campos,
+      campo_corrigir: p.campo_corrigir,
+      valor_novo: p.valor_novo,
+      documento_citado: p.documento_citado,
+      documentos_citados: p.documentos_citados,
+      ambiguidadeTitulares: p.ambiguidadeTitulares,
+      pergunta_completa: p.pergunta_completa,
+      termo_busca: p.termo_busca,
+      pergunta_reescrita: p.pergunta_reescrita || p.pergunta_completa,
+      pedidos: [p],
+      tempoMs: 0,
+      tokensPrompt: 0,
+      tokensCompletion: 0,
+      tokensTotal: 0,
+    };
+  } else {
+    classificacao = await classificarEReescreverMensagem(mensagemUsuario, historicoRecente, openai);
+  }
+
+  // ============================================================================
+  // TRATAMENTO DE MÚLTIPLOS PEDIDOS NO MESMO LOTE / MENSAGEM (REQUISITOS 1 A 6)
+  // Se o classificador identificar mais de 1 pedido, executa cada um e une as respostas
+  // ============================================================================
+  if (!dados.pedidoPreClassificado && classificacao.pedidos && classificacao.pedidos.length > 1) {
+    const MAX_PEDIDOS_LOTE = 5;
+    const pedidosTotais = classificacao.pedidos;
+    const pedidosParaExecutar = pedidosTotais.slice(0, MAX_PEDIDOS_LOTE);
+    const excedeuLimite = pedidosTotais.length > MAX_PEDIDOS_LOTE;
+
+    const resultadosExecucao: {
+      sucesso: boolean;
+      resultado?: ResultadoChatOrquestrador;
+      erroMsg?: string;
+      pedido: ItemPedidoClassificado;
+    }[] = [];
+
+    for (const pedidoItem of pedidosParaExecutar) {
+      try {
+        const resPedido = await executarProcessamentoMensagemChatInterno({
+          ...dados,
+          mensagemUsuario: pedidoItem.pergunta_completa || mensagemUsuario,
+          pedidoPreClassificado: pedidoItem,
+        });
+        resultadosExecucao.push({
+          sucesso: true,
+          resultado: resPedido,
+          pedido: pedidoItem,
+        });
+      } catch (err: any) {
+        console.error(`[VEGA Multi-Pedidos ❌] Erro ao executar pedido:`, err);
+        const descricao = pedidoItem.documento_citado || pedidoItem.pergunta_completa || pedidoItem.termo_busca || 'solicitado';
+        resultadosExecucao.push({
+          sucesso: false,
+          erroMsg: `Não consegui processar o pedido sobre *${descricao}*.`,
+          pedido: pedidoItem,
+        });
+      }
+    }
+
+    // 1. Montagem da resposta textual consolidada na ordem dos pedidos
+    const blocosTexto: string[] = [];
+    for (let i = 0; i < resultadosExecucao.length; i++) {
+      const item = resultadosExecucao[i];
+      if (item.sucesso && item.resultado) {
+        let txt = item.resultado.textoResposta.trim();
+        // Em pedidos após o primeiro, removemos eventuais saudações redundantes
+        if (i > 0) {
+          txt = removerSaudacaoInicial(txt);
+        }
+        if (txt) {
+          blocosTexto.push(txt);
+        }
+      } else if (item.erroMsg) {
+        blocosTexto.push(`⚠️ ${item.erroMsg}`);
+      }
+    }
+
+    if (excedeuLimite) {
+      blocosTexto.push(
+        `_Por segurança, atendi os primeiros ${MAX_PEDIDOS_LOTE} pedidos. Por favor, envie os demais novamente._`
+      );
+    }
+
+    const textoRespostaConsolidada = blocosTexto.join('\n\n');
+
+    // 2. Anexos consolidados de todos os pedidos
+    const todosAnexos: Anexo[] = [];
+    const anexosIdsVistos = new Set<string>();
+    for (const item of resultadosExecucao) {
+      if (item.sucesso && item.resultado?.anexos) {
+        for (const anexo of item.resultado.anexos) {
+          const chave = (anexo as any).id || anexo.nome;
+          if (!anexosIdsVistos.has(chave)) {
+            anexosIdsVistos.add(chave);
+            todosAnexos.push(anexo);
+          }
+        }
+      }
+    }
+
+    // 3. Rastro e métricas consolidadas
+    const etapasConsolidadas: EtapaRastro[] = [
+      {
+        ordem: 1,
+        nome: 'Classificação Multi-Pedidos',
+        descricao: `Identificados ${pedidosTotais.length} pedidos distintos (${pedidosParaExecutar.length} processados).`,
+        tempoMs: classificacao.tempoMs,
+        detalhes: {
+          totalPedidos: pedidosTotais.length,
+          processados: pedidosParaExecutar.length,
+          pedidos: pedidosParaExecutar.map((p) => ({
+            intencao: p.intencao,
+            pessoa: p.pessoa,
+            pergunta: p.pergunta_completa,
+          })),
+        },
+      },
+    ];
+
+    let ordemEtapa = 2;
+    let tokensPromptConsolidados = classificacao.tokensPrompt;
+    let tokensCompletionConsolidados = classificacao.tokensCompletion;
+    let tokensTotalConsolidados = classificacao.tokensTotal;
+    let dadosEstruturadosFinal: any = undefined;
+
+    for (const item of resultadosExecucao) {
+      if (item.sucesso && item.resultado) {
+        if (!dadosEstruturadosFinal && item.resultado.dadosEstruturados) {
+          dadosEstruturadosFinal = item.resultado.dadosEstruturados;
+        }
+        if (item.resultado.rastro) {
+          tokensPromptConsolidados += item.resultado.rastro.tokensPrompt || 0;
+          tokensCompletionConsolidados += item.resultado.rastro.tokensCompletion || 0;
+          tokensTotalConsolidados += item.resultado.rastro.tokensTotal || 0;
+          for (const et of item.resultado.rastro.etapas || []) {
+            etapasConsolidadas.push({
+              ...et,
+              ordem: ordemEtapa++,
+              nome: `[Pedido: ${item.pedido.intencao}] ${et.nome}`,
+            });
+          }
+        }
+      }
+    }
+
+    const rastroConsolidado: RastroRegistro = {
+      mensagemId: '',
+      usuarioNome: contato.nome,
+      usuarioId: contato.id,
+      mensagemOriginal: mensagemUsuario,
+      perguntaReescrita: classificacao.pergunta_completa,
+      perguntaCompleta: classificacao.pergunta_completa,
+      termoBusca: classificacao.termo_busca,
+      pessoa: classificacao.pessoa,
+      origemPessoa: classificacao.origemPessoa,
+      campos: classificacao.campos,
+      documentoCitado: classificacao.documento_citado,
+      intencaoDetectada: classificacao.intencao,
+      tipoBusca: 'multi_pedidos',
+      documentosEncontrados: [],
+      enviouAnexo: todosAnexos.length > 0,
+      anexosDetalhes: todosAnexos.map((a) => ({
+        nome: a.nome,
+        titulo: a.titulo,
+        tamanho: a.tamanho,
+        tipo: a.tipo,
+      })),
+      respostaFinal: mascararDadosSensiveis(textoRespostaConsolidada),
+      modeloUsado: chatModel,
+      tokensTotal: tokensTotalConsolidados,
+      tokensPrompt: tokensPromptConsolidados,
+      tokensCompletion: tokensCompletionConsolidados,
+      custoEstimadoUsd: calcularCustoEstimado(chatModel, tokensPromptConsolidados, tokensCompletionConsolidados),
+      tempoTotalMs: Date.now() - inicioTotal,
+      etapas: etapasConsolidadas,
+    };
+
+    return {
+      textoResposta: textoRespostaConsolidada,
+      anexos: todosAnexos.length > 0 ? todosAnexos : undefined,
+      origem: 'motor',
+      intencaoDetectada: classificacao.intencao,
+      perguntaReescrita: classificacao.pergunta_completa,
+      rastro: rastroConsolidado,
+      dadosEstruturados: dadosEstruturadosFinal,
+    };
+  }
+
   const { intencao, pergunta_reescrita, pessoa, campo, tempoMs: tempoClassif } = classificacao;
 
   tokensPromptTotal += classificacao.tokensPrompt;
