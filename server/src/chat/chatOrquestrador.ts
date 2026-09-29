@@ -1364,22 +1364,28 @@ Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
   "campos": ["lista de campos ou dados específicos solicitados (ex.: cpf, rg, filiacao, mae, pai, dataNascimento, endereco, estadoCivil, profissao, cnh, validadeCnh, categoriaCnh, orgaoEmissor, titulo_eleitor, pis, carteira_reservista, certidao_nascimento, passaporte ou qualquer outro campo/dado perguntado) ou vazio"],
   "campo_corrigir": "nome do campo a ser corrigido (ex: profissao, cpf, rg, etc.) ou vazio",
   "valor_novo": "novo valor correto informado pelo usuário ou vazio",
-  "documento_citado": "nome do documento físico citado explicitamente ou vazio",
+  "documento_citado": "nome do documento físico específico citado (NUNCA termos de repositório como 'cofre', 'arquivo', 'documento') ou vazio",
   "documentos_citados": ["lista de documentos físicos citados na mensagem atual (ex: ['CREA', 'Certidão de Casamento']) ou vazio"],
   "pergunta_completa": "versão clara e completa da pergunta sem perder nenhuma informação",
   "termo_busca": "versão curta para busca por nome de arquivo ou tópico"
 }
 
 REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
+0. REGRA SUPREMA DE CATÁLOGO ("COFRE" NUNCA É DOCUMENTO):
+   - A palavra "Cofre" é o repositório geral de documentos da VEGA, NUNCA um documento individual!
+   - Perguntas gerais de inventário ou catálogo ("o que tem no cofre?", "o que você tem no cofre?", "quais documentos você tem?", "o que temos guardado?", "listar o cofre", "quais documentos existem?") SÃO RIGOROSAMENTE "listar_documentos", NUNCA "pergunta_conteudo", NUNCA "pedir_arquivo" e NUNCA "consultar_checklist_faltantes"!
+   - Em consultas de catálogo, "documento_citado" e "termo_busca" DEVEM SER OBRIGATORIAMENTE VAZIOS ("")! É TERMINANTEMENTE PROIBIDO preencher "documento_citado": "cofre"!
 1. "saudacao_ou_vago": Apenas saudações puras ("oi", "olá", "bom dia") ou pedidos vagos ("me ajuda"). NUNCA use para perguntas com assunto ou listas.
 2. "pedir_arquivo": Pedido EXPRESSO de envio ou entrega de qualquer documento físico ("me manda a CNH", "envia o PDF do CREA", "baixa o arquivo", "preciso do documento X", "me envia a certidão", "perfeito, agora me envie o pdf", "show, agora solta esse arquivo aí", "manda o arquivo").
    - REGRA DE OURO PARA DOCUMENTO CITADO:
      * Preencha "documento_citado" e "termo_busca" SOMENTE se a mensagem citar expressamente um documento real e identificável (ex: "CNH", "Certidão de Casamento", "CREA", "Alvará", "Contrato", "Apólice de Seguro", "Passaporte").
      * Se a mensagem for apenas um comando de envio, gíria ou pedido genérico do arquivo em discussão (ex: "perfeito, agora me envie o pdf", "show, agora solta esse arquivo aí", "me envia o pdf", "manda o arquivo", "solta esse documento", "manda ele", "pode mandar", "solta aí"), devolva OBRIGATORIAMENTE "documento_citado": "" e "termo_busca": "" (vazios!). O sistema usará o contexto da conversa para enviar o documento correto.
-     * NUNCA coloque frases de comando, cortesias ou gírias em "documento_citado" ou "termo_busca"!
+     * NUNCA coloque frases de comando, cortesias, gírias ou termos como "cofre" em "documento_citado" ou "termo_busca"!
    - ATENÇÃO CRÍTICA: Só é "pedir_arquivo" quando a pessoa pede o DOCUMENTO EM SI para envio ("me manda", "me envia", "preciso do arquivo", "quero o PDF", "solta esse arquivo").
    - Pedidos de RESUMO, EXPLICAÇÃO, INTERPRETAÇÃO ou PERGUNTAS sobre o que está escrito ("resuma esse documento", "o que esse documento fala sobre X?", "explique o documento", "qual a data de registro do casamento?", "quando fui dispensado do serviço militar?") são SEMPRE "pergunta_conteudo", NUNCA "pedir_arquivo"!
-3. "listar_documentos": Quando o usuário solicitar listar, ver ou consultar quais documentos existem no Cofre ou de uma pessoa ("quais documentos você tem?", "o que tem no cofre?", "quais documentos do Fulano você tem?", "o que você tem do Fulano?", "preciso de mais alguns documentos do Fulano", "me mostra os documentos", "quais documentos existem?", "listar os documentos"). Preencha "pessoa" se citada.
+3. "listar_documentos": Quando o usuário solicitar listar, ver, catalogar ou consultar o inventário geral de documentos ("o que tem no cofre?", "o que você tem no cofre?", "quais documentos você tem?", "quais documentos tem no cofre?", "quais documentos do Fulano você tem?", "o que você tem do Fulano?", "preciso de mais alguns documentos do Fulano", "me mostra os documentos", "quais documentos existem?", "listar os documentos"). Preencha "pessoa" se citada.
+   - REGRA MANDATÓRIA: Qualquer pergunta sobre o que está guardado ou disponível no cofre ("o que tem no cofre?", "o que você tem no cofre?", "o que temos guardado?") É ESTRITAMENTE "listar_documentos", JAMAIS "pergunta_conteudo"!
+   - Nesses casos, "documento_citado": "" e "termo_busca": "" são OBRIGATORIAMENTE VAZIOS ("")!
 4. "dado_pessoal": Perguntas sobre dados cadastrais e informações pontuais de pessoas (RG, CPF, filiação/mãe/pai, profissão, estado civil, validade da CNH, título de eleitor, PIS, carteira de reservista, etc.).
    - REGRA MANDATÓRIA DE CAMPOS VS DOCUMENTOS FÍSICOS:
      * Campos cadastrais (título de eleitor, PIS, CPF, filiação, mãe, pai, data de nascimento, estado civil, profissão, endereço, órgão emissor, validade da CNH, categoria da CNH) NÃO SÃO documentos físicos avulsos no Cofre!
@@ -1388,9 +1394,14 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
    - DISTINÇÃO ESSENCIAL: PIS vs PIX:
      * "PIS" (ou PIS/PASEP) é campo cadastral de pessoa física ("dado_pessoal"). Ex: "qual o PIS do Thomaz", "me mande o PIS do Fulano" -> intencao: "dado_pessoal", campos: ["pis"].
      * "PIX" (ou chave PIX) NÃO é documento físico nem dado cadastral de documento do cofre; é informação corporativa da Base de Conhecimento ("pergunta_conteudo"). Ex: "qual o pix do João Gabriel", "me manda a chave pix", "qual o pix da empresa" -> intencao: "pergunta_conteudo", termo_busca: "pix [pessoa/empresa]".
-5. "pergunta_conteudo": Perguntas sobre o conteúdo de documentos e itens da Base de Conhecimento Corporativo (regras de negócio, instruções, links de sistemas/portais, contatos corporativos, chaves PIX, localizações/endereços corporativos de obras e escritórios).
+5. "pergunta_conteudo": Perguntas sobre o texto ou dados internos de um documento específico já identificado ou instruções da Base de Conhecimento.
+   - PROIBIÇÃO ABSOLUTA: Perguntas de inventário geral ("o que tem no cofre?", "o que você tem no cofre?", "quais documentos você tem?") NUNCA SÃO "pergunta_conteudo"! Elas são OBRIGATORIAMENTE "listar_documentos"!
    - ITENS ESTRUTURADOS DA BASE DE CONHECIMENTO (PIX, LINKS, CONTATOS, LOCAIS):
-     * Pedidos de chaves PIX ("qual o pix do João Gabriel", "me manda a chave pix", "qual o pix da empresa"), links de sistemas/portais ("link do sistema de máquinas", "portal de clientes"), contatos/telefones corporativos ("contato do financeiro", "telefone do comercial") ou locais/endereços corporativos ("onde fica o escritório central", "como chegar na obra solar") são SEMPRE "pergunta_conteudo", NUNCA "dado_pessoal", NUNCA "pedir_arquivo" e NUNCA "fora_de_escopo"!
+     * Links de sistemas/portais ("qual o link do sistema de máquinas", "me passa o link do app", "portal de clientes") são SEMPRE "pergunta_conteudo", preencha "termo_busca" com o nome do sistema citado.
+     * Contatos e telefones corporativos ("qual o contato do financeiro", "telefone da contabilidade", "ramal do escritório") são SEMPRE "pergunta_conteudo", preencha "termo_busca" com o setor/nome citado.
+     * Chaves PIX ("qual o pix do João Gabriel", "me manda a chave pix", "qual o pix da empresa") são SEMPRE "pergunta_conteudo", preencha "termo_busca" com "pix [titular]".
+     * Localização e como chegar ("onde fica o escritório central", "como chegar na obra solar") são SEMPRE "pergunta_conteudo", preencha "termo_busca" com o nome do local.
+     * NENHUM desses itens é "dado_pessoal", "pedir_arquivo" ou "fora_de_escopo"!
    - REGRA DE FATOS JURÍDICOS E DOCUMENTAIS VS NASCIMENTO (REGRA 9):
      * Perguntas sobre datas de eventos registrados em documentos (ex: data de dispensa do serviço militar / reservista, data de registro do casamento, datas de vacinas) são ESTRITAMENTE "pergunta_conteudo", NUNCA "dado_pessoal" e JAMAIS devem ser respondidas com data de nascimento! Preencha "documento_citado" e "termo_busca" correspondente ao fato.
    - REGRA DE DOCUMENTO CITADO EM RESUMO OU CONTEÚDO (REGRA 20):
@@ -1401,7 +1412,7 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
    - Quando o usuário disser "esse documento" ou "o documento acima" logo após a VEGA entregar um anexo, a pergunta DEVE ser respondida com base estrita no texto daquele documento!
 6. "corrigir_dado": Quando o usuário afirmar que uma informação cadastral de titular está errada, incorreta ou precisar ser corrigida (ex.: "a profissão do Fulano está errada, é Técnico em Eletrotécnica").
 7. "consultar_vencimentos": Perguntas sobre prazos de validade ou vencimento de documentos do cofre ("tem algum documento vencendo?", "o que vence este mês?", "quais documentos estão vencidos?", "documentos a vencer", "vencimento de documentos", "validade dos documentos").
-8. "silenciar_alerta": Quando o usuário solicitar para parar de alertar sobre o vencimento de um documento (ex: "pare de alertar o CRT do Fulano").
+8. "silenciar_alerta": Quando o usuário solicitar para parar de alertar ou desativar avisos de vencimento de um documento ("pare de alertar o CRT do Fulano", "desative os alertas da CNH", "não me avise mais sobre o CREA", "silenciar alerta do documento X", "desativar aviso de validade"). Preencha "documento_citado" com o documento e "pessoa" se citada.
 9. "consultar_checklist_faltantes": Perguntas sobre documentos faltantes, pendentes ou checklist de um titular ou empresa ("o que está faltando?", "o que falta do Thomaz?", "quais documentos faltam da empresa X?", "o que falta no cofre do Fulano?", "quais documentos faltam?", "checklist de documentos do Fulano", "documentos pendentes"). Preencha "pessoa" se citada.
 10. "fora_de_escopo": Apenas assuntos que NÃO TÊM NENHUMA relação com documentos ou informações da empresa (ex: receitas culinárias, futebol, piadas). Perguntas sobre vacinas, documentos, datas de imunização ou dados de titulares NUNCA são fora de escopo.
 
@@ -1412,6 +1423,10 @@ REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - O CONTEXTO SÓ DEVE SER USADO quando a mensagem atual NÃO tem sujeito nenhum (ex.: perguntas com pronomes como "ele", "dele", ou elípticas como "e a validade?", "e o CPF dele?", "e o RG dele?", "e o endereço dele?"). Nesses casos, herde o titular mencionado anteriormente no histórico.
 
 EXEMPLOS OBRIGATÓRIOS:
+- "o que tem no cofre?" -> {"intencao": "listar_documentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Listar documentos disponíveis no cofre", "termo_busca": ""}
+- "o que você tem no cofre?" -> {"intencao": "listar_documentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Listar documentos disponíveis no cofre", "termo_busca": ""}
+- "quais documentos você tem?" -> {"intencao": "listar_documentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Listar documentos disponíveis no cofre", "termo_busca": ""}
+- "quais documentos do fulano você tem?" -> {"intencao": "listar_documentos", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Listar documentos do Fulano", "termo_busca": "Fulano"}
 - "me mande o endereço do escritório da Delta Plan" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o endereço do escritório da Delta Plan?", "termo_busca": "Escritorio Deltaplan"}
 - "endereço delta" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Qual é o endereço da Delta Plan?", "termo_busca": "Escritorio Deltaplan"}
 - "resuma a art de serviços menegazzo" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "ART de serviços menegazzo", "documentos_citados": ["ART de serviços menegazzo"], "pergunta_completa": "Resumir a ART de serviços menegazzo", "termo_busca": "ART de serviços menegazzo"}
@@ -1448,9 +1463,9 @@ EXEMPLOS OBRIGATÓRIOS:
 - "quem é a mãe do fulano" -> {"intencao": "dado_pessoal", "pessoa": "Fulano", "campos": ["filiacao"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Quem é a mãe do Fulano?", "termo_busca": "filiacao Fulano"}
 - "qual cpf?" -> {"intencao": "dado_pessoal", "pessoa": "", "campos": ["cpf"], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o CPF?", "termo_busca": "cpf"}
 - "qual é a CNH do fulano" -> {"intencao": "pedir_arquivo", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CNH", "pergunta_completa": "Enviar documento CNH do Fulano", "termo_busca": "CNH Fulano"}
-- "quais documentos você tem?" -> {"intencao": "listar_documentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Listar documentos disponíveis no cofre", "termo_busca": ""}
-- "o que tem no cofre?" -> {"intencao": "listar_documentos", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Listar documentos do cofre", "termo_busca": ""}
-- "quais documentos do fulano você tem?" -> {"intencao": "listar_documentos", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Listar documentos do Fulano", "termo_busca": "Fulano"}
+- "qual o link do sistema de máquinas?" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o link do App de Portfólio das Máquinas?", "termo_busca": "App de Portfólio das Máquinas"}
+- "qual o contato do financeiro?" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Qual é o contato do departamento financeiro?", "termo_busca": "financeiro"}
+- "desative os alertas da CNH do Thomaz" -> {"intencao": "silenciar_alerta", "pessoa": "Thomaz", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "CNH", "documentos_citados": [], "pergunta_completa": "Desativar alertas de vencimento da CNH do Thomaz", "termo_busca": "CNH"}
 - "onde fica o escritório central?" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Onde fica o escritório central?", "termo_busca": "escritório central"}
 - "como chegar na obra residencial solar?" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Como chegar na obra residencial solar?", "termo_busca": "obra residencial solar"}
 - "onde fica o depósito?" -> {"intencao": "pergunta_conteudo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Onde fica o depósito?", "termo_busca": "depósito"}
@@ -1462,6 +1477,8 @@ EXEMPLOS OBRIGATÓRIOS:
 - "checklist do fulano" -> {"intencao": "consultar_checklist_faltantes", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar checklist de documentos do Fulano", "termo_busca": ""}
 - "o que está faltando?" -> {"intencao": "consultar_checklist_faltantes", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Consultar documentos faltantes", "termo_busca": ""}
 - "sim" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Confirmar envio do documento oferecido", "termo_busca": ""}
+- "pode mandar" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Confirmar envio do documento oferecido", "termo_busca": ""}
+- "o primeiro" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Escolher primeira opção de documento oferecido", "termo_busca": ""}
 
 `;
 
@@ -1698,21 +1715,24 @@ EXEMPLOS OBRIGATÓRIOS:
       parsed.documentos_citados = [];
     }
 
-    // REGRA DE PROTEÇÃO: Perguntas de explicação, resumo ou conteúdo documental prevalecem
+    // REGRA DE PROTEÇÃO: Se a IA classificou como pedir_arquivo mas o usuário pediu resumo ou explicação de documento, converte para pergunta_conteudo
     const ehPerguntaExplicacaoOuResumo =
-      /\b(resum[aeo]|resumo|expliq?u?e|fala\s+sobre|diz\s+sobre|o\s+que\s+(fala|diz|tem|consta)|conteudo|qual\s+o\s+conteudo|sobre\s+o\s+que\s+[eé]|quantas\s+linhas|em\s+\d+\s+linhas)\b/i.test(
+      /\b(resum[aeo]|resumo|expliq?u?e|fala\s+sobre|diz\s+sobre|o\s+que\s+(fala|diz|tem|consta)\s+n[oa]|conteudo|qual\s+o\s+conteudo|sobre\s+o\s+que\s+[eé]|quantas\s+linhas|em\s+\d+\s+linhas)\b/i.test(
         msgNorm
       );
 
-    if (ehPerguntaExplicacaoOuResumo) {
+    if (ehPerguntaExplicacaoOuResumo && parsed.intencao === 'pedir_arquivo') {
       parsed.intencao = 'pergunta_conteudo';
       // REGRA 20: Prevalência Absoluta de Documento Citado sobre o Contexto
       const sanitizadoResumo = sanitizarPedidoResumoOuConteudo(mensagemUsuario);
       if (!sanitizadoResumo.apenasReferenciaContexto) {
         if (!parsed.documento_citado) {
           const tipoIdentificado = identificarTipoPedido(mensagemUsuario);
-          parsed.documento_citado = tipoIdentificado || sanitizadoResumo.termoLimpo;
-          parsed.termo_busca = parsed.documento_citado;
+          const termoCandidato = tipoIdentificado || sanitizadoResumo.termoLimpo;
+          if (termoCandidato && !/\b(cofre|arquivo|documento)\b/i.test(termoCandidato)) {
+            parsed.documento_citado = termoCandidato;
+            parsed.termo_busca = parsed.documento_citado;
+          }
         }
       } else {
         parsed.documento_citado = '';
