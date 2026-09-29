@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { getSupabaseClient } from '../db/supabaseClient.js';
 import { chamarChatComTelemetria } from '../ai/telemetriaIaService.js';
-import { salvarOuAtualizarTitular, obterTodosTitulares, resolverTitularCadastrado } from '../storage.js';
+import { salvarOuAtualizarTitular, obterTodosTitulares, resolverTitularCadastrado, removerDocumento } from '../storage.js';
 import { formatarHorarioBrasilia } from '../utils/dataHoraUtils.js';
 
 export type TipoPendenciaWhatsApp =
@@ -10,7 +10,8 @@ export type TipoPendenciaWhatsApp =
   | 'falta_tipo'
   | 'falta_ambos'
   | 'novo_titular'
-  | 'duplicidade';
+  | 'duplicidade'
+  | 'confirmacao_exclusao';
 
 export interface PendenciaDocumentoWhatsApp {
   id: string;
@@ -138,7 +139,8 @@ export async function resolverPendenciaWhatsApp(pendenciaId: string): Promise<vo
 export async function processarRespostaPendenciaWhatsApp(
   pendencia: PendenciaDocumentoWhatsApp,
   textoMensagem: string,
-  nomeUsuario: string
+  nomeUsuario: string,
+  perfilUsuario: 'admin' | 'comum' = 'admin'
 ): Promise<string | null> {
   const supabase = getSupabaseClient();
   const apiKey = process.env.OPENAI_API_KEY?.trim();
@@ -147,8 +149,129 @@ export async function processarRespostaPendenciaWhatsApp(
   const tipoPendencia = pendencia.tipo_pendencia;
 
   console.log(
-    `[Pendencias WhatsApp 🔍] Processando resposta para pendência "${tipoPendencia}" de "${nomeUsuario}": "${textoLimpo}"`
+    `[Pendencias WhatsApp 🔍] Processando resposta para pendência "${tipoPendencia}" de "${nomeUsuario}" (Perfil: ${perfilUsuario}): "${textoLimpo}"`
   );
+
+  // -------------------------------------------------------------
+  // CASO ESPECIAL: CONFIRMAÇÃO DE EXCLUSÃO DE DOCUMENTO
+  // -------------------------------------------------------------
+  if (tipoPendencia === 'confirmacao_exclusao') {
+    if (perfilUsuario !== 'admin') {
+      await supabase.from('pendencias_documento_whatsapp').delete().eq('id', pendencia.id);
+      return 'Você não tem permissão para apagar documentos do Cofre da VEGA. Apenas administradores podem realizar a exclusão.';
+    }
+
+    const docId = pendencia.documento_id;
+    const docTitulo = pendencia.dados_detectados?.titulo || 'documento';
+
+    let querConfirmar = false;
+    let querCancelar = false;
+
+    if (openai) {
+      try {
+        const respConf = await chamarChatComTelemetria(
+          openai,
+          {
+            model: 'gpt-5.4-mini',
+            messages: [
+              {
+                role: 'system',
+                content: `O usuário foi perguntado se confirma a exclusão definitiva do documento "${docTitulo}" do Cofre.
+Classifique a resposta do usuário em:
+- "confirmar" (se ele disser sim, confirmar, apagar, excluir, pode apagar, ok, com certeza, exclua)
+- "cancelar" (se ele disser não, cancelar, deixa, não apaga, esquece, cancela, manter)
+- "outro" (se mudar de assunto)
+Retorne estritamente JSON: { "decisao": "confirmar" | "cancelar" | "outro" }`,
+              },
+              { role: 'user', content: textoLimpo },
+            ],
+            response_format: { type: 'json_object' },
+            temperature: 0.1,
+          },
+          { motivo: 'whatsapp_pendencia_confirmar_exclusao' }
+        );
+        const parsedConf = JSON.parse(respConf.choices[0]?.message?.content || '{}');
+        if (parsedConf.decisao === 'confirmar') querConfirmar = true;
+        else if (parsedConf.decisao === 'cancelar') querCancelar = true;
+      } catch (errConf) {
+        console.warn('[Pendencias WhatsApp ⚠️] Erro ao classificar confirmação de exclusão com IA:', errConf);
+      }
+    }
+
+    if (!querConfirmar && !querCancelar) {
+      if (/^(sim|s|pode|confirmo|confirma|apaga|apagar|exclui|excluir|com certeza|claro)/i.test(textoLimpo)) {
+        querConfirmar = true;
+      } else if (/^(n[aã]o|n|cancela|cancelar|deixa|esquece|manter|mantem)/i.test(textoLimpo)) {
+        querCancelar = true;
+      }
+    }
+
+    if (querConfirmar) {
+      if (docId) {
+        await removerDocumento(docId);
+      }
+      await supabase.from('pendencias_documento_whatsapp').delete().eq('id', pendencia.id);
+      return `Documento *${docTitulo}* apagado com sucesso do Cofre.`;
+    }
+
+    if (querCancelar) {
+      await supabase.from('pendencias_documento_whatsapp').delete().eq('id', pendencia.id);
+      return `Operação cancelada. O documento *${docTitulo}* continua salvo no Cofre.`;
+    }
+
+    // Se o usuário falou de outro assunto, cancela a pendência e deixa seguir para o chat
+    await supabase.from('pendencias_documento_whatsapp').delete().eq('id', pendencia.id);
+    return null;
+  }
+
+  // -------------------------------------------------------------
+  // REGRA GERAL 1 & 2: CANCELAMENTO/DESCARTE EM QUALQUER PENDÊNCIA
+  // (Identificação 100% via IA sem lista fixa de frases no código)
+  // -------------------------------------------------------------
+  if (openai) {
+    try {
+      const respCancel = await chamarChatComTelemetria(
+        openai,
+        {
+          model: 'gpt-5.4-mini',
+          messages: [
+            {
+              role: 'system',
+              content: `Você está analisando a resposta de um usuário a uma pergunta sobre um documento recém-enviado que aguarda validação no Cofre (como informar titular, tipo ou confirmar duplicidade).
+Analise se a intenção do usuário é CANCELAR, DESISTIR, DESCARTAR, APAGAR ou se ele está dizendo que ENVIOU ERRADO / POR ENGANO / SEM QUERER / NÃO ERA PRA SALVAR.
+Exemplos de intenção de cancelamento: "não precisa salvar", "enviei errado", "cancela", "apaga", "manda errado", "foi sem querer", "esquece esse", "ignora", "não salva", "descarte", "apague essa foto", "não era pra mandar esse".
+Retorne ESTRITAMENTE um objeto JSON:
+{
+  "intencao": "cancelar" | "outro"
+}`,
+            },
+            { role: 'user', content: textoLimpo },
+          ],
+          response_format: { type: 'json_object' },
+          temperature: 0.1,
+        },
+        { motivo: 'whatsapp_pendencia_verificar_cancelamento' }
+      );
+
+      const parsedCancel = JSON.parse(respCancel.choices[0]?.message?.content || '{}');
+      if (parsedCancel.intencao === 'cancelar') {
+        // Regra 5: Só perfil admin pode apagar documentos
+        if (perfilUsuario !== 'admin') {
+          return 'Você não tem permissão para apagar documentos do Cofre da VEGA. Apenas administradores podem realizar a exclusão.';
+        }
+
+        // Regra 2: Apagar de verdade (registro na tabela documentos, trechos e embeddings, arquivo no Storage e pendência)
+        if (pendencia.documento_id) {
+          await removerDocumento(pendencia.documento_id);
+        }
+        await supabase.from('pendencias_documento_whatsapp').delete().eq('id', pendencia.id);
+
+        return 'Certo, descartei o documento. Ele não foi salvo no Cofre.';
+      }
+    } catch (errCancel) {
+      console.warn('[Pendencias WhatsApp ⚠️] Erro ao classificar cancelamento com IA:', errCancel);
+    }
+  }
 
   // -------------------------------------------------------------
   // CASO 1: DUPLICIDADE (Substituo ou mantenho os dois?)

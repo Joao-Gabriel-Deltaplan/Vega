@@ -11,7 +11,11 @@ import {
   salvarOuAtualizarTitular,
   resolverTitularCadastrado,
   resolverTitularComAmbiguidade,
+  removerDocumento,
+  mapearLinhaDocumento,
 } from '../storage.js';
+import { salvarPendenciaDocumentoWhatsApp } from '../whatsapp/pendenciasWhatsAppService.js';
+import { normalizarNumeroCanonica } from '../whatsapp/usuarioWhatsAppService.js';
 import {
   buscarDocumentos,
   isConfirmacaoSimples,
@@ -113,6 +117,7 @@ export type IntencaoChat =
   | 'consultar_vencimentos'
   | 'silenciar_alerta'
   | 'consultar_checklist_faltantes'
+  | 'apagar_documento'
   | 'fora_de_escopo';
 
 export interface ClassificacaoChatResponse {
@@ -1359,7 +1364,7 @@ Tipos de documentos no cofre: ${listaTiposDocs}.
 
 Retorne ESTRITAMENTE um objeto JSON com a seguinte estrutura:
 {
-  "intencao": "saudacao_ou_vago" | "pedir_arquivo" | "listar_documentos" | "dado_pessoal" | "pergunta_conteudo" | "corrigir_dado" | "consultar_vencimentos" | "silenciar_alerta" | "consultar_checklist_faltantes" | "fora_de_escopo",
+  "intencao": "saudacao_ou_vago" | "pedir_arquivo" | "listar_documentos" | "dado_pessoal" | "pergunta_conteudo" | "corrigir_dado" | "consultar_vencimentos" | "silenciar_alerta" | "consultar_checklist_faltantes" | "apagar_documento" | "fora_de_escopo",
   "pessoa": "nome do titular ou pessoa citada na mensagem (ex: Fulano, Nilceia) ou vazio",
   "campos": ["lista de campos ou dados específicos solicitados (ex.: cpf, rg, filiacao, mae, pai, dataNascimento, endereco, estadoCivil, profissao, cnh, validadeCnh, categoriaCnh, orgaoEmissor, titulo_eleitor, pis, carteira_reservista, certidao_nascimento, passaporte ou qualquer outro campo/dado perguntado) ou vazio"],
   "campo_corrigir": "nome do campo a ser corrigido (ex: profissao, cpf, rg, etc.) ou vazio",
@@ -1414,7 +1419,8 @@ REGRAS RÍGIDAS DE INTENÇÃO E ESCOPO:
 7. "consultar_vencimentos": Perguntas sobre prazos de validade ou vencimento de documentos do cofre ("tem algum documento vencendo?", "o que vence este mês?", "quais documentos estão vencidos?", "documentos a vencer", "vencimento de documentos", "validade dos documentos").
 8. "silenciar_alerta": Quando o usuário solicitar para parar de alertar ou desativar avisos de vencimento de um documento ("pare de alertar o CRT do Fulano", "desative os alertas da CNH", "não me avise mais sobre o CREA", "silenciar alerta do documento X", "desativar aviso de validade"). Preencha "documento_citado" com o documento e "pessoa" se citada.
 9. "consultar_checklist_faltantes": Perguntas sobre documentos faltantes, pendentes ou checklist de um titular ou empresa ("o que está faltando?", "o que falta do Thomaz?", "quais documentos faltam da empresa X?", "o que falta no cofre do Fulano?", "quais documentos faltam?", "checklist de documentos do Fulano", "documentos pendentes"). Preencha "pessoa" se citada.
-10. "fora_de_escopo": Apenas assuntos que NÃO TÊM NENHUMA relação com documentos ou informações da empresa (ex: receitas culinárias, futebol, piadas). Perguntas sobre vacinas, documentos, datas de imunização ou dados de titulares NUNCA são fora de escopo.
+10. "apagar_documento": Quando o usuário solicitar apagar, descartar, cancelar, deletar ou excluir um documento físico, foto ou arquivo salvo ou recém-enviado ("apaga o último documento que mandei", "apaga a foto que enviei agora", "deleta o arquivo", "exclui esse documento", "apaga o último documento", "apaga o documento X", "remove o documento Y"). Preencha "documento_citado" se citado e "pessoa" se citada.
+11. "fora_de_escopo": Apenas assuntos que NÃO TÊM NENHUMA relação com documentos ou informações da empresa (ex: receitas culinárias, futebol, piadas). Perguntas sobre vacinas, documentos, datas de imunização ou dados de titulares NUNCA são fora de escopo.
 
 REGRAS CRÍTICAS DE SUJEITO E CONTEXTO:
 - SE A MENSAGEM ATUAL CITA UM SUJEITO (pessoa cadastrada, pessoa não cadastrada ou empresa), ele SEMPRE SUBSTITUI o sujeito das mensagens anteriores! O contexto anterior DEVE SER IGNORADO nesse caso!
@@ -1479,6 +1485,10 @@ EXEMPLOS OBRIGATÓRIOS:
 - "sim" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Confirmar envio do documento oferecido", "termo_busca": ""}
 - "pode mandar" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Confirmar envio do documento oferecido", "termo_busca": ""}
 - "o primeiro" -> {"intencao": "pedir_arquivo", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "pergunta_completa": "Escolher primeira opção de documento oferecido", "termo_busca": ""}
+- "apaga o último documento que mandei" -> {"intencao": "apagar_documento", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Apagar o último documento enviado", "termo_busca": ""}
+- "apaga a foto que enviei agora" -> {"intencao": "apagar_documento", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Apagar a foto enviada recentemente", "termo_busca": ""}
+- "deleta o último arquivo" -> {"intencao": "apagar_documento", "pessoa": "", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "", "documentos_citados": [], "pergunta_completa": "Deletar o último arquivo enviado", "termo_busca": ""}
+- "apaga a certidão de casamento do fulano" -> {"intencao": "apagar_documento", "pessoa": "Fulano", "campos": [], "campo_corrigir": "", "valor_novo": "", "documento_citado": "certidão de casamento", "documentos_citados": ["certidão de casamento"], "pergunta_completa": "Apagar certidão de casamento do Fulano", "termo_busca": "certidão de casamento Fulano"}
 
 `;
 
@@ -2221,9 +2231,16 @@ async function executarProcessamentoMensagemChatInterno(dados: {
   // ============================================================================
   const ultimaMsgAssistente = [...historicoRecente].reverse().find((m) => m.remetente === 'assistente');
 
-  // A. CONFIRMAÇÃO DE CORREÇÃO PENDENTE DE DADO CADASTRAL
+  // A. CONFIRMAÇÃO DE CORREÇÃO PENDENTE DE DADO CADASTRAL OU AÇÃO PENDENTE
   const correcaoPendente = ultimaMsgAssistente?.correcaoPendente;
-  if (correcaoPendente && (intencao === 'corrigir_dado' || isConfirmacaoSimples(mensagemUsuario))) {
+  if (
+    correcaoPendente &&
+    (intencao === 'corrigir_dado' ||
+      intencao === 'apagar_documento' ||
+      intencao === 'pedir_arquivo' ||
+      isConfirmacaoSimples(mensagemUsuario) ||
+      /^(sim|s|pode|confirmo|confirma|apaga|apagar|exclui|excluir|n[aã]o|n|cancela|cancelar|deixa|esquece|manter|mantem)/i.test(mensagemUsuario.trim()))
+  ) {
     const autorizadosConfig = process.env.USUARIOS_AUTORIZADOS_CORRECAO?.trim();
     let autorizado = true;
     if (autorizadosConfig) {
@@ -2257,6 +2274,74 @@ async function executarProcessamentoMensagemChatInterno(dados: {
         perguntaReescrita: 'Alteração cadastral não autorizada',
         rastro,
       };
+    }
+
+    // Exclusão pendente de documento
+    if (correcaoPendente.campoId === ('apagar_documento' as any) && correcaoPendente.documentoId) {
+      const msgLimpa = mensagemUsuario.toLowerCase().trim();
+      const querConfirmar =
+        isConfirmacaoSimples(mensagemUsuario) ||
+        /^(sim|s|pode|confirmo|confirma|apaga|apagar|exclui|excluir|com certeza|claro)/i.test(msgLimpa);
+      const querCancelar = /^(n[aã]o|n|cancela|cancelar|deixa|esquece|manter|mantem)/i.test(msgLimpa);
+
+      if (querConfirmar) {
+        await removerDocumento(correcaoPendente.documentoId);
+        const docTitulo = correcaoPendente.documentoTitulo || 'documento';
+        const textoSucesso = `Documento *${docTitulo}* apagado com sucesso do Cofre.`;
+
+        etapas.push({
+          ordem: 2,
+          nome: 'Exclusão Definitiva Confirmada',
+          descricao: `Documento "${docTitulo}" excluído definitivamente do Cofre pelo administrador ${contato.nome}.`,
+          tempoMs: 1,
+        });
+
+        const rastroApagar = criarRastroFinal({
+          tipoBusca: 'nome_cofre',
+          docsEncontrados: [],
+          docUsado: docTitulo,
+          enviouAnexo: false,
+          respostaFinal: textoSucesso,
+          modelo: 'Motor Interno',
+        });
+
+        return {
+          textoResposta: textoSucesso,
+          origem: 'motor',
+          intencaoDetectada: 'apagar_documento',
+          perguntaReescrita: `Exclusão confirmada: ${docTitulo}`,
+          rastro: rastroApagar,
+        };
+      }
+
+      if (querCancelar) {
+        const docTitulo = correcaoPendente.documentoTitulo || 'documento';
+        const textoCancelado = `Operação cancelada. O documento *${docTitulo}* continua salvo no Cofre.`;
+
+        etapas.push({
+          ordem: 2,
+          nome: 'Exclusão Cancelada pelo Usuário',
+          descricao: `Exclusão do documento "${docTitulo}" cancelada pelo usuário.`,
+          tempoMs: 1,
+        });
+
+        const rastroCanc = criarRastroFinal({
+          tipoBusca: 'nome_cofre',
+          docsEncontrados: [],
+          docUsado: docTitulo,
+          enviouAnexo: false,
+          respostaFinal: textoCancelado,
+          modelo: 'Motor Interno',
+        });
+
+        return {
+          textoResposta: textoCancelado,
+          origem: 'motor',
+          intencaoDetectada: 'apagar_documento',
+          perguntaReescrita: `Exclusão cancelada: ${docTitulo}`,
+          rastro: rastroCanc,
+        };
+      }
     }
 
     if (correcaoPendente.campoId === ('silenciar_alerta' as any) && correcaoPendente.documentoId) {
@@ -4008,6 +4093,201 @@ async function executarProcessamentoMensagemChatInterno(dados: {
       buscaUsada: 'Checklist do Cofre (Documentos Esperados)',
       similaridade: '100% (Checklist Consolidado)',
       rastro,
+    };
+  }
+
+  // ============================================================================
+  // CASO 2.9: APAGAR OU DESCARTAR DOCUMENTO (intencao === 'apagar_documento')
+  // ============================================================================
+  if (intencao === 'apagar_documento') {
+    const inicioApagar = Date.now();
+
+    // 1. Ponto 5: Só perfil admin pode apagar documentos
+    const ehAdmin =
+      contato?.nivelAcesso === 'diretoria' ||
+      contato?.ficha?.nivelAcesso === 'diretoria' ||
+      (contato as any)?.perfil === 'admin' ||
+      contato?.cargo === 'Administrador';
+
+    if (!ehAdmin) {
+      const textoBloqueio = 'Você não tem permissão para apagar documentos do Cofre da VEGA. Apenas administradores podem realizar a exclusão.';
+      etapas.push({
+        ordem: 2,
+        nome: 'Verificação de Permissão de Exclusão',
+        descricao: `Usuário "${contato.nome}" não possui perfil de administrador. Exclusão bloqueada.`,
+        tempoMs: 1,
+      });
+
+      const rastro = criarRastroFinal({
+        tipoBusca: 'nenhuma',
+        docsEncontrados: [],
+        enviouAnexo: false,
+        respostaFinal: textoBloqueio,
+        modelo: 'Motor Interno',
+      });
+
+      return {
+        textoResposta: textoBloqueio,
+        origem: 'motor',
+        intencaoDetectada: 'apagar_documento',
+        perguntaReescrita: classificacao.pergunta_completa || mensagemUsuario,
+        rastro,
+      };
+    }
+
+    // 2. Localiza o documento que o usuário deseja apagar
+    const todosDocs = documentosDisponiveis.length > 0 ? documentosDisponiveis : await obterTodosDocumentos();
+    let docAlvo: DocumentoRegistro | undefined;
+
+    // A. Se o usuário citou um documento específico (ex: "apaga o contrato de locação", "apaga a CNH do Thomaz")
+    const docCitadoIa = (classificacao.documento_citado || '').trim();
+    const termoBuscaIa = (classificacao.termo_busca || '').trim();
+    const titularBusca = classificacao.pessoa || pessoa;
+
+    if (docCitadoIa || (termoBuscaIa && !/\b(ultimo|último|foto|arquivo|documento)\b/i.test(termoBuscaIa))) {
+      const termoDoc = docCitadoIa || termoBuscaIa;
+      const busca = await buscarDocumentos(termoDoc, contato, todosDocs, titularBusca);
+      if (busca.status === 'unico' && busca.resultados[0]) {
+        docAlvo = busca.resultados[0];
+      }
+    }
+
+    // B. Se não identificou por documento citado, busca pelo documento mais recente enviado pelo usuário
+    if (!docAlvo) {
+      try {
+        const supabase = getSupabaseClient();
+        const telLimpo = contato.telefone ? contato.telefone.replace(/\D/g, '') : '';
+
+        // 1. Tenta buscar documento recente com metadata do remetente
+        if (telLimpo) {
+          const { data: docsRemetente } = await supabase
+            .from('documentos')
+            .select('*')
+            .filter('tipo', 'not.ilike', '%conhecimento%')
+            .order('created_at', { ascending: false });
+
+          if (docsRemetente && docsRemetente.length > 0) {
+            const docDoUsuario = docsRemetente.find((d: any) => {
+              const meta = d.metadata || {};
+              const metaTel = (meta.remetenteNumero || '').replace(/\D/g, '');
+              const metaNome = (meta.remetenteNome || '').toLowerCase();
+              return (
+                (telLimpo && metaTel && (metaTel.includes(telLimpo) || telLimpo.includes(metaTel))) ||
+                (contato.nome && metaNome && metaNome.includes(contato.nome.toLowerCase()))
+              );
+            });
+            if (docDoUsuario) {
+              docAlvo = mapearLinhaDocumento(docDoUsuario);
+            }
+          }
+        }
+
+        // 2. Se não encontrou por metadata, pega o documento mais recente no Cofre
+        if (!docAlvo) {
+          const { data: docsGerais } = await supabase
+            .from('documentos')
+            .select('*')
+            .filter('tipo', 'not.ilike', '%conhecimento%')
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          if (docsGerais && docsGerais.length > 0) {
+            docAlvo = mapearLinhaDocumento(docsGerais[0]);
+          }
+        }
+      } catch (errBuscaRecente) {
+        console.warn('[Chat Orquestrador ⚠️] Falha ao buscar documento recente no Supabase:', errBuscaRecente);
+      }
+    }
+
+    if (!docAlvo) {
+      const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+      const textoSemDoc = `${prefixoSaudacao}Não encontrei nenhum documento recente para exclusão no Cofre.`;
+
+      const rastro = criarRastroFinal({
+        tipoBusca: 'nome_cofre',
+        docsEncontrados: [],
+        enviouAnexo: false,
+        respostaFinal: textoSemDoc,
+        modelo: 'Motor Interno',
+      });
+
+      return {
+        textoResposta: textoSemDoc,
+        origem: 'motor',
+        intencaoDetectada: 'apagar_documento',
+        perguntaReescrita: classificacao.pergunta_completa || mensagemUsuario,
+        rastro,
+      };
+    }
+
+    // 3. Documento localizado: Pede confirmação antes da remoção definitiva (Requisito 3)
+    const prefixoSaudacao = montarPrefixoSaudacao(mensagemUsuario, primeiroNome);
+    const textoConfirmacao = `${prefixoSaudacao}Você confirma a exclusão definitiva do documento *${docAlvo.titulo}* (${docAlvo.arquivo}) do Cofre? Responda *Sim* para confirmar ou *Não* para cancelar.`;
+
+    // Se o contato tiver telefone do WhatsApp, cria pendência ativa no Supabase
+    if (contato.telefone) {
+      try {
+        const numCanonica = normalizarNumeroCanonica(contato.telefone);
+        const conversaId = `wa-${numCanonica}`;
+        await salvarPendenciaDocumentoWhatsApp({
+          conversaId,
+          remetenteNumero: contato.telefone,
+          remetenteJid: `${numCanonica}@s.whatsapp.net`,
+          documentoId: docAlvo.id,
+          tipoPendencia: 'confirmacao_exclusao',
+          dadosDetectados: {
+            docTitulo: docAlvo.titulo,
+            arquivo: docAlvo.arquivo,
+          },
+        });
+      } catch (errPend) {
+        console.warn('[Chat Orquestrador ⚠️] Falha ao registrar pendência de exclusão para WhatsApp:', errPend);
+      }
+    }
+
+    etapas.push({
+      ordem: 2,
+      nome: 'Identificação de Documento para Exclusão',
+      descricao: `Documento "${docAlvo.titulo}" (${docAlvo.arquivo}) identificado para exclusão. Aguardando confirmação do usuário administrador.`,
+      tempoMs: Date.now() - inicioApagar,
+    });
+
+    const docsRastro: DocumentoRastro[] = [
+      {
+        id: docAlvo.id,
+        titulo: docAlvo.titulo,
+        tipo: docAlvo.tipo,
+        similaridade: 100,
+        usadoNaResposta: true,
+      },
+    ];
+
+    const rastro = criarRastroFinal({
+      tipoBusca: 'nome_cofre',
+      docsEncontrados: docsRastro,
+      docUsado: docAlvo.titulo,
+      enviouAnexo: false,
+      respostaFinal: textoConfirmacao,
+      modelo: 'Motor Interno',
+    });
+
+    return {
+      textoResposta: textoConfirmacao,
+      origem: 'motor',
+      intencaoDetectada: 'apagar_documento',
+      perguntaReescrita: `Confirmar exclusão de ${docAlvo.titulo}`,
+      rastro,
+      correcaoPendente: {
+        titularId: docAlvo.titular || '',
+        titularNome: docAlvo.titular || 'Delta Plan',
+        campoId: 'apagar_documento' as any,
+        campoLabel: 'exclusão de documento',
+        valorAnterior: docAlvo.titulo,
+        valorNovo: 'excluído',
+        documentoId: docAlvo.id,
+        documentoTitulo: docAlvo.titulo,
+      },
     };
   }
 

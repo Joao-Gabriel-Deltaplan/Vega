@@ -149,6 +149,7 @@ export interface DocumentoRegistro {
   trechoValidade?: string | null;
   storagePath?: string;
   metadata?: Record<string, any>;
+  createdAt?: string;
 }
 
 export type StatusAlertaVencimento = 'a_vencer' | 'vence_hoje' | 'vencido';

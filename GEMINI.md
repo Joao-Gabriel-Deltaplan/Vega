@@ -163,6 +163,10 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
 - **Documento inexistente no Cofre:** Se a mensagem citar um documento que NÃO existe no Cofre, responder obrigatoriamente que não encontrou esse documento no Cofre (`"Não encontrei [artigo] *[Tipo]* [prep] *[Titular]* no Cofre."` ou `"Não encontrei esse documento no Cofre."`), anotando na lista de pendências se for tipo documental reconhecível. NUNCA resumir, enviar ou responder com base em outro documento do contexto.
 - **Abrangência total:** Esta regra é válida indistintamente para pedidos de resumo (`resuma ...`, `resumo de ...`), perguntas de conteúdo (`pergunta_conteudo`) e pedidos de envio de arquivo (`pedir_arquivo`).
 
+---
 
-
-
+## 21. Cancelamento e Exclusão de Documentos (Pendência, Pós-Salvo e Permissões)
+- **Detecção de cancelamento por IA em pendências:** O usuário pode cancelar qualquer pendência de validação de documento recém-enviado com frases livres (ex.: `"não precisa salvar esse documento, enviei errado"`, `"cancela"`, `"apaga"`, `"foi sem querer"`, `"esquece esse"`). A intenção de cancelamento deve ser identificada 100% via IA (`gpt-5.4-mini`), sem lista fixa de frases no código.
+- **Exclusão real e definitiva no cancelamento:** Ao cancelar na pendência, o documento deve ser apagado de verdade: remoção do registro na tabela `documentos`, trechos e embeddings na tabela `trechos`, alertas de vencimento, arquivo físico no Supabase Storage e a pendência ativa. Resposta oficial de confirmação: `"Certo, descartei o documento. Ele não foi salvo no Cofre."`
+- **Exclusão pós-salvo ou pós-expiração:** O usuário pode solicitar a remoção de documentos já salvos ou após a pendência expirar (ex.: `"apaga o último documento que mandei"`, `"apaga a foto que enviei agora"`, `"apaga o documento [Nome]"`). O sistema localiza o documento correspondente e solicita confirmação prévia antes de apagar (`"Você confirma a exclusão definitiva do documento *[Título]* ([arquivo]) do Cofre? Responda *Sim* para confirmar ou *Não* para cancelar."`). Se confirmado, remove completamente e responde: `"Documento *[Título]* apagado com sucesso do Cofre."`.
+- **Restrição estrita de permissão (Perfil Admin):** Apenas usuários com perfil `admin` têm permissão para apagar documentos (tanto durante a pendência quanto pós-salvo). Para usuários comuns (`comum`), a VEGA bloqueia imediatamente a exclusão e responde: `"Você não tem permissão para apagar documentos do Cofre da VEGA. Apenas administradores podem realizar a exclusão."`

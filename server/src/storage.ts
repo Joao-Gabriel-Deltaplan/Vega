@@ -439,7 +439,7 @@ export function resolverTitularCadastrado(
   return resultado.titular;
 }
 
-function mapearLinhaDocumento(row: any): DocumentoRegistro {
+export function mapearLinhaDocumento(row: any): DocumentoRegistro {
   const pId = row.pessoa_id || undefined;
   return {
     id: row.id,
@@ -454,6 +454,7 @@ function mapearLinhaDocumento(row: any): DocumentoRegistro {
     visibilidade: (row.visibilidade as VisibilidadeDoc) || 'diretoria',
     tamanho: row.tamanho ? row.tamanho.trim() : undefined,
     dataCadastro: row.created_at ? new Date(row.created_at).toLocaleDateString('pt-BR') : undefined,
+    createdAt: row.created_at || undefined,
     statusIndexacao: row.status_indexacao || 'indexado',
     erroIndexacao: row.erro_indexacao || undefined,
     dataValidade: row.data_validade !== undefined ? row.data_validade : null,
@@ -462,6 +463,7 @@ function mapearLinhaDocumento(row: any): DocumentoRegistro {
     silenciarAlertas: Boolean(row.silenciar_alertas),
     trechoValidade: row.trecho_validade || undefined,
     storagePath: row.storage_path ? row.storage_path.trim() : (row.arquivo ? row.arquivo.trim() : ''),
+    metadata: row.metadata || undefined,
   };
 }
 

@@ -1106,7 +1106,8 @@ export async function processarEventoEvolution(
     const respostaPendencia = await processarRespostaPendenciaWhatsApp(
       pendenciaAtiva,
       textoMensagem,
-      usuarioAutorizado.nome
+      usuarioAutorizado.nome,
+      usuarioAutorizado.perfil
     );
 
     if (respostaPendencia) {
