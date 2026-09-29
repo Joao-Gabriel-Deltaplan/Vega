@@ -30,6 +30,7 @@ import {
   buscarPendenciaAtivaWhatsApp,
   processarRespostaPendenciaWhatsApp,
 } from './pendenciasWhatsAppService.js';
+import { adicionarMensagemAoAgrupador } from './agrupadorMensagensService.js';
 import {
   obterConversaPorId,
   salvarConversa,
@@ -858,22 +859,26 @@ export async function processarEventoEvolution(
         };
         await registrarMensagemETransmitir(conversaId, msgCliente);
 
-        // REGISTRA A RESPOSTA IMEDIATA DA VEGA
-        const msgAssistente: Mensagem = {
-          id: `wa-msg-${Date.now()}-vega-doc-ok`,
-          remetente: 'assistente',
-          nomeRemetente: ASSISTENTE.nomeExibicao,
-          horario: formatarHorarioBrasilia(),
-          timestamp: obterAgoraIsoUtc(),
-          texto: resultadoDoc.mensagemResposta,
-          origem: 'motor',
-        };
-        await registrarMensagemETransmitir(conversaId, msgAssistente);
+        // ENTREGA A MÍDIA AO AGRUPADOR (Aguardará legenda/mensagem enviada em seguida se houver)
+        await adicionarMensagemAoAgrupador({
+          conversaId,
+          destinatario: remoteJid,
+          contato,
+          usuarioAutorizado,
+          item: {
+            id: msgCliente.id,
+            texto: resultadoDoc.legenda || '',
+            tipoMensagem: resultadoDoc.isImagem ? 'imagem' : 'documento',
+            documentoId: resultadoDoc.doc?.id,
+            nomeArquivo: resultadoDoc.anexo?.nome || resultadoDoc.doc?.arquivo,
+            anexo: resultadoDoc.anexo,
+            mensagemRespostaPadraoDoc: resultadoDoc.mensagemResposta,
+          },
+        });
 
         return {
           sucesso: true,
           status: 'processado',
-          resposta: resultadoDoc.mensagemResposta,
           destinatario: remoteJid,
           mensagemId,
           usuario: usuarioAutorizado,
@@ -1100,153 +1105,35 @@ export async function processarEventoEvolution(
     eventosPainel.emitirNovaMensagem(conversaId, msgUsuario, conversaAtualizadaUsuario);
   }
 
-  // 5.1 VERIFICA SE EXISTE PENDÊNCIA DE VALIDAÇÃO DE DOCUMENTO ATIVA (Supabase, TTL 30m)
-  const pendenciaAtiva = await buscarPendenciaAtivaWhatsApp(conversaId);
-  if (pendenciaAtiva) {
-    const respostaPendencia = await processarRespostaPendenciaWhatsApp(
-      pendenciaAtiva,
-      textoMensagem,
-      usuarioAutorizado.nome,
-      usuarioAutorizado.perfil
-    );
-
-    if (respostaPendencia) {
-      const assistenteMsgId = `wa-msg-${Date.now()}-vega`;
-      const msgAssistente: Mensagem = {
-        id: assistenteMsgId,
-        remetente: 'assistente',
-        nomeRemetente: ASSISTENTE.nomeExibicao,
-        horario: formatarHorarioBrasilia(),
-        timestamp: obterAgoraIsoUtc(),
-        texto: respostaPendencia,
-        origem: 'motor',
-      };
-
-      const conversaAtualizadaAssistente = await adicionarMensagem(conversaId, msgAssistente);
-      if (conversaAtualizadaAssistente) {
-        eventosPainel.emitirNovaMensagem(conversaId, msgAssistente, conversaAtualizadaAssistente);
-      }
-
-      const tempoTotal = Date.now() - inicioProcessamento;
-      console.log(
-        `[Webhook WhatsApp 🤖] Pendência de documento resolvida em ${tempoTotal} ms para "${usuarioAutorizado.nome}".`
-      );
-
-      return {
-        sucesso: true,
-        status: 'processado',
-        resposta: respostaPendencia,
-        destinatario: remoteJid,
-        mensagemId,
-        usuario: usuarioAutorizado,
-        tempoMs: tempoTotal,
-      };
-    }
-    // Se respostaPendencia for null, a mensagem do usuário não era resposta à pendência;
-    // a pendência foi encerrada e a mensagem segue para o fluxo geral da VEGA abaixo.
-  }
-
-  // Obtém os documentos disponíveis para o nível de acesso do usuário
-  const docsDisponiveis = await obterDocumentosPorNivelAcesso(contato.nivelAcesso);
-
-  // Executa o orquestrador da VEGA
-  const resultadoChat = await processarMensagemChat({
-    mensagemUsuario: textoMensagem,
-    historicoRecente: conversa.mensagens,
+  // 5. ENFILEIRA NO AGRUPADOR DE MENSAGENS (DEBOUNCE / PROCESSAMENTO EM LOTE)
+  // Aguarda mensagens subsequentes da mesma pessoa ou responde imediatamente se tempoEspera === 0
+  await adicionarMensagemAoAgrupador({
+    conversaId,
+    destinatario: remoteJid,
     contato,
-    documentosDisponiveis: docsDisponiveis,
+    usuarioAutorizado,
+    item: {
+      id: msgUsuario.id,
+      texto: textoMensagem,
+      tipoMensagem,
+      duracaoAudioSegundos,
+      custoTranscricaoUsd,
+      modeloTranscricao,
+      tempoTranscricaoMs,
+      metodoDownloadAudio: metodoDownload,
+      textoTranscritoOriginal,
+      correcoesTranscricao,
+      audioStoragePath,
+      audioMimeType,
+    },
   });
-
-  const textoResposta = sanitizarRespostaTextoFinal(resultadoChat.textoResposta);
-  const assistenteMsgId = `wa-msg-${Date.now()}-vega`;
-
-  // Se a mensagem veio de áudio, enriquece o rastro com o custo e a etapa de transcrição
-  if (resultadoChat.rastro) {
-    if (tipoMensagem === 'audio') {
-      resultadoChat.rastro.tipoEntrada = 'audio';
-      resultadoChat.rastro.transcricaoAudio = {
-        duracaoSegundos: duracaoAudioSegundos || 0,
-        custoUsd: custoTranscricaoUsd,
-        modelo: modeloTranscricao,
-        metodoDownload,
-        textoOriginal: textoTranscritoOriginal,
-        textoCorrigido: textoMensagem,
-        correcoesAplicadas: correcoesTranscricao,
-      };
-
-      // Injeta a etapa de transcrição no rastro antes das etapas da busca/resposta
-      const descCorrecoes = correcoesTranscricao.length > 0
-        ? ` Correções fonéticas aplicadas: ${correcoesTranscricao.map((c) => `"${c.de}" → "${c.para}"`).join(', ')}.`
-        : '';
-
-      resultadoChat.rastro.etapas.unshift({
-        ordem: 0,
-        nome: 'Transcrição de Áudio (Whisper)',
-        descricao: `Áudio transcrito via ${modeloTranscricao} (${duracaoAudioSegundos || 0}s). Método: ${
-          metodoDownload === 'base64_payload' ? 'Base64 direto no evento' : 'Download via Evolution API'
-        }.${descCorrecoes}`,
-        tempoMs: tempoTranscricaoMs,
-        detalhes: {
-          duracaoSegundos: duracaoAudioSegundos,
-          custoUsd: custoTranscricaoUsd,
-          modelo: modeloTranscricao,
-          metodoDownload,
-          textoOriginal: textoTranscritoOriginal,
-          textoCorrigido: textoMensagem,
-          correcoesAplicadas: correcoesTranscricao,
-        },
-      });
-
-      // Soma o custo e tempo da transcrição
-      resultadoChat.rastro.custoEstimadoUsd = Number(
-        ((resultadoChat.rastro.custoEstimadoUsd || 0) + custoTranscricaoUsd).toFixed(6)
-      );
-      resultadoChat.rastro.tempoTotalMs =
-        (resultadoChat.rastro.tempoTotalMs || 0) + tempoTranscricaoMs;
-    }
-
-    try {
-      resultadoChat.rastro.mensagemId = assistenteMsgId;
-      resultadoChat.rastro.conversaId = conversaId;
-      resultadoChat.rastro.usuarioNome = usuarioAutorizado.nome;
-      resultadoChat.rastro.usuarioId = usuarioAutorizado.id;
-      await salvarRastro(resultadoChat.rastro);
-    } catch (e: any) {
-      console.warn('[Webhook WhatsApp ⚠️] Falha ao salvar rastro no Supabase:', e?.message || e);
-    }
-  }
-
-  // Registra mensagem do assistente na conversa
-  const msgAssistente: Mensagem = {
-    id: assistenteMsgId,
-    remetente: 'assistente',
-    nomeRemetente: ASSISTENTE.nomeExibicao,
-    horario: formatarHorarioBrasilia(),
-    timestamp: obterAgoraIsoUtc(),
-    texto: textoResposta,
-    origem: resultadoChat.origem,
-    rastro: resultadoChat.rastro,
-    documentoOferecidoId: resultadoChat.documentoOferecidoId,
-    anexos: resultadoChat.anexos,
-    dadosEstruturados: resultadoChat.dadosEstruturados,
-  };
-  const conversaAtualizadaAssistente = await adicionarMensagem(conversaId, msgAssistente);
-  if (conversaAtualizadaAssistente) {
-    eventosPainel.emitirNovaMensagem(conversaId, msgAssistente, conversaAtualizadaAssistente);
-  }
-
-  const tempoTotal = Date.now() - inicioProcessamento;
-  console.log(`[Webhook WhatsApp 🤖] Resposta gerada pela VEGA em ${tempoTotal} ms para "${usuarioAutorizado.nome}".`);
 
   return {
     sucesso: true,
     status: 'processado',
-    resposta: textoResposta,
-    anexos: resultadoChat.anexos,
     destinatario: remoteJid,
     mensagemId,
     usuario: usuarioAutorizado,
-    tempoMs: tempoTotal,
   };
 }
 

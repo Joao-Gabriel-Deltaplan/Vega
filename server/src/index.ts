@@ -1868,12 +1868,13 @@ function extrairResponsavelSessao(req: any): { autorNome: string; autorId: strin
 // POST /api/configuracoes-vega - Salva nova configuração e gera versão no histórico
 app.post('/api/configuracoes-vega', exigirAdmin, async (req, res) => {
   try {
-    const { promptPersona, temperaturaResposta } = req.body;
+    const { promptPersona, temperaturaResposta, tempoEsperaAgrupamentoSegundos } = req.body;
     const { autorNome, autorId } = extrairResponsavelSessao(req);
 
     const novaConfig = await salvarConfiguracoesVega({
       promptPersona,
       temperaturaResposta,
+      tempoEsperaAgrupamentoSegundos,
       autorNome,
       autorId,
     });

@@ -25,6 +25,7 @@ interface ConfiguracaoVega {
   id: string;
   promptPersona: string;
   temperaturaResposta: number;
+  tempoEsperaAgrupamentoSegundos?: number;
   atualizadoPorNome?: string;
   atualizadoPorId?: string;
   atualizadoEm?: string;
@@ -34,6 +35,7 @@ interface VersaoHistoricoVega {
   id: string;
   promptPersona: string;
   temperaturaResposta: number;
+  tempoEsperaAgrupamentoSegundos?: number;
   autorNome: string;
   autorId: string;
   motivo?: string;
@@ -76,6 +78,7 @@ export const ConfiguracoesVegaView: React.FC = () => {
   // Campos do formulário
   const [promptEditado, setPromptEditado] = useState('');
   const [temperaturaEditada, setTemperaturaEditada] = useState(0.1);
+  const [tempoAgrupamentoEditado, setTempoAgrupamentoEditado] = useState(7);
 
   // Aba selecionada
   const [abaAtiva, setAbaAtiva] = useState<'persona' | 'avisos'>('persona');
@@ -107,6 +110,7 @@ export const ConfiguracoesVegaView: React.FC = () => {
           setConfiguracao(json.configuracoes);
           setPromptEditado(json.configuracoes.promptPersona || '');
           setTemperaturaEditada(Number(json.configuracoes.temperaturaResposta ?? 0.1));
+          setTempoAgrupamentoEditado(Number(json.configuracoes.tempoEsperaAgrupamentoSegundos ?? 7));
         }
         if (json.modelos) {
           setModelos(json.modelos);
@@ -163,6 +167,7 @@ export const ConfiguracoesVegaView: React.FC = () => {
         body: JSON.stringify({
           promptPersona: promptEditado,
           temperaturaResposta: Number(temperaturaEditada),
+          tempoEsperaAgrupamentoSegundos: Number(tempoAgrupamentoEditado),
         }),
       });
 
@@ -193,7 +198,7 @@ export const ConfiguracoesVegaView: React.FC = () => {
   // Restaurar padrão oficial
   const handleRestaurarPadrao = async () => {
     const confirmou = window.confirm(
-      'Deseja realmente restaurar o prompt padrão da persona e temperatura 0.1? Uma nova versão será gravada no histórico.'
+      'Deseja realmente restaurar o prompt padrão da persona, temperatura 0.1 e agrupamento em 7s? Uma nova versão será gravada no histórico.'
     );
     if (!confirmou) return;
 
@@ -208,7 +213,8 @@ export const ConfiguracoesVegaView: React.FC = () => {
         setConfiguracao(json.configuracoes);
         setPromptEditado(json.configuracoes.promptPersona);
         setTemperaturaEditada(Number(json.configuracoes.temperaturaResposta));
-        exibirFeedbackTemporario('sucesso', 'Prompt padrão restaurado com sucesso!');
+        setTempoAgrupamentoEditado(Number(json.configuracoes.tempoEsperaAgrupamentoSegundos ?? 7));
+        exibirFeedbackTemporario('sucesso', 'Configurações padrão restauradas com sucesso!');
         // Atualiza histórico
         const resHist = await fetch('/api/configuracoes-vega/historico');
         if (resHist.ok) {
@@ -243,6 +249,7 @@ export const ConfiguracoesVegaView: React.FC = () => {
         setConfiguracao(json.configuracoes);
         setPromptEditado(json.configuracoes.promptPersona);
         setTemperaturaEditada(Number(json.configuracoes.temperaturaResposta));
+        setTempoAgrupamentoEditado(Number(json.configuracoes.tempoEsperaAgrupamentoSegundos ?? 7));
         exibirFeedbackTemporario('sucesso', 'Versão anterior restaurada com sucesso!');
         setVersaoPreview(null);
         // Atualiza histórico
@@ -287,7 +294,8 @@ export const ConfiguracoesVegaView: React.FC = () => {
   const houveAlteracao =
     configuracao &&
     (promptEditado !== configuracao.promptPersona ||
-      temperaturaEditada !== Number(configuracao.temperaturaResposta));
+      temperaturaEditada !== Number(configuracao.temperaturaResposta) ||
+      tempoAgrupamentoEditado !== Number(configuracao.tempoEsperaAgrupamentoSegundos ?? 7));
 
   return (
     <div className="flex-1 h-full bg-[#0b0f14] text-slate-200 overflow-y-auto p-6 md:p-8 font-sans">
@@ -472,6 +480,59 @@ export const ConfiguracoesVegaView: React.FC = () => {
         </div>
 
         {/* ============================================================== */}
+        {/* DESTAQUE 3: Agrupamento de Mensagens em Sequência (Debounce) */}
+        {/* ============================================================== */}
+        <div className="bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h2 className="text-sm md:text-base font-semibold text-slate-100 flex items-center gap-2">
+                <Clock className="w-4 h-4 text-emerald-400" />
+                Tempo de Espera para Agrupamento de Mensagens
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Junta mensagens consecutivas da mesma pessoa (texto, áudio ou foto + legenda) em um único pedido antes de responder.
+              </p>
+            </div>
+            <span className={`px-3 py-1 rounded-lg border font-mono font-bold text-xs ${
+              tempoAgrupamentoEditado === 0
+                ? 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+                : 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
+            }`}>
+              {tempoAgrupamentoEditado === 0 ? 'Desativado (0s)' : `${tempoAgrupamentoEditado}s`}
+            </span>
+          </div>
+
+          <input
+            type="range"
+            min="0"
+            max="30"
+            step="1"
+            value={tempoAgrupamentoEditado}
+            onChange={(e) => setTempoAgrupamentoEditado(parseInt(e.target.value, 10))}
+            className="w-full h-2.5 bg-[#18202b] rounded-lg appearance-none cursor-pointer accent-emerald-400"
+          />
+
+          <div className="flex justify-between text-[11px] text-slate-500 mt-1 font-mono">
+            <span>0s (Desativado)</span>
+            <span className="text-emerald-400 font-semibold">6s a 8s (Recomendado)</span>
+            <span>30s (Máximo)</span>
+          </div>
+
+          <p className="text-xs text-slate-400 mt-3 flex items-start gap-1.5">
+            <span className="text-slate-300 font-medium">Efeito: </span>
+            {tempoAgrupamentoEditado === 0 ? (
+              <span className="text-rose-300">
+                A VEGA responde cada mensagem imediatamente assim que chega, sem aguardar complementos.
+              </span>
+            ) : (
+              <span className="text-emerald-300">
+                Ao receber uma mensagem, aguarda {tempoAgrupamentoEditado} segundos. Se chegar outra mensagem nesse intervalo, o tempo reinicia e acumula (limite de 5 mensagens ou 30s no total) para responder tudo de uma vez só.
+              </span>
+            )}
+          </p>
+        </div>
+
+        {/* ============================================================== */}
         {/* BLOCO RECOLHIDO 1: Configuração técnica (somente leitura) */}
         {/* ============================================================== */}
         <div className="bg-[#121820] border border-[#202937] rounded-2xl p-6 shadow-xl transition-all">
@@ -587,6 +648,7 @@ export const ConfiguracoesVegaView: React.FC = () => {
                       <th className="py-2.5 px-3">Data e Hora (Brasília)</th>
                       <th className="py-2.5 px-3">Responsável</th>
                       <th className="py-2.5 px-3">Temperatura</th>
+                      <th className="py-2.5 px-3">Agrupamento</th>
                       <th className="py-2.5 px-3">Motivo / Tipo</th>
                       <th className="py-2.5 px-3 text-right">Ações</th>
                     </tr>
@@ -610,6 +672,9 @@ export const ConfiguracoesVegaView: React.FC = () => {
                         </td>
                         <td className="py-3 px-3 text-amber-300 font-mono font-medium">
                           {v.temperaturaResposta.toFixed(2)}
+                        </td>
+                        <td className="py-3 px-3 text-emerald-300 font-mono font-medium">
+                          {v.tempoEsperaAgrupamentoSegundos ?? 7}s
                         </td>
                         <td className="py-3 px-3 text-slate-400 capitalize">
                           {v.motivo?.replace(/_/g, ' ') || 'Edição manual'}

@@ -13,6 +13,7 @@ export interface ConfiguracaoVega {
   id: string;
   promptPersona: string;
   temperaturaResposta: number;
+  tempoEsperaAgrupamentoSegundos: number;
   atualizadoPorNome?: string;
   atualizadoPorId?: string;
   atualizadoEm?: string;
@@ -22,6 +23,7 @@ export interface VersaoHistoricoVega {
   id: string;
   promptPersona: string;
   temperaturaResposta: number;
+  tempoEsperaAgrupamentoSegundos: number;
   autorNome: string;
   autorId: string;
   motivo?: string;
@@ -64,16 +66,16 @@ let cachePromptPadraoSistema: string | null = null;
  * Retorna o prompt padrão gravado de forma permanente no Supabase.
  * Nunca lê arquivo local em tempo de execução, garantindo imunidade à perda de disco no Railway.
  */
-export async function obterPromptPadraoSistema(): Promise<{ promptPersona: string; temperaturaResposta: number }> {
+export async function obterPromptPadraoSistema(): Promise<{ promptPersona: string; temperaturaResposta: number; tempoEsperaAgrupamentoSegundos: number }> {
   if (cachePromptPadraoSistema) {
-    return { promptPersona: cachePromptPadraoSistema, temperaturaResposta: 0.1 };
+    return { promptPersona: cachePromptPadraoSistema, temperaturaResposta: 0.1, tempoEsperaAgrupamentoSegundos: 7 };
   }
 
   try {
     const supabase = getSupabaseClient();
     const { data } = await supabase
       .from('configuracoes_vega_historico')
-      .select('prompt_persona, temperatura_resposta')
+      .select('prompt_persona, temperatura_resposta, tempo_espera_agrupamento_segundos')
       .eq('id', ID_VERSAO_PADRAO_SISTEMA)
       .maybeSingle();
 
@@ -82,6 +84,7 @@ export async function obterPromptPadraoSistema(): Promise<{ promptPersona: strin
       return {
         promptPersona: data.prompt_persona,
         temperaturaResposta: Number(data.temperatura_resposta ?? 0.1),
+        tempoEsperaAgrupamentoSegundos: Number(data.tempo_espera_agrupamento_segundos ?? 7),
       };
     }
   } catch (err) {
@@ -91,7 +94,7 @@ export async function obterPromptPadraoSistema(): Promise<{ promptPersona: strin
   // Fallback para semente inicial caso o banco ainda não possua o registro
   const semente = obterPromptSementeDoArquivo();
   cachePromptPadraoSistema = semente;
-  return { promptPersona: semente, temperaturaResposta: 0.1 };
+  return { promptPersona: semente, temperaturaResposta: 0.1, tempoEsperaAgrupamentoSegundos: 7 };
 }
 
 /**
@@ -106,6 +109,7 @@ export function obterConfiguracoesVegaSync(): ConfiguracaoVega {
     id: 'config_padrao',
     promptPersona: cachePromptPadraoSistema || PROMPT_PADRAO_FALLBACK,
     temperaturaResposta: 0.1,
+    tempoEsperaAgrupamentoSegundos: 7,
     atualizadoPorNome: 'Sistema (Inicial)',
     atualizadoPorId: 'sistema',
   };
@@ -122,7 +126,7 @@ export async function inicializarConfiguracoesVega(): Promise<ConfiguracaoVega> 
     // 1. Garante que a versão padrão permanente do sistema exista no histórico do Supabase
     const { data: registroPadraoSistema } = await supabase
       .from('configuracoes_vega_historico')
-      .select('prompt_persona, temperatura_resposta')
+      .select('prompt_persona, temperatura_resposta, tempo_espera_agrupamento_segundos')
       .eq('id', ID_VERSAO_PADRAO_SISTEMA)
       .maybeSingle();
 
@@ -133,6 +137,7 @@ export async function inicializarConfiguracoesVega(): Promise<ConfiguracaoVega> 
         id: ID_VERSAO_PADRAO_SISTEMA,
         prompt_persona: promptSemente,
         temperatura_resposta: 0.1,
+        tempo_espera_agrupamento_segundos: 7,
         autor_nome: 'Sistema (Semente Oficial)',
         autor_id: 'sistema',
         motivo: 'padrao_sistema',
@@ -157,6 +162,7 @@ export async function inicializarConfiguracoesVega(): Promise<ConfiguracaoVega> 
         id: 'config_padrao',
         prompt_persona: promptAtivo,
         temperatura_resposta: 0.1,
+        tempo_espera_agrupamento_segundos: 7,
         atualizado_por_nome: 'Sistema (Inicialização)',
         atualizado_por_id: 'sistema',
         atualizado_em: new Date().toISOString(),
@@ -168,6 +174,7 @@ export async function inicializarConfiguracoesVega(): Promise<ConfiguracaoVega> 
         id: 'config_padrao',
         promptPersona: promptAtivo,
         temperaturaResposta: 0.1,
+        tempoEsperaAgrupamentoSegundos: 7,
         atualizadoPorNome: 'Sistema (Inicialização)',
         atualizadoPorId: 'sistema',
         atualizadoEm: novoRegistro.atualizado_em,
@@ -179,13 +186,14 @@ export async function inicializarConfiguracoesVega(): Promise<ConfiguracaoVega> 
       id: data.id,
       promptPersona: data.prompt_persona,
       temperaturaResposta: Number(data.temperatura_resposta ?? 0.1),
+      tempoEsperaAgrupamentoSegundos: Number(data.tempo_espera_agrupamento_segundos ?? 7),
       atualizadoPorNome: data.atualizado_por_nome || 'Sistema',
       atualizadoPorId: data.atualizado_por_id || 'sistema',
       atualizadoEm: data.atualizado_em,
     };
 
     console.log(
-      `[Config VEGA ✔] Configurações carregadas do Supabase. Temp resposta: ${cacheConfiguracao.temperaturaResposta}, Última atualização: ${cacheConfiguracao.atualizadoEm || 'N/A'}`
+      `[Config VEGA ✔] Configurações carregadas do Supabase. Temp resposta: ${cacheConfiguracao.temperaturaResposta}, Tempo agrupamento: ${cacheConfiguracao.tempoEsperaAgrupamentoSegundos}s, Última atualização: ${cacheConfiguracao.atualizadoEm || 'N/A'}`
     );
     return cacheConfiguracao;
   } catch (err) {
@@ -195,6 +203,7 @@ export async function inicializarConfiguracoesVega(): Promise<ConfiguracaoVega> 
         id: 'config_padrao',
         promptPersona: cachePromptPadraoSistema || PROMPT_PADRAO_FALLBACK,
         temperaturaResposta: 0.1,
+        tempoEsperaAgrupamentoSegundos: 7,
         atualizadoPorNome: 'Fallback Local',
         atualizadoPorId: 'local',
       };
@@ -219,6 +228,7 @@ export async function obterConfiguracoesVega(): Promise<ConfiguracaoVega> {
 export async function salvarConfiguracoesVega(dados: {
   promptPersona: string;
   temperaturaResposta: number;
+  tempoEsperaAgrupamentoSegundos?: number;
   autorNome: string;
   autorId: string;
   motivo?: string;
@@ -228,6 +238,7 @@ export async function salvarConfiguracoesVega(dados: {
   const {
     promptPersona,
     temperaturaResposta,
+    tempoEsperaAgrupamentoSegundos = 7,
     autorNome,
     autorId,
     motivo,
@@ -244,8 +255,14 @@ export async function salvarConfiguracoesVega(dados: {
     throw new Error('A temperatura deve ser um valor numérico entre 0.0 e 1.0.');
   }
 
+  const tempoAgrupamentoNum = Number(tempoEsperaAgrupamentoSegundos);
+  if (isNaN(tempoAgrupamentoNum) || tempoAgrupamentoNum < 0 || tempoAgrupamentoNum > 30) {
+    throw new Error('O tempo de espera para agrupamento de mensagens deve ser entre 0 e 30 segundos.');
+  }
+
   // Normaliza temperatura com 2 casas decimais
   const tempNormalizada = Math.round(tempNum * 100) / 100;
+  const tempoAgrupamentoNormalizado = Math.round(tempoAgrupamentoNum);
   const promptNormalizado = promptPersona.trim();
   const agoraIso = new Date().toISOString();
   const autorFinal = autorNome || 'Painel (senha única)';
@@ -258,6 +275,7 @@ export async function salvarConfiguracoesVega(dados: {
     id: 'config_padrao',
     prompt_persona: promptNormalizado,
     temperatura_resposta: tempNormalizada,
+    tempo_espera_agrupamento_segundos: tempoAgrupamentoNormalizado,
     atualizado_por_nome: autorFinal,
     atualizado_por_id: autorIdFinal,
     atualizado_em: agoraIso,
@@ -274,6 +292,7 @@ export async function salvarConfiguracoesVega(dados: {
       id: idVersao,
       prompt_persona: promptNormalizado,
       temperatura_resposta: tempNormalizada,
+      tempo_espera_agrupamento_segundos: tempoAgrupamentoNormalizado,
       autor_nome: autorFinal,
       autor_id: autorIdFinal,
       motivo: motivo || 'edicao_manual',
@@ -290,13 +309,14 @@ export async function salvarConfiguracoesVega(dados: {
     id: 'config_padrao',
     promptPersona: promptNormalizado,
     temperaturaResposta: tempNormalizada,
+    tempoEsperaAgrupamentoSegundos: tempoAgrupamentoNormalizado,
     atualizadoPorNome: autorFinal,
     atualizadoPorId: autorIdFinal,
     atualizadoEm: agoraIso,
   };
 
   console.log(
-    `[Config VEGA 💾] Configurações atualizadas por ${autorFinal}. Temp: ${tempNormalizada}, Versão: ${gravarHistorico ? idVersao : '(sem histórico)'}`
+    `[Config VEGA 💾] Configurações atualizadas por ${autorFinal}. Temp: ${tempNormalizada}, Agrupamento: ${tempoAgrupamentoNormalizado}s, Versão: ${gravarHistorico ? idVersao : '(sem histórico)'}`
   );
   return cacheConfiguracao;
 }
@@ -315,6 +335,7 @@ export async function restaurarPadraoVega(autor: {
   return salvarConfiguracoesVega({
     promptPersona: padrao.promptPersona,
     temperaturaResposta: padrao.temperaturaResposta,
+    tempoEsperaAgrupamentoSegundos: padrao.tempoEsperaAgrupamentoSegundos ?? 7,
     autorNome: autor.autorNome,
     autorId: autor.autorId,
     motivo: 'restauracao_padrao',
@@ -344,6 +365,7 @@ export async function obterHistoricoVersoes(limite = 30): Promise<VersaoHistoric
       id: item.id,
       promptPersona: item.prompt_persona,
       temperaturaResposta: Number(item.temperatura_resposta ?? 0.1),
+      tempoEsperaAgrupamentoSegundos: Number(item.tempo_espera_agrupamento_segundos ?? 7),
       autorNome: item.autor_nome || 'Painel (senha única)',
       autorId: item.autor_id || '',
       motivo: item.motivo,
@@ -381,6 +403,7 @@ export async function restaurarVersaoHistorico(
   return salvarConfiguracoesVega({
     promptPersona: data.prompt_persona,
     temperaturaResposta: Number(data.temperatura_resposta ?? 0.1),
+    tempoEsperaAgrupamentoSegundos: Number(data.tempo_espera_agrupamento_segundos ?? 7),
     autorNome: autor.autorNome,
     autorId: autor.autorId,
     motivo: `restauracao_versao_${idVersao}`,
