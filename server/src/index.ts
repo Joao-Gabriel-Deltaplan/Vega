@@ -133,7 +133,9 @@ import {
   extrairDadosEvento,
   processarEventoEvolution,
   enviarMensagemWhatsApp,
+  processarEventoPresencaWebhook,
 } from './whatsapp/whatsappWebhookService.js';
+import { sincronizarWebhookEvolutionComPresenca } from './whatsapp/evolutionSenderService.js';
 import {
   obterBufferArquivo,
   uploadArquivoStorage,
@@ -2154,6 +2156,13 @@ app.post(
   }
 
   try {
+    // 2. Intercepta eventos de presença do usuário (composing / paused) para o agrupador
+    const eventName = String(req.body?.event || '').toLowerCase();
+    if (eventName.includes('presence')) {
+      const processado = processarEventoPresencaWebhook(req.body);
+      return res.status(200).json({ status: 'presenca_processada', sucesso: processado });
+    }
+
     const ipOrigem = (req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'desconhecida') as string;
     const eventos = extrairDadosEvento(req.body);
 
@@ -2217,6 +2226,11 @@ app.listen(PORT, '0.0.0.0', () => {
   // Inicialização e aquecimento do cache de configurações comportamentais da VEGA
   inicializarConfiguracoesVega().catch((erro) => {
     console.warn('[Startup ⚠️] Erro na inicialização das configurações da VEGA:', erro);
+  });
+
+  // Sincronização automática da inscrição no evento de presença (PRESENCE_UPDATE) na Evolution API
+  sincronizarWebhookEvolutionComPresenca().catch((erro) => {
+    console.warn('[Startup ⚠️] Erro ao sincronizar presença na Evolution API:', erro);
   });
 
   // Limpeza automática de rastros, áudios e avisos do sistema com mais de 30 dias ao iniciar o servidor

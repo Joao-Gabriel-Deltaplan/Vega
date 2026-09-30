@@ -68,7 +68,7 @@ let cachePromptPadraoSistema: string | null = null;
  */
 export async function obterPromptPadraoSistema(): Promise<{ promptPersona: string; temperaturaResposta: number; tempoEsperaAgrupamentoSegundos: number }> {
   if (cachePromptPadraoSistema) {
-    return { promptPersona: cachePromptPadraoSistema, temperaturaResposta: 0.1, tempoEsperaAgrupamentoSegundos: 7 };
+    return { promptPersona: cachePromptPadraoSistema, temperaturaResposta: 0.1, tempoEsperaAgrupamentoSegundos: 3 };
   }
 
   try {
@@ -84,7 +84,7 @@ export async function obterPromptPadraoSistema(): Promise<{ promptPersona: strin
       return {
         promptPersona: data.prompt_persona,
         temperaturaResposta: Number(data.temperatura_resposta ?? 0.1),
-        tempoEsperaAgrupamentoSegundos: Number(data.tempo_espera_agrupamento_segundos ?? 7),
+        tempoEsperaAgrupamentoSegundos: Number(data.tempo_espera_agrupamento_segundos ?? 3),
       };
     }
   } catch (err) {
@@ -94,7 +94,7 @@ export async function obterPromptPadraoSistema(): Promise<{ promptPersona: strin
   // Fallback para semente inicial caso o banco ainda não possua o registro
   const semente = obterPromptSementeDoArquivo();
   cachePromptPadraoSistema = semente;
-  return { promptPersona: semente, temperaturaResposta: 0.1, tempoEsperaAgrupamentoSegundos: 7 };
+  return { promptPersona: semente, temperaturaResposta: 0.1, tempoEsperaAgrupamentoSegundos: 3 };
 }
 
 /**
@@ -109,7 +109,7 @@ export function obterConfiguracoesVegaSync(): ConfiguracaoVega {
     id: 'config_padrao',
     promptPersona: cachePromptPadraoSistema || PROMPT_PADRAO_FALLBACK,
     temperaturaResposta: 0.1,
-    tempoEsperaAgrupamentoSegundos: 7,
+    tempoEsperaAgrupamentoSegundos: 3,
     atualizadoPorNome: 'Sistema (Inicial)',
     atualizadoPorId: 'sistema',
   };
@@ -174,7 +174,7 @@ export async function inicializarConfiguracoesVega(): Promise<ConfiguracaoVega> 
         id: 'config_padrao',
         promptPersona: promptAtivo,
         temperaturaResposta: 0.1,
-        tempoEsperaAgrupamentoSegundos: 7,
+        tempoEsperaAgrupamentoSegundos: 3,
         atualizadoPorNome: 'Sistema (Inicialização)',
         atualizadoPorId: 'sistema',
         atualizadoEm: novoRegistro.atualizado_em,
@@ -186,7 +186,7 @@ export async function inicializarConfiguracoesVega(): Promise<ConfiguracaoVega> 
       id: data.id,
       promptPersona: data.prompt_persona,
       temperaturaResposta: Number(data.temperatura_resposta ?? 0.1),
-      tempoEsperaAgrupamentoSegundos: Number(data.tempo_espera_agrupamento_segundos ?? 7),
+      tempoEsperaAgrupamentoSegundos: Number(data.tempo_espera_agrupamento_segundos ?? 3),
       atualizadoPorNome: data.atualizado_por_nome || 'Sistema',
       atualizadoPorId: data.atualizado_por_id || 'sistema',
       atualizadoEm: data.atualizado_em,
@@ -203,7 +203,7 @@ export async function inicializarConfiguracoesVega(): Promise<ConfiguracaoVega> 
         id: 'config_padrao',
         promptPersona: cachePromptPadraoSistema || PROMPT_PADRAO_FALLBACK,
         temperaturaResposta: 0.1,
-        tempoEsperaAgrupamentoSegundos: 7,
+        tempoEsperaAgrupamentoSegundos: 3,
         atualizadoPorNome: 'Fallback Local',
         atualizadoPorId: 'local',
       };
@@ -238,7 +238,7 @@ export async function salvarConfiguracoesVega(dados: {
   const {
     promptPersona,
     temperaturaResposta,
-    tempoEsperaAgrupamentoSegundos = 7,
+    tempoEsperaAgrupamentoSegundos = 3,
     autorNome,
     autorId,
     motivo,
@@ -335,7 +335,7 @@ export async function restaurarPadraoVega(autor: {
   return salvarConfiguracoesVega({
     promptPersona: padrao.promptPersona,
     temperaturaResposta: padrao.temperaturaResposta,
-    tempoEsperaAgrupamentoSegundos: padrao.tempoEsperaAgrupamentoSegundos ?? 7,
+    tempoEsperaAgrupamentoSegundos: padrao.tempoEsperaAgrupamentoSegundos ?? 3,
     autorNome: autor.autorNome,
     autorId: autor.autorId,
     motivo: 'restauracao_padrao',
@@ -365,7 +365,7 @@ export async function obterHistoricoVersoes(limite = 30): Promise<VersaoHistoric
       id: item.id,
       promptPersona: item.prompt_persona,
       temperaturaResposta: Number(item.temperatura_resposta ?? 0.1),
-      tempoEsperaAgrupamentoSegundos: Number(item.tempo_espera_agrupamento_segundos ?? 7),
+      tempoEsperaAgrupamentoSegundos: Number(item.tempo_espera_agrupamento_segundos ?? 3),
       autorNome: item.autor_nome || 'Painel (senha única)',
       autorId: item.autor_id || '',
       motivo: item.motivo,
@@ -403,7 +403,7 @@ export async function restaurarVersaoHistorico(
   return salvarConfiguracoesVega({
     promptPersona: data.prompt_persona,
     temperaturaResposta: Number(data.temperatura_resposta ?? 0.1),
-    tempoEsperaAgrupamentoSegundos: Number(data.tempo_espera_agrupamento_segundos ?? 7),
+    tempoEsperaAgrupamentoSegundos: Number(data.tempo_espera_agrupamento_segundos ?? 3),
     autorNome: autor.autorNome,
     autorId: autor.autorId,
     motivo: `restauracao_versao_${idVersao}`,

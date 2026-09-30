@@ -30,7 +30,7 @@ import {
   buscarPendenciaAtivaWhatsApp,
   processarRespostaPendenciaWhatsApp,
 } from './pendenciasWhatsAppService.js';
-import { adicionarMensagemAoAgrupador } from './agrupadorMensagensService.js';
+import { adicionarMensagemAoAgrupador, notificarPresencaUsuarioNoAgrupador } from './agrupadorMensagensService.js';
 import {
   obterConversaPorId,
   salvarConversa,
@@ -1169,4 +1169,50 @@ export async function enviarMensagemWhatsApp(
 ): Promise<void> {
   await enviarRespostaCompletaWhatsApp(destinatario, texto, anexos);
 }
+
+/**
+ * Processa eventos de presença recebidos da Evolution API (presence.update / PRESENCE_UPDATE)
+ * e encaminha para o agrupador de mensagens.
+ */
+export function processarEventoPresencaWebhook(payload: any): boolean {
+  if (!payload) return false;
+
+  try {
+    const rawData = payload.data || payload;
+    const listaDados = Array.isArray(rawData) ? rawData : [rawData];
+    let processouAlgum = false;
+
+    for (const item of listaDados) {
+      if (!item || typeof item !== 'object') continue;
+
+      // 1. Identifica o JID / ID do contato
+      let remoteJid = item.id || item.remoteJid || item.participant || '';
+
+      // 2. Extrai o status da presença
+      // Formato A: item.presence (string, ex: 'composing', 'paused', 'available')
+      // Formato B: item.presences: { [jid]: { lastKnownPresence: 'composing' } }
+      let presence = item.presence || '';
+
+      if (!presence && item.presences && typeof item.presences === 'object') {
+        const entries = Object.entries(item.presences);
+        if (entries.length > 0) {
+          const [jidFromKey, val] = entries[0];
+          if (!remoteJid) remoteJid = jidFromKey;
+          presence = (val as any)?.lastKnownPresence || (val as any)?.presence || '';
+        }
+      }
+
+      if (remoteJid && presence) {
+        notificarPresencaUsuarioNoAgrupador(remoteJid, presence);
+        processouAlgum = true;
+      }
+    }
+
+    return processouAlgum;
+  } catch (err) {
+    console.warn('[Webhook Presença ⚠️] Erro ao extrair e processar presença:', err);
+    return false;
+  }
+}
+
 

@@ -448,3 +448,179 @@ export async function enviarRespostaCompletaWhatsApp(
     }
   }
 }
+
+/**
+ * Envia status de presença (ex: 'composing' ou 'paused') para um contato via Evolution API.
+ * Endpoint: POST {EVOLUTION_API_URL}/chat/sendPresence/{EVOLUTION_INSTANCE}
+ */
+export async function enviarPresencaEvolution(
+  destinatario: string,
+  presence: 'composing' | 'paused' | 'recording' = 'composing',
+  delay: number = 1200
+): Promise<ResultadoEnvioEvolution> {
+  const config = obterConfigEvolution();
+  const numeroNormalizado = normalizarDestinatarioEvolution(destinatario);
+
+  if (!config) {
+    return {
+      sucesso: true,
+      resposta: { simulado: true, presence, destinatario: numeroNormalizado },
+    };
+  }
+
+  const url = `${config.apiUrl}/chat/sendPresence/${encodeURIComponent(config.instance)}`;
+
+  try {
+    const body = {
+      number: numeroNormalizado,
+      presence,
+      delay,
+      options: {
+        presence,
+        delay,
+      },
+    };
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: config.apiKey,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (response.ok) {
+      return { sucesso: true, statusHttp: response.status };
+    } else {
+      const motivo = await response.text().catch(() => '');
+      return { sucesso: false, statusHttp: response.status, motivoFalha: motivo };
+    }
+  } catch (err: any) {
+    return { sucesso: false, motivoFalha: err?.message || String(err) };
+  }
+}
+
+/**
+ * Inicia a emissão contínua de "digitando..." (composing) da VEGA para o destinatário,
+ * renovando a cada 4 segundos para evitar que o status expire no WhatsApp,
+ * e retorna uma função assíncrona de parada que encerra o timer e envia 'paused'.
+ */
+export function iniciarPresencaDigitandoVega(
+  destinatario: string,
+  intervaloMs: number = 4000
+): () => Promise<void> {
+  let ativo = true;
+
+  // Envia presença imediatamente no início do processamento
+  enviarPresencaEvolution(destinatario, 'composing').catch((err) => {
+    console.warn(`[Evolution Presença ⚠️] Falha inicial ao enviar "composing" para ${destinatario}:`, err?.message || err);
+  });
+
+  // Loop de renovação a cada poucos segundos enquanto a VEGA processa
+  const intervalId = setInterval(() => {
+    if (!ativo) {
+      clearInterval(intervalId);
+      return;
+    }
+    enviarPresencaEvolution(destinatario, 'composing').catch(() => {});
+  }, intervaloMs);
+
+  // Função para parar a presença ao finalizar (sucesso ou erro)
+  return async () => {
+    if (!ativo) return;
+    ativo = false;
+    clearInterval(intervalId);
+    try {
+      await enviarPresencaEvolution(destinatario, 'paused');
+    } catch {}
+  };
+}
+
+/**
+ * Sincroniza a configuração do webhook da Evolution API garantindo que
+ * o evento PRESENCE_UPDATE esteja inscrito e ativo na instância.
+ */
+export async function sincronizarWebhookEvolutionComPresenca(): Promise<{
+  sucesso: boolean;
+  eventosAtuais?: string[];
+  ativouPresenca?: boolean;
+  motivo?: string;
+}> {
+  const config = obterConfigEvolution();
+  if (!config) {
+    return {
+      sucesso: false,
+      motivo: 'Evolution API não configurada no ambiente.',
+    };
+  }
+
+  const urlFind = `${config.apiUrl}/webhook/find/${encodeURIComponent(config.instance)}`;
+  const urlSet = `${config.apiUrl}/webhook/set/${encodeURIComponent(config.instance)}`;
+
+  try {
+    const respFind = await fetch(urlFind, {
+      method: 'GET',
+      headers: { apikey: config.apiKey },
+    });
+
+    if (!respFind.ok) {
+      console.warn(`[Evolution Webhook ⚠️] Não foi possível consultar webhook em ${urlFind} (HTTP ${respFind.status}).`);
+      return { sucesso: false, motivo: `HTTP ${respFind.status}` };
+    }
+
+    const dataFind = await respFind.json().catch(() => null);
+    const webhookData = dataFind?.webhook || dataFind || {};
+    const eventosAtuais: string[] = Array.isArray(webhookData.events) ? webhookData.events : [];
+    const urlAtual: string = webhookData.url || webhookData.webhookUrl || '';
+
+    const jaTemPresenca = eventosAtuais.some((e: string) =>
+      e.toUpperCase().includes('PRESENCE')
+    );
+
+    if (jaTemPresenca) {
+      console.log(`[Evolution Webhook 🔔] Inscrição em PRESENCE_UPDATE já está ativa na instância.`);
+      return { sucesso: true, eventosAtuais, ativouPresenca: false };
+    }
+
+    if (!urlAtual) {
+      console.log(`[Evolution Webhook ℹ️] URL do webhook não encontrada na consulta da instância para atualizar presença.`);
+      return { sucesso: true, eventosAtuais, ativouPresenca: false };
+    }
+
+    // Adiciona PRESENCE_UPDATE aos eventos existentes
+    const novosEventos = [...eventosAtuais, 'PRESENCE_UPDATE'];
+
+    const bodySet = {
+      webhook: {
+        enabled: webhookData.enabled !== false,
+        url: urlAtual,
+        byEvents: false,
+        base64: Boolean(webhookData.base64),
+        events: novosEventos,
+      },
+    };
+
+    const respSet = await fetch(urlSet, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: config.apiKey,
+      },
+      body: JSON.stringify(bodySet),
+    });
+
+    if (respSet.ok) {
+      console.log(`[Evolution Webhook 🔔] Inscrição em PRESENCE_UPDATE ativada com sucesso! Eventos: ${novosEventos.join(', ')}`);
+      return { sucesso: true, eventosAtuais: novosEventos, ativouPresenca: true };
+    } else {
+      const errTexto = await respSet.text().catch(() => '');
+      console.warn(`[Evolution Webhook ⚠️] Falha ao atualizar webhook com PRESENCE_UPDATE (HTTP ${respSet.status}): ${errTexto}`);
+      return { sucesso: false, motivo: errTexto };
+    }
+  } catch (err: any) {
+    console.warn(`[Evolution Webhook ⚠️] Exceção ao sincronizar webhook com presença:`, err?.message || err);
+    return { sucesso: false, motivo: err?.message || String(err) };
+  }
+}
+

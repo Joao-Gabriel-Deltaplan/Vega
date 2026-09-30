@@ -3,6 +3,7 @@ dotenv.config();
 
 import {
   adicionarMensagemAoAgrupador,
+  notificarPresencaUsuarioNoAgrupador,
   MAX_MENSAGENS_AGRUPADAS,
   ItemMensagemAgrupada,
 } from '../whatsapp/agrupadorMensagensService.js';
@@ -499,6 +500,179 @@ async function rodarTestes() {
     totalFalhou++;
   }
 
+  // --------------------------------------------------------------------------
+  // TESTE 6: Duas mensagens consecutivas enviadas a 2s de intervalo com espera de 3s
+  // --------------------------------------------------------------------------
+  console.log('--- TESTE 6: Duas mensagens seguidas com 2s de intervalo (espera de 3s) ---');
+  try {
+    // Configura formalmente a espera padrão para 3 segundos
+    await salvarConfiguracoesVega({
+      promptPersona: 'Você é a assistente VEGA da Delta Plan.',
+      temperaturaResposta: 0.1,
+      tempoEsperaAgrupamentoSegundos: 3,
+      autorNome: 'Script de Teste',
+      autorId: 'teste-script',
+      gravarHistorico: false,
+    });
+
+    const conversaId6 = `wa-teste-conversa-6-${Date.now()}`;
+    conversasCriadas.push(conversaId6);
+    await salvarConversa({
+      id: conversaId6,
+      contato: contatoTeste,
+      naoLidas: 0,
+      ultimaAtualizacao: new Date().toISOString(),
+      mensagens: [],
+    });
+
+    const msg6A: ItemMensagemAgrupada = {
+      id: `msg-t6-1`,
+      texto: 'Olá VEGA, tudo bem?',
+      tipoMensagem: 'texto',
+    };
+    const msg6B: ItemMensagemAgrupada = {
+      id: `msg-t6-2`,
+      texto: 'Qual é o nome da nossa empresa?',
+      tipoMensagem: 'texto',
+    };
+
+    // Mensagem 1 enviada em t=0
+    await adicionarMensagem(conversaId6, {
+      id: msg6A.id,
+      remetente: 'cliente',
+      nomeRemetente: contatoTeste.nome,
+      horario: '10:30',
+      timestamp: new Date().toISOString(),
+      texto: msg6A.texto,
+      tipoMensagem: 'texto',
+    });
+    await adicionarMensagemAoAgrupador({
+      conversaId: conversaId6,
+      destinatario: `${usuarioTeste.numero}@s.whatsapp.net`,
+      contato: contatoTeste,
+      usuarioAutorizado: usuarioTeste,
+      item: msg6A,
+    });
+
+    console.log('Mensagem 1 enviada. Aguardando exatamente 2000ms (2s) antes de enviar a mensagem 2...');
+    await esperar(2000);
+
+    // Mensagem 2 enviada em t=2s (dentro da janela de 3s)
+    await adicionarMensagem(conversaId6, {
+      id: msg6B.id,
+      remetente: 'cliente',
+      nomeRemetente: contatoTeste.nome,
+      horario: '10:30',
+      timestamp: new Date().toISOString(),
+      texto: msg6B.texto,
+      tipoMensagem: 'texto',
+    });
+    await adicionarMensagemAoAgrupador({
+      conversaId: conversaId6,
+      destinatario: `${usuarioTeste.numero}@s.whatsapp.net`,
+      contato: contatoTeste,
+      usuarioAutorizado: usuarioTeste,
+      item: msg6B,
+    });
+
+    console.log('Mensagem 2 enviada aos 2s de intervalo. Aguardando resposta unificada da VEGA...');
+    const msgsAssistente = await aguardarRespostaAssistente(conversaId6, 1, 12000);
+    const conversaFinal6 = await obterConversaPorId(conversaId6);
+    const msgsCliente = conversaFinal6?.mensagens.filter((m) => m.remetente === 'cliente') || [];
+
+    console.log(`Total msgs cliente: ${msgsCliente.length} (esperado: 2)`);
+    console.log(`Total msgs assistente: ${msgsAssistente.length} (esperado: 1 única resposta consolidada)`);
+
+    if (msgsCliente.length === 2 && msgsAssistente.length === 1) {
+      console.log('✅ TESTE 6 PASSOU: Mensagens enviadas com 2s de intervalo foram perfeitamente agrupadas em 1 única resposta sob espera de 3s!\n');
+      totalPassou++;
+    } else {
+      console.error(`❌ TESTE 6 FALHOU: Esperava 2 cliente e 1 assistente, obteve ${msgsCliente.length} cliente e ${msgsAssistente.length} assistente\n`);
+      totalFalhou++;
+    }
+  } catch (err: any) {
+    console.error('❌ TESTE 6 ERRO:', err?.message || err);
+    totalFalhou++;
+  }
+
+  // --------------------------------------------------------------------------
+  // TESTE 7: Presença do usuário ('composing') segura o lote e 'paused' dispara
+  // --------------------------------------------------------------------------
+  console.log('--- TESTE 7: Presença do usuário ("composing" aguarda e "paused" dispara) ---');
+  try {
+    const conversaId7 = `wa-teste-conversa-7-${Date.now()}`;
+    const usuarioTeste7: UsuarioWhatsApp = {
+      ...usuarioTeste,
+      numero: '5511999990007',
+    };
+    const contatoTeste7: Contato = {
+      ...contatoTeste,
+      telefone: '5511999990007',
+    };
+    const destinatario7 = `${usuarioTeste7.numero}@s.whatsapp.net`;
+    conversasCriadas.push(conversaId7);
+    await salvarConversa({
+      id: conversaId7,
+      contato: contatoTeste7,
+      naoLidas: 0,
+      ultimaAtualizacao: new Date().toISOString(),
+      mensagens: [],
+    });
+
+    const msg7: ItemMensagemAgrupada = {
+      id: `msg-t7-1`,
+      texto: 'Por favor, me informe o site oficial da Delta Plan.',
+      tipoMensagem: 'texto',
+    };
+
+    await adicionarMensagem(conversaId7, {
+      id: msg7.id,
+      remetente: 'cliente',
+      nomeRemetente: contatoTeste7.nome,
+      horario: '10:35',
+      timestamp: new Date().toISOString(),
+      texto: msg7.texto,
+      tipoMensagem: 'texto',
+    });
+
+    // Usuário notifica presença "composing" (está digitando mais coisas)
+    notificarPresencaUsuarioNoAgrupador(destinatario7, 'composing');
+
+    await adicionarMensagemAoAgrupador({
+      conversaId: conversaId7,
+      destinatario: destinatario7,
+      contato: contatoTeste7,
+      usuarioAutorizado: usuarioTeste7,
+      item: msg7,
+    });
+
+    console.log('Mensagem enviada com usuário digitando. Aguardando 2.5s para confirmar que não dispara durante a digitação...');
+    await esperar(2500);
+
+    let cMeio = await obterConversaPorId(conversaId7);
+    let msgsAssistMeio = cMeio?.mensagens.filter((m) => m.remetente === 'assistente') || [];
+    console.log(`Respostas aos 2.5s com digitação ativa: ${msgsAssistMeio.length} (esperado: 0 - ainda aguardando)`);
+
+    // Usuário agora parou de digitar (paused)
+    console.log('Usuário parou de digitar ("paused"). Notificando agrupador e aguardando reserva de 3s...');
+    notificarPresencaUsuarioNoAgrupador(destinatario7, 'paused');
+
+    const msgsAssistente = await aguardarRespostaAssistente(conversaId7, 1, 10000);
+    const conversaFinal7 = await obterConversaPorId(conversaId7);
+    const msgsCliente = conversaFinal7?.mensagens.filter((m) => m.remetente === 'cliente') || [];
+
+    if (msgsAssistMeio.length === 0 && msgsAssistente.length === 1 && msgsCliente.length === 1) {
+      console.log('✅ TESTE 7 PASSOU: Eventos de presença integrados! Lote aguardou enquanto digitando e disparou após pausa com 1 única resposta!\n');
+      totalPassou++;
+    } else {
+      console.error(`❌ TESTE 7 FALHOU: Respostas antes: ${msgsAssistMeio.length}, Respostas finais: ${msgsAssistente.length}\n`);
+      totalFalhou++;
+    }
+  } catch (err: any) {
+    console.error('❌ TESTE 7 ERRO:', err?.message || err);
+    totalFalhou++;
+  }
+
   // Limpeza das conversas de teste geradas no Supabase
   console.log('Limpando conversas temporárias de teste no Supabase...');
   for (const cId of conversasCriadas) {
@@ -508,11 +682,11 @@ async function rodarTestes() {
   }
   console.log(`Limpas ${conversasCriadas.length} conversas de teste.`);
 
-  // Restaura configuração padrão de 7 segundos no Supabase
+  // Restaura configuração padrão de 3 segundos no Supabase
   await salvarConfiguracoesVega({
     promptPersona: 'Você é a assistente VEGA da Delta Plan.',
     temperaturaResposta: 0.1,
-    tempoEsperaAgrupamentoSegundos: 7,
+    tempoEsperaAgrupamentoSegundos: 3,
     autorNome: 'Script de Teste',
     autorId: 'teste-script',
     gravarHistorico: false,
