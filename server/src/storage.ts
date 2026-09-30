@@ -455,6 +455,7 @@ export function mapearLinhaDocumento(row: any): DocumentoRegistro {
     statusIndexacao: row.status_indexacao || 'indexado',
     erroIndexacao: row.erro_indexacao || undefined,
     dataValidade: row.data_validade !== undefined ? row.data_validade : null,
+    dataEmissao: row.metadata?.dataEmissao || row.metadata?.data_emissao || row.data_emissao || undefined,
     origemValidade: row.origem_validade || undefined,
     historicoValidade: row.historico_validade || undefined,
     silenciarAlertas: Boolean(row.silenciar_alertas),

@@ -7205,9 +7205,220 @@ export function verificarSegurancaDadosPessoais(params: {
 }
 
 /**
+ * Normaliza e formata string de data para dd/mm/aaaa
+ */
+function normalizarDataParaExibicao(dataStr: string): string {
+  const limpa = dataStr.replace(/[\.-]/g, '/').trim();
+  const partes = limpa.split('/');
+  if (partes.length === 3) {
+    const p0 = partes[0].padStart(2, '0');
+    const p1 = partes[1].padStart(2, '0');
+    let p2 = partes[2];
+    if (p2.length === 2) p2 = `20${p2}`;
+    return `${p0}/${p1}/${p2}`;
+  }
+  return dataStr;
+}
+
+/**
+ * 2. EXTRAÇÃO DA DATA DE EMISSÃO / REFERÊNCIA DO DOCUMENTO (Item 2)
+ * Extrai a data de emissão ou fato jurídico do documento a partir de seus metadados ou trechos.
+ * REGRA ABSOLUTA: NUNCA usar dataValidade nem dataCadastro! Se não identificar, retorna null.
+ */
+export function extrairDataEmissaoDocumento(
+  doc: DocumentoRegistro,
+  trechosDoDoc: string[] = []
+): string | null {
+  // 1. Metadado explícito dataEmissao
+  if (doc.dataEmissao) {
+    const dataFmt = formatarDataParaExibicao(doc.dataEmissao);
+    if (dataFmt && dataFmt !== 'Data inválida') return dataFmt;
+  }
+  if (doc.metadata?.data_emissao) {
+    const dataFmt = formatarDataParaExibicao(doc.metadata.data_emissao);
+    if (dataFmt && dataFmt !== 'Data inválida') return dataFmt;
+  }
+
+  const textoUnificado = `${doc.titulo || ''} ${doc.descricao || ''} ${trechosDoDoc.join(' ')}`;
+
+  // 2. Declaração de Imposto de Renda (DIRPF)
+  const matchExercicio = textoUnificado.match(/exerc[ií]cio\s+(\d{4})/i);
+  if (matchExercicio) {
+    const anoExercicio = matchExercicio[1];
+    const matchRecibo = textoUnificado.match(/(?:recibo|transmiss[aã]o|entrega|emiss[aã]o|gerado em|data[:\s]+)(\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4})/i);
+    if (matchRecibo) {
+      return normalizarDataParaExibicao(matchRecibo[1]);
+    }
+    return `30/04/${anoExercicio}`;
+  }
+
+  // 3. Padrões explícitos de data de emissão/expedição/lavratura
+  const regexEmissao = /(?:data de emiss[aã]o|data da emiss[aã]o|data de expedi[cç][aã]o|data da expedi[cç][aã]o|emitido em|lavrado em|data do registro|data do documento|assinado em|expedido em|emiss[aã]o[:\s]+|expedi[cç][aã]o[:\s]+)(\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4})/i;
+  const matchEmissao = textoUnificado.match(regexEmissao);
+  if (matchEmissao) {
+    return normalizarDataParaExibicao(matchEmissao[1]);
+  }
+
+  // 4. Padrão por extenso em certidões/contratos: "15 de janeiro de 2022"
+  const regexExtenso = /(\d{1,2})\s+de\s+(janeiro|fevereiro|março|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+de\s+(\d{4})/i;
+  const matchExtenso = textoUnificado.match(regexExtenso);
+  if (matchExtenso) {
+    const dia = matchExtenso[1].padStart(2, '0');
+    const mesNome = matchExtenso[2].toLowerCase();
+    const ano = matchExtenso[3];
+    const meses: Record<string, string> = {
+      janeiro: '01', fevereiro: '02', março: '03', marco: '03', abril: '04',
+      maio: '05', junho: '06', julho: '07', agosto: '08',
+      setembro: '09', outubro: '10', novembro: '11', dezembro: '12'
+    };
+    const mes = meses[mesNome] || '01';
+    return `${dia}/${mes}/${ano}`;
+  }
+
+  // 5. Data explícita no texto/descrição que denote emissão ou contrato
+  const matchDataDoc = (doc.descricao || '').match(/(?:documento de|emissão em|emissao em|firmado em)\s*(\d{1,2}\/\d{1,2}\/\d{4})/i);
+  if (matchDataDoc) {
+    return matchDataDoc[1];
+  }
+
+  // REGRA ABSOLUTA: NUNCA usar doc.dataValidade e NUNCA usar doc.dataCadastro!
+  return null;
+}
+
+/**
+ * 2.1. EXTRAÇÃO DE ENDEREÇO DE TRECHOS
+ * Procura ocorrência real de endereço residencial ou comercial.
+ * Retorna null se não contiver endereço ou se só contiver negativa ("não traz endereço").
+ */
+export function extrairEnderecoDeTrechos(trechos: string[]): { endereco: string; trechoCompleto: string } | null {
+  for (const t of trechos) {
+    if (!t || typeof t !== 'string') continue;
+    if (/não traz endereço|não cont[eé]m endereço|sem endereço residencial|não possui endereço/i.test(t)) {
+      continue;
+    }
+
+    // Padrão de logradouro comum (Rua, Avenida, etc.)
+    const regexLogradouro = /(?:rua|avenida|av\.|alameda|rodovia|travessa|estrada|pra[cç]a|logradouro|endere[cç]o\s+residencial|endere[cç]o[:\s]+)(?:[^\n\r,\.]+)[,\s]+(?:\d+|nº\s*\d+|s\/n)[^\n\r]*/i;
+    const match = t.match(regexLogradouro);
+    if (match) {
+      let endLimpo = match[0].trim().replace(/^endere[cç]o\s*(?:residencial)?[:\s]*/i, '');
+      endLimpo = endLimpo.replace(/[,.;\s]+$/, '');
+      if (endLimpo.length >= 8) {
+        return {
+          endereco: endLimpo,
+          trechoCompleto: t.trim(),
+        };
+      }
+    }
+
+    // Padrão específico para declaração de IR: "RUA ... , \d+ ... BAIRRO ... MUNICÍPIO ..."
+    if (t.includes('DECLARAÇÃO DE AJUSTE ANUAL') || t.includes('IMPOSTO SOBRE A RENDA') || t.includes('DIRPF') || t.includes('CADASTRO NACIONAL')) {
+      const matchIrEnd = t.match(/(?:LOGRADOURO|ENDEREÇO|RUA|AVENIDA|AV\.|ALAMEDA)[\s:]+([^\n\r]+)/i);
+      if (matchIrEnd && matchIrEnd[1].length >= 8) {
+        return {
+          endereco: matchIrEnd[1].trim().replace(/[,.;\s]+$/, ''),
+          trechoCompleto: t.trim(),
+        };
+      }
+    }
+
+    // Padrão com CEP
+    const regexCepCidade = /(?:rua|av|avenida|alameda|bairro)[^\n\r]+CEP\s*\d{5}-?\d{3}/i;
+    const matchCep = t.match(regexCepCidade);
+    if (matchCep) {
+      return {
+        endereco: matchCep[0].trim(),
+        trechoCompleto: t.trim(),
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * 4. AUTOVERIFICAÇÃO ANTES DE ENVIAR (Item 4)
+ * Revisa a resposta gerada para garantir:
+ * 1. Documentos sem o dado não aparecem na lista.
+ * 2. A indicação de mais recente não aponta para validade futura (ex: 2034) nem documento sem o dado.
+ * 3. Nenhuma contradição no texto.
+ */
+export function autoverificarRespostaDadosTitular(params: {
+  textoResposta: string;
+  documentosRetornados?: Array<{ nome_documento: string; data_documento?: string; valor?: string; trecho?: string }>;
+  mensagemUsuario: string;
+}): string {
+  let texto = params.textoResposta;
+
+  // 1. Remove qualquer item que tenha sido listado com negativa ("não traz endereço", etc.)
+  if (/não traz endereço|não cont[eé]m endereço|sem endereço|não possui endereço/i.test(texto)) {
+    const blocos = texto.split(/\n\s*\n/);
+    const blocosFiltrados = blocos.filter((b) => {
+      const bLower = b.toLowerCase();
+      const ehItemLista = /^\s*\*?\d+[ºª\)]/i.test(b);
+      const temNegativa =
+        bLower.includes('não traz endereço') ||
+        bLower.includes('não contém endereço') ||
+        bLower.includes('sem endereço') ||
+        bLower.includes('não possui endereço');
+      return !(ehItemLista && temNegativa);
+    });
+
+    texto = blocosFiltrados.join('\n\n');
+
+    // Renumera as opções restantes (1º, 2º, ...)
+    let contador = 1;
+    texto = texto.replace(/(^|\n)(\s*\*?)(\d+)[ºª\)]/g, (match, prefix, prefixStyle) => {
+      const novo = `${prefix}${prefixStyle}${contador}º)`;
+      contador++;
+      return novo;
+    });
+  }
+
+  // 2. Corrige indicação de mais recente para garantir que aponte para o documento com maior data de emissão real
+  if (params.documentosRetornados && params.documentosRetornados.length > 0) {
+    const docsValidosComEmissao = params.documentosRetornados.filter((d) => {
+      const dataDoc = d.data_documento || '';
+      const anoMatch = dataDoc.match(/\b(20[12]\d)\b/);
+      return Boolean(anoMatch) && !/cnh/i.test(d.nome_documento) && !/não identificada/i.test(dataDoc);
+    });
+
+    if (docsValidosComEmissao.length > 0) {
+      docsValidosComEmissao.sort((a, b) => {
+        const dA = parseDataBrOuIso(a.data_documento || '')?.getTime() || 0;
+        const dB = parseDataBrOuIso(b.data_documento || '')?.getTime() || 0;
+        return dB - dA;
+      });
+      const maisRecenteReal = docsValidosComEmissao[0];
+
+      const regexFechamento = /(?:O|A)\s+(?:endereço\s+)?mais recente\s+(?:é|consta no|está n[oa])\s+(?:o|a|d[oa])?\s*([^\n\r\.\?]+)/i;
+      const matchFechamento = texto.match(regexFechamento);
+      if (matchFechamento) {
+        const docCitado = matchFechamento[1].trim();
+        const docCitadoNorm = docCitado.toLowerCase();
+        const nomeMaisRecenteNorm = maisRecenteReal.nome_documento.toLowerCase();
+        const ehErrado =
+          /cnh/i.test(docCitadoNorm) ||
+          /203\d|204\d/.test(docCitadoNorm) ||
+          (!docCitadoNorm.includes(nomeMaisRecenteNorm) && !nomeMaisRecenteNorm.includes(docCitadoNorm));
+
+        if (ehErrado) {
+          texto = texto.replace(
+            regexFechamento,
+            `O mais recente é o da ${maisRecenteReal.nome_documento}`
+          );
+        }
+      }
+    }
+  }
+
+  return texto;
+}
+
+/**
  * Tool 1: buscar_documentos(consulta, titular?)
  */
-async function toolBuscarDocumentos(
+export async function toolBuscarDocumentos(
   consulta: string,
   titularNome?: string,
   todosDocs: DocumentoRegistro[] = []
@@ -7220,22 +7431,205 @@ async function toolBuscarDocumentos(
     data_armazenamento?: string;
     score: number;
     trecho?: string;
+    valor?: string;
   }>;
+  total_fontes_com_dado?: number;
+  orientacao_resposta?: string;
   mensagem?: string;
 }> {
   const termoNorm = (consulta || '').toLowerCase().trim();
   let titularNorm = (titularNome || '').toLowerCase().trim();
-  if (!titularNorm && consulta) {
-    try {
-      const todosTits = await obterTodosTitulares();
-      const cLower = consulta.toLowerCase();
-      const achado = todosTits.find((t) => t.nome && cLower.includes(t.nome.toLowerCase()));
-      if (achado) {
-        titularNorm = achado.nome.toLowerCase();
-      }
-    } catch {}
+  let titObj: FichaTitular | null = null;
+  const todosTits = await obterTodosTitulares();
+
+  if (titularNorm) {
+    titObj = todosTits.find((t) => titularCorresponde(t.nome, titularNorm)) || null;
+    if (titObj) titularNorm = titObj.nome.toLowerCase();
+  } else if (consulta) {
+    const cLower = consulta.toLowerCase();
+    titObj = todosTits.find((t) => t.nome && cLower.includes(t.nome.toLowerCase())) || null;
+    if (titObj) {
+      titularNorm = titObj.nome.toLowerCase();
+    }
   }
 
+  const ehBuscaEndereco = /(?:endere[cç]|residen|mora|casa|bairro|rua|logradouro|onde ele mora|onde ela mora)/i.test(consulta);
+  if (titularNorm && ehBuscaEndereco) {
+    const docsDoTitular = todosDocs.filter((d) => {
+      // 1. Campo titular direto
+      if (titularCorresponde(d.titular, titularNorm)) return true;
+      if (titObj && (d.metadata?.titular_id === titObj.id || titularCorresponde(d.titular, titObj.nome))) return true;
+      if (titObj?.apelidos && titObj.apelidos.some((ap) => titularCorresponde(d.titular, ap))) return true;
+
+      // 2. Nome do titular presente no título do documento
+      const titLower = (d.titulo || '').toLowerCase();
+      if (titLower.includes(titularNorm)) return true;
+      if (titObj && titLower.includes(titObj.nome.toLowerCase())) return true;
+      if (titObj?.apelidos && titObj.apelidos.some((ap) => ap.length >= 3 && titLower.includes(ap.toLowerCase()))) return true;
+
+      // 3. Nome do titular presente no nome do arquivo ou descrição
+      const arqLower = (d.arquivo || '').toLowerCase();
+      const descLower = (d.descricao || '').toLowerCase();
+      if (arqLower.includes(titularNorm) || descLower.includes(titularNorm)) return true;
+      if (titObj && (arqLower.includes(titObj.nome.toLowerCase()) || descLower.includes(titObj.nome.toLowerCase()))) return true;
+
+      return false;
+    });
+    console.log(`[DEBUG toolBuscarDocumentos] docsDoTitular encontrados para "${titularNorm}": ${docsDoTitular.length}`);
+
+    const docIds = docsDoTitular.map((d) => d.id);
+    const supabase = getSupabaseClient();
+    let trechosBanco: Array<{ documento_id: string; conteudo: string; pagina?: number }> = [];
+
+    if (docIds.length > 0) {
+      try {
+        const { data: tb, error: errTb } = await supabase
+          .from('trechos')
+          .select('documento_id, conteudo, pagina')
+          .in('documento_id', docIds);
+        if (!errTb && tb) {
+          trechosBanco = tb;
+        }
+      } catch (errDb) {
+        console.warn('[VEGA Tools] Falha ao consultar trechos do titular no Supabase:', errDb);
+      }
+    }
+
+    const trechosPorDoc = new Map<string, string[]>();
+    for (const t of trechosBanco) {
+      if (!trechosPorDoc.has(t.documento_id)) {
+        trechosPorDoc.set(t.documento_id, []);
+      }
+      trechosPorDoc.get(t.documento_id)!.push(t.conteudo);
+    }
+
+    const documentosComDado: Array<{
+      doc_id: string;
+      nome_documento: string;
+      titular: string;
+      data_documento: string;
+      data_armazenamento: string;
+      dataEmissaoDate: Date | null;
+      dataArmazDate: Date | null;
+      valor: string;
+      trecho: string;
+      score: number;
+    }> = [];
+
+    for (const d of docsDoTitular) {
+      const trechosDoDoc = [...(trechosPorDoc.get(d.id) || [])];
+      if (d.descricao) trechosDoDoc.push(d.descricao);
+
+      const extraido = extrairEnderecoDeTrechos(trechosDoDoc);
+      // Se NÃO contém endereço (ex.: CNH sem endereço), DESCARTA IMEDIATAMENTE!
+      if (!extraido) {
+        continue;
+      }
+
+      // Extrai data de emissão real (NUNCA validade nem cadastro)
+      const dataEmissao = extrairDataEmissaoDocumento(d, trechosDoDoc);
+      const dataDocFormatada = dataEmissao || 'data do documento não identificada';
+      const dataArmazFormatada = formatarDataParaExibicao(d.dataCadastro) || 'data de armazenamento não informada';
+
+      const dataEmissaoDate = dataEmissao ? parseDataBrOuIso(dataEmissao) : null;
+      const dataArmazDate = parseDataBrOuIso(d.dataCadastro);
+
+      documentosComDado.push({
+        doc_id: d.id,
+        nome_documento: d.titulo,
+        titular: d.titular || titularNorm,
+        data_documento: dataDocFormatada,
+        data_armazenamento: dataArmazFormatada,
+        dataEmissaoDate,
+        dataArmazDate,
+        valor: extraido.endereco,
+        trecho: extraido.trechoCompleto,
+        score: 1.0,
+      });
+    }
+
+    if (documentosComDado.length === 0) {
+      return {
+        documentos: [],
+        total_fontes_com_dado: 0,
+        mensagem: `Nenhum documento arquivado de ${titularNorm} contém endereço no Cofre.`,
+      };
+    }
+
+    // Determinação rigorosa da fonte mais recente:
+    // 1. Prioridade absoluta para a maior data de emissão/referência comprovada (NUNCA validade nem armazenamento).
+    // 2. Se NENHUM documento tiver data de emissão identificada (todas incertas), usa a maior data de armazenamento, explicando explicitamente.
+    const docsComDataEmissao = documentosComDado.filter((d) => d.dataEmissaoDate !== null);
+    let maisRecente: (typeof documentosComDado)[0];
+    let explicacaoMaisRecente = '';
+
+    if (docsComDataEmissao.length > 0) {
+      docsComDataEmissao.sort((a, b) => a.dataEmissaoDate!.getTime() - b.dataEmissaoDate!.getTime());
+      maisRecente = docsComDataEmissao[docsComDataEmissao.length - 1];
+    } else {
+      const docsOrdenadosPorArmaz = [...documentosComDado].sort((a, b) => {
+        const tA = a.dataArmazDate ? a.dataArmazDate.getTime() : 0;
+        const tB = b.dataArmazDate ? b.dataArmazDate.getTime() : 0;
+        return tA - tB;
+      });
+      maisRecente = docsOrdenadosPorArmaz[docsOrdenadosPorArmaz.length - 1];
+      explicacaoMaisRecente = ' (considerando a data de armazenamento, pois as datas dos documentos não foram identificadas)';
+    }
+
+    // Ordenação da lista para apresentação:
+    // Documentos com data de emissão comprovada vêm ordenados cronologicamente (mais antigo -> mais recente).
+    // Documentos sem data de emissão identificada vêm em seguida.
+    documentosComDado.sort((a, b) => {
+      if (a.dataEmissaoDate && b.dataEmissaoDate) {
+        return a.dataEmissaoDate.getTime() - b.dataEmissaoDate.getTime();
+      }
+      if (a.dataEmissaoDate && !b.dataEmissaoDate) return -1;
+      if (!a.dataEmissaoDate && b.dataEmissaoDate) return 1;
+      const tA = a.dataArmazDate ? a.dataArmazDate.getTime() : 0;
+      const tB = b.dataArmazDate ? b.dataArmazDate.getTime() : 0;
+      return tA - tB;
+    });
+
+    let orientacao: string;
+    if (documentosComDado.length === 1) {
+      orientacao = `Apenas 1 documento no Cofre contém o endereço do titular: "${maisRecente.nome_documento}". Responda direto ao usuário informando o endereço e citando a fonte, SEM aviso de conflito nem numeração.`;
+    } else {
+      const nomeTitularFormatado = titularNorm
+        .split(' ')
+        .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+        .join(' ');
+      orientacao =
+        `Foram encontrados ${documentosComDado.length} documentos com endereços diferentes no Cofre. ` +
+        `Escreva a resposta seguindo rigorosamente o formato de divergência do assistente.md:\n` +
+        `1) Abertura de conflito em tom natural: "Atenção: encontrei informações diferentes sobre o endereço do ${nomeTitularFormatado}, vindas de documentos diferentes:"\n\n` +
+        `2) Fontes numeradas (*1º)*, *2º)*, ...) com UMA LINHA EM BRANCO entre cada uma para o WhatsApp:\n` +
+        `*1º)* [Nome do Documento] (documento de [data_documento], armazenado em [data_armazenamento]): [endereço]\n\n` +
+        `*2º)* [Nome do Documento] (documento de [data_documento], armazenado em [data_armazenamento]): [endereço]\n\n` +
+        `3) Fechamento indicando o mais recente com base estritamente na data de emissão comprovada: "O mais recente é o da ${maisRecente.nome_documento}${explicacaoMaisRecente}. Qual devo considerar como correto?"\n\n` +
+        `Regras obrigatórias:\n` +
+        `- Documentos que não contêm endereço NÃO entram na lista.\n` +
+        `- Se a data do documento não foi identificada, escreva "(documento com data não identificada, armazenado em dd/mm/aaaa)". NUNCA use data de validade como data de documento.\n` +
+        `- Se o usuário pedir para enviar o documento ("me mande o documento mais recente"), acione a ferramenta "enviar_documento" com doc_id=${maisRecente.doc_id}.`;
+    }
+
+    return {
+      documentos: documentosComDado.map((d) => ({
+        doc_id: d.doc_id,
+        nome_documento: d.nome_documento,
+        titular: d.titular,
+        data_documento: d.data_documento,
+        data_armazenamento: d.data_armazenamento,
+        valor: d.valor,
+        trecho: d.trecho,
+        score: d.score,
+      })),
+      total_fontes_com_dado: documentosComDado.length,
+      orientacao_resposta: orientacao,
+      mensagem: orientacao,
+    };
+  }
+
+  // 2. Busca convencional (para outros tipos de busca ou sem titular especificado)
   const resultados: Array<{
     doc_id: string;
     nome_documento: string;
@@ -7244,9 +7638,9 @@ async function toolBuscarDocumentos(
     data_armazenamento?: string;
     score: number;
     trecho?: string;
+    valor?: string;
   }> = [];
 
-  // 1. Catálogo direto
   for (const d of todosDocs) {
     if (titularNorm && !titularCorresponde(d.titular, titularNorm)) {
       continue;
@@ -7256,17 +7650,6 @@ async function toolBuscarDocumentos(
     const descNorm = (d.descricao || '').toLowerCase();
     const apelidosNorm = (d.apelidos || []).map((a) => a.toLowerCase()).join(' ');
 
-    const palavrasTermo = termoNorm.split(/\s+/).filter((p) => p.length >= 3);
-    if (termoNorm.includes('enderec') || termoNorm.includes('residen') || termoNorm.includes('mora')) {
-      palavrasTermo.push('endereco', 'endereço', 'residencia', 'residência', 'residencial', 'locacao', 'locação', 'imposto', 'comprovante');
-    }
-
-    const coincidePalavras =
-      palavrasTermo.length > 0 &&
-      palavrasTermo.some(
-        (p) => tituloNorm.includes(p) || tipoNorm.includes(p) || descNorm.includes(p) || apelidosNorm.includes(p)
-      );
-
     const coincide =
       termoNorm === '' ||
       termoNorm === 'todos' ||
@@ -7275,15 +7658,15 @@ async function toolBuscarDocumentos(
       descNorm.includes(termoNorm) ||
       apelidosNorm.includes(termoNorm) ||
       termoNorm.includes(tituloNorm) ||
-      termoNorm.includes(tipoNorm) ||
-      coincidePalavras;
+      termoNorm.includes(tipoNorm);
 
     if (coincide) {
+      const dataEmissao = extrairDataEmissaoDocumento(d, [d.descricao || '']);
       resultados.push({
         doc_id: d.id,
         nome_documento: d.titulo,
         titular: d.titular || 'Não especificado',
-        data_documento: formatarDataParaExibicao(d.dataValidade || d.dataCadastro),
+        data_documento: dataEmissao || 'data do documento não identificada',
         data_armazenamento: formatarDataParaExibicao(d.dataCadastro),
         score: 1.0,
         trecho: d.descricao || `Documento ${d.tipo || 'oficial'} arquivado no Cofre`,
@@ -7291,22 +7674,20 @@ async function toolBuscarDocumentos(
     }
   }
 
-  // 2. Busca vetorial por trechos
   try {
-    const titulares = await obterTodosTitulares();
-    const titObj = titularNorm ? titulares.find((t) => titularCorresponde(t.nome, titularNorm)) : null;
-    const trechosVetoriais = await executarBuscaVetorial(consulta, titObj?.id || null, 5);
+    const trechosVetoriais = await executarBuscaVetorial(consulta, titObj?.id || null, 8);
     for (const tv of trechosVetoriais) {
       const doc = todosDocs.find((d) => d.id === tv.documento_id);
       if (titularNorm && (!doc || !titularCorresponde(doc.titular, titularNorm))) {
         continue;
       }
       const titulo = tv.titulo_documento || doc?.titulo || 'Documento do Cofre';
+      const dataEmissao = doc ? extrairDataEmissaoDocumento(doc, [tv.conteudo]) : null;
       resultados.push({
         doc_id: tv.documento_id,
         nome_documento: titulo,
         titular: doc?.titular || 'Não especificado',
-        data_documento: formatarDataParaExibicao(doc?.dataValidade || doc?.dataCadastro),
+        data_documento: dataEmissao || 'data do documento não identificada',
         data_armazenamento: formatarDataParaExibicao(doc?.dataCadastro),
         score: Number((tv.similaridade || 0.8).toFixed(2)),
         trecho: tv.conteudo,
@@ -7316,25 +7697,6 @@ async function toolBuscarDocumentos(
     console.warn('[VEGA Tools] Falha na busca vetorial:', err);
   }
 
-  // 3. Pessoa não cadastrada (cônjuge, sócio, testemunha)
-  if (titularNorm && !resultados.some((r) => titularCorresponde(r.titular, titularNorm))) {
-    try {
-      const trechosPessoa = await buscarTrechosPorNomePessoaNoCofre(titularNorm, consulta, todosDocs);
-      for (const tp of trechosPessoa) {
-        resultados.push({
-          doc_id: tp.documento_id,
-          nome_documento: tp.titulo_documento,
-          titular: tp.titulo_documento,
-          data_documento: formatarDataParaExibicao(new Date().toISOString()),
-          data_armazenamento: formatarDataParaExibicao(new Date().toISOString()),
-          score: 0.9,
-          trecho: tp.conteudo,
-        });
-      }
-    } catch {}
-  }
-
-  // Deduplica por doc_id e trecho similar
   const vistos = new Set<string>();
   const filtrados = resultados.filter((r) => {
     const chave = `${r.doc_id}_${(r.trecho || '').substring(0, 50)}`;
@@ -7343,47 +7705,9 @@ async function toolBuscarDocumentos(
     return true;
   });
 
-  if (filtrados.length === 0) {
-    return { documentos: [], mensagem: `Nenhum documento encontrado no Cofre para a consulta informada.` };
-  }
-
-  // Se encontrou múltiplos documentos de endereço com valores/trechos potencialmente diferentes
-  let instrucaoDivergencia: string | undefined = undefined;
-  if (
-    filtrados.length >= 2 &&
-    (termoNorm.includes('enderec') || termoNorm.includes('residen') || termoNorm.includes('mora') || consulta.toLowerCase().includes('endereço') || consulta.toLowerCase().includes('endereco'))
-  ) {
-    // Ordena cronologicamente para listar 1º, 2º, 3º
-    filtrados.sort((a, b) => {
-      const dA = parseDataBrOuIso(a.data_documento || a.data_armazenamento || '')?.getTime() || 0;
-      const dB = parseDataBrOuIso(b.data_documento || b.data_armazenamento || '')?.getTime() || 0;
-      return dA - dB;
-    });
-
-    const maisRecente = filtrados[filtrados.length - 1];
-    const nomeTitularExibicao = titularNorm
-      ? titularNorm.split(' ').map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ')
-      : 'titular';
-
-    instrucaoDivergencia =
-      `ATENÇÃO: Múltiplos documentos de endereço encontrados com datas diferentes no Cofre. ` +
-      `Se a intenção do usuário for perguntar o endereço do titular, formate a resposta no seguinte formato de divergência com cada opção em linha própria e linha em branco entre elas. ` +
-      `Porém, se o usuário pediu para ENVIAR o documento (ex: "me mande o documento mais recente", "me mande o documento"), você DEVE acionar em seguida a ferramenta "enviar_documento" com o doc_id do documento mais recente (${maisRecente.nome_documento}) para enviar o anexo, em vez de repetir a lista de divergência!\n\n` +
-      `1) Abertura de conflito em tom natural: "Atenção: encontrei informações diferentes sobre o endereço do ${nomeTitularExibicao}, vindas de documentos diferentes:"\n\n` +
-      `2) Fontes numeradas (1º, 2º, ...), com UMA LINHA EM BRANCO entre cada uma delas para leitura no WhatsApp:\n\n` +
-      filtrados
-        .map(
-          (f, idx) =>
-            `${idx + 1}º) ${f.nome_documento} (documento de ${f.data_documento || 'data não informada'}, armazenado em ${f.data_armazenamento || 'data não informada'}): ${f.trecho?.replace(/^.*?:\s*/, '') || f.trecho}`
-        )
-        .join('\n\n') +
-      `\n\n3) Fechamento indicando o mais recente e perguntando: "O mais recente é o d[o/a] ${maisRecente.nome_documento}. Qual devo considerar como correto?"\n\n` +
-      `IMPORTANTE: Cada opção numerada DEVE ficar em uma linha própria, com uma linha em branco entre elas. NUNCA mostre doc_id ou UUIDs.`;
-  }
-
   return {
     documentos: filtrados.slice(0, 6),
-    mensagem: instrucaoDivergencia,
+    mensagem: filtrados.length === 0 ? 'Nenhum documento encontrado no Cofre para a consulta informada.' : undefined,
   };
 }
 
@@ -7520,10 +7844,12 @@ async function toolConsultarFichaTitular(
     }
   }
 
-  const mensagemPadrao =
-    totalCampos === 0
-      ? `A ficha cadastral do titular "${titular.nome}" não possui campos cadastrais preenchidos. Você DEVE acionar em seguida a ferramenta "buscar_documentos" com consulta="endereço" e titular="${titular.nome}" para verificar os documentos arquivados desse titular no Cofre antes de responder.`
-      : undefined;
+  let mensagemPadrao: string | undefined = undefined;
+  if (!camposValidados.endereco) {
+    mensagemPadrao = `Atenção: A ficha cadastral do titular "${titular.nome}" NÃO possui o campo de endereço preenchido. Pela regra de Fallback Obrigatório em Duas Camadas, você DEVE acionar imediatamente em seguida a ferramenta "buscar_documentos" com consulta="endereço" e titular="${titular.nome}" para verificar os documentos arquivados desse titular no Cofre antes de responder ao usuário.`;
+  } else if (totalCampos === 0) {
+    mensagemPadrao = `A ficha cadastral do titular "${titular.nome}" não possui campos cadastrais preenchidos. Você DEVE acionar em seguida a ferramenta "buscar_documentos" com consulta="endereço" e titular="${titular.nome}" para verificar os documentos arquivados desse titular no Cofre antes de responder.`;
+  }
 
   const mensagemFinal = alertaDocPosterior || instrucaoConfirmado || mensagemPadrao;
 
@@ -7940,6 +8266,13 @@ ${statusSaudacao}
   const MAX_VOLTAS = 6;
   let volta = 0;
 
+  const docsEncontradosParaVerificacao: Array<{
+    nome_documento: string;
+    data_documento?: string;
+    valor?: string;
+    trecho?: string;
+  }> = [];
+
   while (volta < MAX_VOLTAS) {
     volta++;
     const inicioChamadaIa = Date.now();
@@ -7991,10 +8324,19 @@ ${statusSaudacao}
           if (resultadoTool.mensagem) {
             dadosRetornadosTools.push(resultadoTool.mensagem);
           }
+          if (resultadoTool.orientacao_resposta) {
+            dadosRetornadosTools.push(resultadoTool.orientacao_resposta);
+          }
           if (resultadoTool.documentos && Array.isArray(resultadoTool.documentos)) {
             for (const doc of resultadoTool.documentos) {
+              docsEncontradosParaVerificacao.push({
+                nome_documento: doc.nome_documento,
+                data_documento: doc.data_documento,
+                valor: doc.valor,
+                trecho: doc.trecho,
+              });
               dadosRetornadosTools.push(
-                `${doc.nome_documento} ${doc.titular} (documento de ${doc.data_documento || ''}, armazenado em ${doc.data_armazenamento || ''}) ${doc.trecho || ''}`
+                `${doc.nome_documento} ${doc.titular} (documento de ${doc.data_documento || ''}, armazenado em ${doc.data_armazenamento || ''}) ${doc.valor || ''} ${doc.trecho || ''}`
               );
               fontesRetornadasRastro.push({
                 id: doc.doc_id,
@@ -8123,6 +8465,15 @@ ${statusSaudacao}
       respostaTextoFinal = msgResposta.content || '';
       break;
     }
+  }
+
+  // 5.1. AUTOVERIFICAÇÃO ANTES DE ENVIAR (Item 4)
+  if (/enderec|residen|mora|casa|bairro|rua/i.test(mensagemUsuario)) {
+    respostaTextoFinal = autoverificarRespostaDadosTitular({
+      textoResposta: respostaTextoFinal,
+      documentosRetornados: docsEncontradosParaVerificacao,
+      mensagemUsuario,
+    });
   }
 
   // 6. REDE DE SEGURANÇA NO CÓDIGO (Item 4)

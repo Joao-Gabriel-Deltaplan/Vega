@@ -143,6 +143,7 @@ export interface DocumentoRegistro {
   statusIndexacao?: 'processando' | 'indexado' | 'pendente' | 'erro' | 'substituido' | 'protegido_senha';
   erroIndexacao?: string;
   dataValidade?: string | null;
+  dataEmissao?: string | null;
   origemValidade?: 'extraído automaticamente' | 'corrigido pelo chat' | 'manual';
   historicoValidade?: HistoricoCorrecaoCampo;
   silenciarAlertas?: boolean;

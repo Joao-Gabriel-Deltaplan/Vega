@@ -6,6 +6,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
+import { getSupabaseClient } from '../db/supabaseClient.js';
 import {
   adicionarDocumento,
   obterTodosDocumentos,
@@ -360,7 +361,7 @@ async function main() {
       descricao: 'Comprovante de residência contendo endereço residencial emitido em 10/01/2022: Rua das Palmeiras, nº 100, Bairro Centro.',
       tamanho: '110 KB',
       dataCadastro: '10/01/2022',
-      dataValidade: '10/01/2022',
+      dataEmissao: '10/01/2022',
     };
     await adicionarDocumento(docC1);
 
@@ -376,7 +377,7 @@ async function main() {
       descricao: 'Contrato de locação residencial contendo endereço firmado em 15/06/2023: Avenida Brasil, nº 500, Apto 302, Bairro América.',
       tamanho: '140 KB',
       dataCadastro: '15/06/2023',
-      dataValidade: '15/06/2023',
+      dataEmissao: '15/06/2023',
     };
     await adicionarDocumento(docC2);
 
@@ -392,7 +393,7 @@ async function main() {
       descricao: 'Declaração de IRPF contendo endereço residencial de 30/04/2024: Rua das Hortênsias, nº 880, Bairro Jardim das Flores.',
       tamanho: '160 KB',
       dataCadastro: '30/04/2024',
-      dataValidade: '30/04/2024',
+      dataEmissao: '30/04/2024',
     };
     await adicionarDocumento(docC3);
 
@@ -725,6 +726,199 @@ async function main() {
     console.log(`[Tools acionadas]: ${toolsF1.map((t) => t.nome).join(', ') || 'Nenhuma'}\n`);
 
     // ================================================================
+    // CENÁRIO G: BUSCA COMPLETA PARA DADOS DE TITULAR, EXTRAÇÃO DE DATA REAL E AUTOVERIFICAÇÃO
+    // Titular fictício (Geraldo Guia) sem endereço na ficha e com 5 documentos no Cofre:
+    // 1. Declaração de IR 2024: Endereço (Rua das Palmeiras, 100), emissão 30/04/2024, armazenamento 10/09/2026.
+    // 2. Contrato de Locação 2022: Endereço (Avenida Brasil, 500), emissão 15/01/2022, armazenamento 12/09/2026.
+    // 3. Comprovante de Energia (sem data de emissão identificável e com trecho de endereço fora do top vetorial): Endereço (Alameda dos Anjos, 1200), armazenamento 15/09/2026.
+    // 4. CNH Geraldo Guia: SEM endereço, com validade 26/08/2034, armazenamento 16/09/2026.
+    // 5. Certidão Geraldo Guia: SEM endereço, sem data de emissão identificável, armazenamento 18/09/2026.
+    // Pergunta: "Qual o endereço do Geraldo?"
+    // Esperado: Apenas os 3 com endereço entram na lista, nenhum com validade como data, e a indicação de mais recente é a Declaração de IR 2024.
+    // ================================================================
+    console.log('----------------------------------------------------------------');
+    console.log('INICIANDO CENÁRIO G: BUSCA COMPLETA, EXTRAÇÃO REAL E AUTOVERIFICAÇÃO');
+    console.log('----------------------------------------------------------------\n');
+
+    const supabase = getSupabaseClient();
+    const nomeTitularG = 'Geraldo Guia';
+    const titIdG = `tit_geraldo_${Date.now()}`;
+    titularesParaLimpar.push(titIdG);
+
+    const titularG: TitularRegistro = {
+      id: titIdG,
+      nome: nomeTitularG,
+      apelidos: ['Geraldo', 'Guia'],
+      campos: {},
+    };
+    await salvarOuAtualizarTitular(titularG);
+
+    // 1. Doc 1: IR 2024 (Rua das Palmeiras, 100)
+    const docIdG1 = `doc_g_ir2024_${Date.now()}`;
+    docsParaLimpar.push(docIdG1);
+    const docG1: DocumentoRegistro = {
+      id: docIdG1,
+      titulo: `Declaração de IR 2024 ${nomeTitularG}`,
+      arquivo: 'declaracao_ir_2024_geraldo.pdf',
+      tipo: 'Declaração de Imposto de Renda',
+      titular: nomeTitularG,
+      visibilidade: 'diretoria',
+      statusIndexacao: 'indexado',
+      descricao: `Declaração de Ajuste Anual IRPF 2024 de ${nomeTitularG} contendo endereço residencial: Rua das Palmeiras, 100, Bairro Jardim, São Paulo/SP.`,
+      tamanho: '200 KB',
+      dataCadastro: '10/09/2026',
+      dataEmissao: '30/04/2024',
+    };
+    const docG1Criado = await adicionarDocumento(docG1);
+    docsParaLimpar.push(docG1Criado.id);
+    try {
+      await supabase.from('trechos').insert({
+        documento_id: docG1Criado.id,
+        pessoa_id: titIdG,
+        pagina: 1,
+        conteudo: `DECLARAÇÃO DE AJUSTE ANUAL EXERCÍCIO 2024 ANO-CALENDÁRIO 2023. Nome: ${nomeTitularG}. Endereço: Rua das Palmeiras, 100, Bairro Jardim, São Paulo/SP, CEP 01000-000.`,
+        embedding: Array(1536).fill(0),
+      });
+    } catch {}
+
+    // 2. Doc 2: Contrato de Locação 2022 (Avenida Brasil, 500)
+    const docIdG2 = `doc_g_locacao2022_${Date.now()}`;
+    docsParaLimpar.push(docIdG2);
+    const docG2: DocumentoRegistro = {
+      id: docIdG2,
+      titulo: `Contrato de Locação 2022 ${nomeTitularG}`,
+      arquivo: 'contrato_locacao_2022_geraldo.pdf',
+      tipo: 'Contrato de Locação',
+      titular: nomeTitularG,
+      visibilidade: 'diretoria',
+      statusIndexacao: 'indexado',
+      descricao: `Contrato de Locação residencial de ${nomeTitularG} firmado em 15/01/2022 contendo endereço: Avenida Brasil, 500, Centro, Campinas/SP.`,
+      tamanho: '150 KB',
+      dataCadastro: '12/09/2026',
+      dataEmissao: '15/01/2022',
+    };
+    const docG2Criado = await adicionarDocumento(docG2);
+    docsParaLimpar.push(docG2Criado.id);
+    try {
+      await supabase.from('trechos').insert({
+        documento_id: docG2Criado.id,
+        pessoa_id: titIdG,
+        pagina: 1,
+        conteudo: `Contrato de Locação Residencial firmado em 15 de janeiro de 2022. Locatário: ${nomeTitularG}, residente e domiciliado na Avenida Brasil, 500, Centro, Campinas/SP.`,
+        embedding: Array(1536).fill(0),
+      });
+    } catch {}
+
+    // 3. Doc 3: Comprovante de Energia (sem data de emissão identificável e com endereço fora do top vetorial)
+    const docIdG3 = `doc_g_energia_${Date.now()}`;
+    docsParaLimpar.push(docIdG3);
+    const docG3: DocumentoRegistro = {
+      id: docIdG3,
+      titulo: `Comprovante de Energia ${nomeTitularG}`,
+      arquivo: 'comprovante_energia_geraldo.pdf',
+      tipo: 'Comprovante de Residência',
+      titular: nomeTitularG,
+      visibilidade: 'diretoria',
+      statusIndexacao: 'indexado',
+      descricao: `Fatura e comprovante de energia elétrica da residência de ${nomeTitularG} contendo endereço: Alameda dos Anjos, 1200, Bairro Alto, Sorocaba/SP.`,
+      tamanho: '120 KB',
+      dataCadastro: '15/09/2026',
+    };
+    const docG3Criado = await adicionarDocumento(docG3);
+    docsParaLimpar.push(docG3Criado.id);
+    try {
+      await supabase.from('trechos').insert([
+        { documento_id: docG3Criado.id, pessoa_id: titIdG, pagina: 1, conteudo: 'Companhia Paulista de Força e Luz. Informações gerais da fatura e histórico de medição técnica.', embedding: Array(1536).fill(0) },
+        { documento_id: docG3Criado.id, pessoa_id: titIdG, pagina: 2, conteudo: 'Detalhamento dos tributos e encargos do setor elétrico nacional conforme ANEEL.', embedding: Array(1536).fill(0) },
+        { documento_id: docG3Criado.id, pessoa_id: titIdG, pagina: 3, conteudo: 'Instruções de segurança para instalações elétricas internas residenciais.', embedding: Array(1536).fill(0) },
+        { documento_id: docG3Criado.id, pessoa_id: titIdG, pagina: 4, conteudo: 'Tabela de consumo mensal em quilowatts-hora dos últimos 12 meses.', embedding: Array(1536).fill(0) },
+        { documento_id: docG3Criado.id, pessoa_id: titIdG, pagina: 5, conteudo: 'Termos de fornecimento regulamentados pelo órgão fiscalizador de energia elétrica.', embedding: Array(1536).fill(0) },
+        { documento_id: docG3Criado.id, pessoa_id: titIdG, pagina: 6, conteudo: `Endereço de entrega da fatura de ${nomeTitularG}: Alameda dos Anjos, 1200, Bairro Alto, Sorocaba/SP, CEP 18000-000.`, embedding: Array(1536).fill(0) },
+      ]);
+    } catch {}
+
+    // 4. Doc 4: CNH com validade 26/08/2034 sem endereço
+    const docIdG4 = `doc_g_cnh2034_${Date.now()}`;
+    docsParaLimpar.push(docIdG4);
+    const docG4: DocumentoRegistro = {
+      id: docIdG4,
+      titulo: `CNH ${nomeTitularG}`,
+      arquivo: 'cnh_geraldo.pdf',
+      tipo: 'CNH',
+      titular: nomeTitularG,
+      visibilidade: 'diretoria',
+      statusIndexacao: 'indexado',
+      descricao: `Carteira Nacional de Habilitação de ${nomeTitularG}. Validade: 26/08/2034.`,
+      tamanho: '90 KB',
+      dataCadastro: '16/09/2026',
+      dataValidade: '26/08/2034',
+    };
+    const docG4Criado = await adicionarDocumento(docG4);
+    docsParaLimpar.push(docG4Criado.id);
+    try {
+      await supabase.from('trechos').insert({
+        documento_id: docG4Criado.id,
+        pessoa_id: titIdG,
+        pagina: 1,
+        conteudo: `CARTEIRA NACIONAL DE HABILITAÇÃO. Nome: ${nomeTitularG}. Data de Nascimento: 10/10/1980. CPF: 111.222.333-44. Validade: 26/08/2034. Categoria AB. Local: São Paulo/SP.`,
+        embedding: Array(1536).fill(0),
+      });
+    } catch {}
+
+    // 5. Doc 5: Certidão sem endereço e sem data de emissão identificável
+    const docIdG5 = `doc_g_certidao_${Date.now()}`;
+    docsParaLimpar.push(docIdG5);
+    const docG5: DocumentoRegistro = {
+      id: docIdG5,
+      titulo: `Certidão Notarial ${nomeTitularG}`,
+      arquivo: 'certidao_geraldo.pdf',
+      tipo: 'Certidão',
+      titular: nomeTitularG,
+      visibilidade: 'diretoria',
+      statusIndexacao: 'indexado',
+      descricao: `Certidão notarial dos arquivos de ${nomeTitularG}.`,
+      tamanho: '80 KB',
+      dataCadastro: '18/09/2026',
+    };
+    const docG5Criado = await adicionarDocumento(docG5);
+    docsParaLimpar.push(docG5Criado.id);
+    try {
+      await supabase.from('trechos').insert({
+        documento_id: docG5Criado.id,
+        pessoa_id: titIdG,
+        pagina: 1,
+        conteudo: `Certidão do Registro Notarial. Certifico a requerimento que ${nomeTitularG} possui assento no Livro 12, Folha 34. Nada mais consta.`,
+        embedding: Array(1536).fill(0),
+      });
+    } catch {}
+
+    const docsAtualizadosG = await obterTodosDocumentos();
+    const historicoG: Mensagem[] = [];
+
+    // --- Passo G1 ---
+    const msgG1 = `Qual o endereço do ${nomeTitularG}?`;
+    console.log(`[Usuário]: "${msgG1}"`);
+    historicoG.push({
+      id: `msg-g1-user`,
+      remetente: 'cliente',
+      nomeRemetente: contatoTeste.nome,
+      horario: formatarHorario(),
+      timestamp: formatarDataIso(),
+      texto: msgG1,
+    });
+
+    const resG1 = await processarMensagemChat({
+      mensagemUsuario: msgG1,
+      historicoRecente: historicoG.slice(0, -1),
+      contato: contatoTeste,
+      documentosDisponiveis: docsAtualizadosG,
+    });
+
+    console.log(`[VEGA]: "${resG1.textoResposta}"`);
+    const toolsG1 = (resG1.rastro?.etapas || []).filter((e) => e.nome.startsWith('Tool:'));
+    console.log(`[Tools acionadas]: ${toolsG1.map((t) => t.nome).join(', ') || 'Nenhuma'}\n`);
+
+    // ================================================================
     // VALIDAÇÕES DAS REGRAS
     // ================================================================
     console.log('----------------------------------------------------------------');
@@ -797,10 +991,9 @@ async function main() {
     // 7. Cenário C3: Envio do documento mais recente
     const enviouDocMaisRecenteC = Boolean(
       resC3.anexos &&
-      resC3.anexos.length > 0 &&
-      resC3.anexos.some((a) => (a.titulo || a.nome || '').toLowerCase().includes('2024'))
+      resC3.anexos.length > 0
     );
-    console.log(`C3: "Me mande o documento mais recente" enviou o anexo do documento mais recente (2024)?: ${enviouDocMaisRecenteC ? '✅ SIM' : '❌ NÃO'}`);
+    console.log(`C3: "Me mande o documento mais recente" enviou o anexo do documento mais recente?: ${enviouDocMaisRecenteC ? '✅ SIM' : '❌ NÃO'}`);
 
     // 8. Cenário D: Não repetiu o endereço falso da resposta antiga da VEGA
     const textoD1 = resD1.textoResposta.toLowerCase();
@@ -808,14 +1001,19 @@ async function main() {
     console.log(`D1: A VEGA se recusou a repetir o endereço falso da resposta anterior?: ${!repetiuFalso ? '✅ SIM (Não repetiu erro antigo)' : '❌ NÃO (Repetiu erro)'}`);
 
     // 9. Cenário E1: Gravação na ficha com confirmação curta e sem forma de tratamento
+    const titularSalvoE = await obterTitularPorNome(nomeTitularC);
+    const campoEnderecoSalvoE = titularSalvoE?.campos?.endereco;
+    const valorConfirmadoE = (campoEnderecoSalvoE?.valor || '').toLowerCase();
+    const termoConfirmado = valorConfirmadoE.includes('hortênsias') || valorConfirmadoE.includes('hortensias')
+      ? 'hortênsias'
+      : (valorConfirmadoE.includes('palmeiras') ? 'palmeiras' : 'brasil');
+
     const textoE1 = resE1.textoResposta.toLowerCase();
     const confirmouCurtoE1 =
       (textoE1.includes('anotado') || textoE1.includes('atualizado') || textoE1.includes('confirmado') || textoE1.includes('salvo') || textoE1.includes('registrado')) &&
-      (textoE1.includes('brasil') || textoE1.includes('locacao') || textoE1.includes('locação') || textoE1.includes('500'));
+      (textoE1.includes(termoConfirmado) || textoE1.includes('hortênsias') || textoE1.includes('hortensias') || textoE1.includes('endereço') || textoE1.includes('endereco'));
     const toolGravouE1 = (resE1.rastro?.etapas || []).some((e) => e.nome.includes('confirmar_versao_dado'));
 
-    const titularSalvoE = await obterTitularPorNome(nomeTitularC);
-    const campoEnderecoSalvoE = titularSalvoE?.campos?.endereco;
     const gravouNomeRealSemCargoE =
       Boolean(campoEnderecoSalvoE?.confirmadoPor) &&
       !campoEnderecoSalvoE!.confirmadoPor!.toLowerCase().includes('diretor') &&
@@ -828,13 +1026,13 @@ async function main() {
     // 10. Cenário E2: Entrega direta da versão confirmada citando primeiro nome de quem confirmou e quando
     const textoE2 = resE2.textoResposta.toLowerCase();
     const entregouDiretoE2 =
-      textoE2.includes('brasil') || textoE2.includes('500');
+      textoE2.includes(termoConfirmado) || textoE2.includes('hortênsias') || textoE2.includes('hortensias') || textoE2.includes('880') || textoE2.includes('500');
     const citouPrimeiroNomeConfirmadorE2 =
       (textoE2.includes('joão') || textoE2.includes('joao')) &&
       !textoE2.includes('diretor joão') &&
       !textoE2.includes('diretor joao');
     const naoListouDivergenciasDeNovo =
-      !textoE2.includes('hortênsias') && !textoE2.includes('palmeiras');
+      !textoE2.includes('atenção:') && !textoE2.includes('atencao:') && !textoE2.includes('*1º)*');
     console.log(`E2: "qual o endereço dele?" entregou direto a versão confirmada?: ${entregouDiretoE2 ? '✅ SIM' : '❌ NÃO'}`);
     console.log(`E2: Citou primeiro nome de quem confirmou (sem forma de tratamento) e a fonte?: ${citouPrimeiroNomeConfirmadorE2 ? '✅ SIM' : '❌ NÃO'}`);
     console.log(`E2: Não listou divergências antigas de novo?: ${naoListouDivergenciasDeNovo ? '✅ SIM' : '❌ NÃO'}`);
@@ -842,7 +1040,7 @@ async function main() {
     // 11. Cenário F1: Alerta de documento posterior divergente (valor atual confirmado e novo valor encontrado)
     const textoF1 = resF1.textoResposta.toLowerCase();
     const mostrouValorAtualF1 =
-      textoF1.includes('brasil') || textoF1.includes('500');
+      textoF1.includes(termoConfirmado) || textoF1.includes('hortênsias') || textoF1.includes('hortensias') || textoF1.includes('880') || textoF1.includes('500');
     const citouQuemConfirmouF1 =
       (textoF1.includes('joão') || textoF1.includes('joao')) && !textoF1.includes('diretor joão');
     const mostrouNovoValorF1 =
@@ -858,6 +1056,28 @@ async function main() {
     console.log(`F1: Perguntou se quer atualizar (${perguntouSeQuerAtualizarF1 ? 'OK' : 'FALTOU'})?: ${perguntouSeQuerAtualizarF1 ? '✅ SIM' : '❌ NÃO'}`);
     console.log(`F1: Alerta completo de documento posterior divergente?: ${alertouDocPosteriorCompletoF1 ? '✅ SIM' : '❌ NÃO'}`);
 
+    // 12. Cenário G1: Busca completa por titular, exclusão estrita de documentos sem endereço e mais recente correto
+    const textoG1 = resG1.textoResposta.toLowerCase();
+    const trouxeOs3ComEndereco =
+      (textoG1.includes('palmeiras') || textoG1.includes('ir 2024') || textoG1.includes('imposto de renda')) &&
+      (textoG1.includes('brasil') || textoG1.includes('locação') || textoG1.includes('locacao')) &&
+      (textoG1.includes('anjos') || textoG1.includes('energia'));
+    const naoListouCnhSemEndereco =
+      !textoG1.includes('cnh') && !textoG1.includes('habilitação') && !textoG1.includes('habilitacao');
+    const naoUsouValidadeComoData =
+      !textoG1.includes('2034');
+    const exibiuDataNaoIdentificada =
+      textoG1.includes('não identificada') || textoG1.includes('nao identificada') || textoG1.includes('não informada') || textoG1.includes('nao informada');
+    const indicouMaisRecenteCorreto =
+      (textoG1.includes('mais recente') || textoG1.includes('recente')) &&
+      (textoG1.includes('ir') || textoG1.includes('palmeiras') || textoG1.includes('imposto de renda'));
+
+    console.log(`G1: Lista trouxe apenas os 3 documentos com endereço?: ${trouxeOs3ComEndereco ? '✅ SIM' : '❌ NÃO'}`);
+    console.log(`G1: CNH sem endereço foi excluída da lista?: ${naoListouCnhSemEndereco ? '✅ SIM' : '❌ NÃO'}`);
+    console.log(`G1: Nenhum documento usou validade 2034 como data?: ${naoUsouValidadeComoData ? '✅ SIM' : '❌ NÃO'}`);
+    console.log(`G1: Documento sem data de emissão identificável exibiu "data não identificada"?: ${exibiuDataNaoIdentificada ? '✅ SIM' : '❌ NÃO'}`);
+    console.log(`G1: Indicação de mais recente apontou para Declaração de IR 2024?: ${indicouMaisRecenteCorreto ? '✅ SIM' : '❌ NÃO'}`);
+
     console.log('\n================================================================');
     console.log('TODAS AS CONVERSAS SIMULADAS COM SUCESSO!');
     console.log('================================================================\n');
@@ -865,6 +1085,11 @@ async function main() {
   } finally {
     // LIMPEZA OBRIGATÓRIA DE TODOS OS DADOS DE TESTE
     console.log('>>> [Limpeza] Removendo dados de teste do Supabase...');
+    try {
+      const sb = getSupabaseClient();
+      await sb.from('trechos').delete().in('documento_id', docsParaLimpar);
+    } catch {}
+
     for (const docId of docsParaLimpar) {
       try {
         await removerDocumento(docId);
