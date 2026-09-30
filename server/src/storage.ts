@@ -555,6 +555,9 @@ export async function adicionarDocumento(documento: DocumentoRegistro): Promise<
     if (documento.dataCadastro) {
       metaBase.dataCadastro = documento.dataCadastro;
     }
+    if (documento.dataEmissao) {
+      metaBase.data_emissao = documento.dataEmissao;
+    }
     if (isUuid) {
       payload.id = documento.id;
       payload.metadata = metaBase;
@@ -638,6 +641,20 @@ export async function atualizarDocumento(
     if (dados.storagePath !== undefined) payload.storage_path = dados.storagePath.trim();
     if (dados.statusIndexacao !== undefined) payload.status_indexacao = dados.statusIndexacao;
     if (dados.erroIndexacao !== undefined) payload.erro_indexacao = dados.erroIndexacao || null;
+
+    if (dados.dataEmissao !== undefined || dados.metadata !== undefined) {
+      const { data: docExistente } = await supabase
+        .from('documentos')
+        .select('metadata')
+        .eq('id', id)
+        .maybeSingle();
+      const metaExistente = docExistente?.metadata || {};
+      payload.metadata = {
+        ...metaExistente,
+        ...(dados.metadata || {}),
+        ...(dados.dataEmissao !== undefined ? { data_emissao: dados.dataEmissao } : {}),
+      };
+    }
 
     // Busca se é UUID ou id_legado
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);

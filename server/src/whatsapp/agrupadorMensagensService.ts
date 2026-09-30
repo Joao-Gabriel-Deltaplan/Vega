@@ -538,6 +538,7 @@ async function processarLoteUnificado(
     origem: resultadoChat.origem,
     rastro: resultadoChat.rastro,
     documentoOferecidoId: resultadoChat.documentoOferecidoId,
+    opcoes: resultadoChat.opcoes && resultadoChat.opcoes.length > 0 ? resultadoChat.opcoes : undefined,
     anexos: resultadoChat.anexos,
     dadosEstruturados: resultadoChat.dadosEstruturados,
   };

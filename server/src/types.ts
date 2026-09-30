@@ -75,6 +75,13 @@ export interface Anexo {
 export interface OpcaoDocumento {
   id: string;
   titulo: string;
+  numero?: number;
+  doc_id?: string;
+  doc_ids?: string[];
+  nome_documento?: string;
+  nomes_documentos?: string[];
+  valor?: string;
+  mais_recente?: boolean;
 }
 
 export interface DadosEstruturadosMensagem {

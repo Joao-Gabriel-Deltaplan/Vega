@@ -453,6 +453,7 @@ async function main() {
       texto: resC1.textoResposta,
       anexos: resC1.anexos,
       rastro: resC1.rastro,
+      opcoes: resC1.opcoes,
     });
 
     // --- Passo C2 ---
@@ -487,6 +488,7 @@ async function main() {
       texto: resC2.textoResposta,
       anexos: resC2.anexos,
       rastro: resC2.rastro,
+      opcoes: resC2.opcoes,
     });
 
     // --- Passo C3 ---
@@ -737,7 +739,22 @@ async function main() {
     // Esperado: Apenas os 3 com endereço entram na lista, nenhum com validade como data, e a indicação de mais recente é a Declaração de IR 2024.
     // ================================================================
     console.log('----------------------------------------------------------------');
-    console.log('INICIANDO CENÁRIO G: BUSCA COMPLETA, EXTRAÇÃO REAL E AUTOVERIFICAÇÃO');
+    // ================================================================
+    // CENÁRIO G: 5 DOCUMENTOS (AGRUPAMENTO POR VALOR, DESCARTE DE NASCIMENTO E REFERÊNCIA A ITENS)
+    // 5 Documentos do Geraldo Guia:
+    // 1. Diploma Ensino Médio: Concluiu em 18/12/2009. Endereço: Rua Renee Machado Branco Ferraro, nº 334, Residencial Regina Brizola, Ourinhos-SP, CEP 19915-808.
+    // 2. Certidão CREA: Expedido em 03/07/2014. Endereço: Rua RENEE MACHADO BRANCO FERRARO, 334 RESIDENCIAL REGINA BRIZOLA 19915-808 - OURINHOS - SP. (MESMO ENDEREÇO DE 1 -> DEVE AGRUPAR!)
+    // 3. Certidão de Casamento: Nascido aos 06/10/1984. Casamento celebrado em 12/04/2010. Endereço: Rua das Flores, nº 100, Centro, Ourinhos-SP. (DEVE DESCARTAR NASCIMENTO E PEGAR 12/04/2010!)
+    // 4. Declaração de IR 2024: Recibo em 30/04/2024. Endereço: RUA LUIZ GOZZO Número: 345 Bairro/Distrito: JARDIM PLANALTO Município: SANTA CRUZ DO RIO PARDO UF: SP CEP: 18910-136. (A MAIS RECENTE!)
+    // 5. CNH: Validade 26/08/2034. SEM endereço. (DEVE SER DESCARTADA!)
+    //
+    // Passos de teste:
+    // - Passo G1: "Onde o Geraldo Guia mora?" -> Exibe 3 opções enxutas numeradas (*1º)*, *2º)*, *3º)*).
+    // - Passo G2: "Me mande o pdf do item 5" -> Como a lista só tinha 3 opções, responde que havia apenas 3 opções e pergunta qual.
+    // - Passo G3: "Me mande o pdf do item 3" -> Identifica o item 3 (Declaração de IR) e envia com anexo.
+    // ================================================================
+    console.log('----------------------------------------------------------------');
+    console.log('INICIANDO CENÁRIO G: 5 DOCUMENTOS, AGRUPAMENTO, DATA DE EMISSÃO E REFERÊNCIAS A ITENS');
     console.log('----------------------------------------------------------------\n');
 
     const supabase = getSupabaseClient();
@@ -753,21 +770,21 @@ async function main() {
     };
     await salvarOuAtualizarTitular(titularG);
 
-    // 1. Doc 1: IR 2024 (Rua das Palmeiras, 100)
-    const docIdG1 = `doc_g_ir2024_${Date.now()}`;
+    // 1. Doc 1: Diploma Ensino Médio (Ourinhos, Rua Renee Machado Branco Ferraro, 334)
+    const docIdG1 = `doc_g_diploma_${Date.now()}`;
     docsParaLimpar.push(docIdG1);
     const docG1: DocumentoRegistro = {
       id: docIdG1,
-      titulo: `Declaração de IR 2024 ${nomeTitularG}`,
-      arquivo: 'declaracao_ir_2024_geraldo.pdf',
-      tipo: 'Declaração de Imposto de Renda',
+      titulo: `Diploma Ensino Médio ${nomeTitularG}`,
+      arquivo: 'diploma_ensino_medio_geraldo.pdf',
+      tipo: 'Diploma',
       titular: nomeTitularG,
       visibilidade: 'diretoria',
       statusIndexacao: 'indexado',
-      descricao: `Declaração de Ajuste Anual IRPF 2024 de ${nomeTitularG} contendo endereço residencial: Rua das Palmeiras, 100, Bairro Jardim, São Paulo/SP.`,
-      tamanho: '200 KB',
+      descricao: `Certificado de conclusão do Ensino Médio de ${nomeTitularG} em 18 de dezembro de 2009.`,
+      tamanho: '150 KB',
       dataCadastro: '10/09/2026',
-      dataEmissao: '30/04/2024',
+      dataEmissao: '18/12/2009',
     };
     const docG1Criado = await adicionarDocumento(docG1);
     docsParaLimpar.push(docG1Criado.id);
@@ -776,26 +793,26 @@ async function main() {
         documento_id: docG1Criado.id,
         pessoa_id: titIdG,
         pagina: 1,
-        conteudo: `DECLARAÇÃO DE AJUSTE ANUAL EXERCÍCIO 2024 ANO-CALENDÁRIO 2023. Nome: ${nomeTitularG}. Endereço: Rua das Palmeiras, 100, Bairro Jardim, São Paulo/SP, CEP 01000-000.`,
+        conteudo: `REPÚBLICA FEDERATIVA DO BRASIL. Certifico que ${nomeTitularG} concluiu em 18 de dezembro de 2009 o Ensino Médio. Endereço: Rua Renee Machado Branco Ferraro, nº 334, Residencial Regina Brizola, Ourinhos-SP, CEP 19915-808.`,
         embedding: Array(1536).fill(0),
       });
     } catch {}
 
-    // 2. Doc 2: Contrato de Locação 2022 (Avenida Brasil, 500)
-    const docIdG2 = `doc_g_locacao2022_${Date.now()}`;
+    // 2. Doc 2: Certidão CREA (MESMO ENDEREÇO DE 1, ESCRITO DIFERENTE!)
+    const docIdG2 = `doc_g_crea_${Date.now()}`;
     docsParaLimpar.push(docIdG2);
     const docG2: DocumentoRegistro = {
       id: docIdG2,
-      titulo: `Contrato de Locação 2022 ${nomeTitularG}`,
-      arquivo: 'contrato_locacao_2022_geraldo.pdf',
-      tipo: 'Contrato de Locação',
+      titulo: `Certidão Profissional CREA ${nomeTitularG}`,
+      arquivo: 'crea_geraldo.pdf',
+      tipo: 'Certidão Profissional',
       titular: nomeTitularG,
       visibilidade: 'diretoria',
       statusIndexacao: 'indexado',
-      descricao: `Contrato de Locação residencial de ${nomeTitularG} firmado em 15/01/2022 contendo endereço: Avenida Brasil, 500, Centro, Campinas/SP.`,
-      tamanho: '150 KB',
+      descricao: `Certidão de Registro Profissional CREA expedida em 03/07/2014 para ${nomeTitularG}.`,
+      tamanho: '140 KB',
       dataCadastro: '12/09/2026',
-      dataEmissao: '15/01/2022',
+      dataEmissao: '03/07/2014',
     };
     const docG2Criado = await adicionarDocumento(docG2);
     docsParaLimpar.push(docG2Criado.id);
@@ -804,44 +821,72 @@ async function main() {
         documento_id: docG2Criado.id,
         pessoa_id: titIdG,
         pagina: 1,
-        conteudo: `Contrato de Locação Residencial firmado em 15 de janeiro de 2022. Locatário: ${nomeTitularG}, residente e domiciliado na Avenida Brasil, 500, Centro, Campinas/SP.`,
+        conteudo: `CONSELHO REGIONAL DE ENGENHARIA E AGRONOMIA. Expedido em 03 de julho de 2014. Profissional: ${nomeTitularG}. Endereço residencial: Rua RENEE MACHADO BRANCO FERRARO, 334 RESIDENCIAL REGINA BRIZOLA 19915-808 - OURINHOS - SP.`,
         embedding: Array(1536).fill(0),
       });
     } catch {}
 
-    // 3. Doc 3: Comprovante de Energia (sem data de emissão identificável e com endereço fora do top vetorial)
-    const docIdG3 = `doc_g_energia_${Date.now()}`;
+    // 3. Doc 3: Certidão de Casamento (NASCIMENTO 06/10/1984 e EMISSÃO 12/04/2010!)
+    const docIdG3 = `doc_g_casamento_${Date.now()}`;
     docsParaLimpar.push(docIdG3);
     const docG3: DocumentoRegistro = {
       id: docIdG3,
-      titulo: `Comprovante de Energia ${nomeTitularG}`,
-      arquivo: 'comprovante_energia_geraldo.pdf',
-      tipo: 'Comprovante de Residência',
+      titulo: `Certidão de Casamento ${nomeTitularG}`,
+      arquivo: 'certidao_casamento_geraldo.pdf',
+      tipo: 'Certidão de Casamento',
       titular: nomeTitularG,
       visibilidade: 'diretoria',
       statusIndexacao: 'indexado',
-      descricao: `Fatura e comprovante de energia elétrica da residência de ${nomeTitularG} contendo endereço: Alameda dos Anjos, 1200, Bairro Alto, Sorocaba/SP.`,
-      tamanho: '120 KB',
-      dataCadastro: '15/09/2026',
+      descricao: `Certidão de casamento de ${nomeTitularG}.`,
+      tamanho: '160 KB',
+      dataCadastro: '14/09/2026',
+      dataEmissao: '12/04/2010',
     };
     const docG3Criado = await adicionarDocumento(docG3);
     docsParaLimpar.push(docG3Criado.id);
     try {
-      await supabase.from('trechos').insert([
-        { documento_id: docG3Criado.id, pessoa_id: titIdG, pagina: 1, conteudo: 'Companhia Paulista de Força e Luz. Informações gerais da fatura e histórico de medição técnica.', embedding: Array(1536).fill(0) },
-        { documento_id: docG3Criado.id, pessoa_id: titIdG, pagina: 2, conteudo: 'Detalhamento dos tributos e encargos do setor elétrico nacional conforme ANEEL.', embedding: Array(1536).fill(0) },
-        { documento_id: docG3Criado.id, pessoa_id: titIdG, pagina: 3, conteudo: 'Instruções de segurança para instalações elétricas internas residenciais.', embedding: Array(1536).fill(0) },
-        { documento_id: docG3Criado.id, pessoa_id: titIdG, pagina: 4, conteudo: 'Tabela de consumo mensal em quilowatts-hora dos últimos 12 meses.', embedding: Array(1536).fill(0) },
-        { documento_id: docG3Criado.id, pessoa_id: titIdG, pagina: 5, conteudo: 'Termos de fornecimento regulamentados pelo órgão fiscalizador de energia elétrica.', embedding: Array(1536).fill(0) },
-        { documento_id: docG3Criado.id, pessoa_id: titIdG, pagina: 6, conteudo: `Endereço de entrega da fatura de ${nomeTitularG}: Alameda dos Anjos, 1200, Bairro Alto, Sorocaba/SP, CEP 18000-000.`, embedding: Array(1536).fill(0) },
-      ]);
+      await supabase.from('trechos').insert({
+        documento_id: docG3Criado.id,
+        pessoa_id: titIdG,
+        pagina: 1,
+        conteudo: `REGISTRO CIVIL DAS PESSOAS NATURAIS. Nascido aos 06/10/1984. Casamento celebrado e termo lavrado em 12 de abril de 2010. Domicílio dos nubentes: Rua das Flores, nº 100, Centro, Ourinhos-SP, CEP 19900-000.`,
+        embedding: Array(1536).fill(0),
+      });
     } catch {}
 
-    // 4. Doc 4: CNH com validade 26/08/2034 sem endereço
-    const docIdG4 = `doc_g_cnh2034_${Date.now()}`;
+    // 4. Doc 4: Declaração de IR 2024 (Rua Luiz Gozzo, 345 - A MAIS RECENTE!)
+    const docIdG4 = `doc_g_ir2024_${Date.now()}`;
     docsParaLimpar.push(docIdG4);
     const docG4: DocumentoRegistro = {
       id: docIdG4,
+      titulo: `Declaração de IR 2024 ${nomeTitularG}`,
+      arquivo: 'declaracao_ir_2024_geraldo.pdf',
+      tipo: 'Declaração de IR',
+      titular: nomeTitularG,
+      visibilidade: 'diretoria',
+      statusIndexacao: 'indexado',
+      descricao: `Declaração de Ajuste Anual IRPF 2024 de ${nomeTitularG}.`,
+      tamanho: '210 KB',
+      dataCadastro: '15/09/2026',
+      dataEmissao: '30/04/2024',
+    };
+    const docG4Criado = await adicionarDocumento(docG4);
+    docsParaLimpar.push(docG4Criado.id);
+    try {
+      await supabase.from('trechos').insert({
+        documento_id: docG4Criado.id,
+        pessoa_id: titIdG,
+        pagina: 1,
+        conteudo: `DECLARAÇÃO DE AJUSTE ANUAL EXERCÍCIO 2024. Nome: ${nomeTitularG}. LOGRADOURO: RUA LUIZ GOZZO Número: 345 Bairro/Distrito: JARDIM PLANALTO Município: SANTA CRUZ DO RIO PARDO UF: SP CEP: 18910-136. Transmissão do recibo em 30/04/2024.`,
+        embedding: Array(1536).fill(0),
+      });
+    } catch {}
+
+    // 5. Doc 5: CNH com validade 26/08/2034 SEM endereço (DEVE SER DESCARTADA!)
+    const docIdG5 = `doc_g_cnh2034_${Date.now()}`;
+    docsParaLimpar.push(docIdG5);
+    const docG5: DocumentoRegistro = {
+      id: docIdG5,
       titulo: `CNH ${nomeTitularG}`,
       arquivo: 'cnh_geraldo.pdf',
       tipo: 'CNH',
@@ -853,33 +898,6 @@ async function main() {
       dataCadastro: '16/09/2026',
       dataValidade: '26/08/2034',
     };
-    const docG4Criado = await adicionarDocumento(docG4);
-    docsParaLimpar.push(docG4Criado.id);
-    try {
-      await supabase.from('trechos').insert({
-        documento_id: docG4Criado.id,
-        pessoa_id: titIdG,
-        pagina: 1,
-        conteudo: `CARTEIRA NACIONAL DE HABILITAÇÃO. Nome: ${nomeTitularG}. Data de Nascimento: 10/10/1980. CPF: 111.222.333-44. Validade: 26/08/2034. Categoria AB. Local: São Paulo/SP.`,
-        embedding: Array(1536).fill(0),
-      });
-    } catch {}
-
-    // 5. Doc 5: Certidão sem endereço e sem data de emissão identificável
-    const docIdG5 = `doc_g_certidao_${Date.now()}`;
-    docsParaLimpar.push(docIdG5);
-    const docG5: DocumentoRegistro = {
-      id: docIdG5,
-      titulo: `Certidão Notarial ${nomeTitularG}`,
-      arquivo: 'certidao_geraldo.pdf',
-      tipo: 'Certidão',
-      titular: nomeTitularG,
-      visibilidade: 'diretoria',
-      statusIndexacao: 'indexado',
-      descricao: `Certidão notarial dos arquivos de ${nomeTitularG}.`,
-      tamanho: '80 KB',
-      dataCadastro: '18/09/2026',
-    };
     const docG5Criado = await adicionarDocumento(docG5);
     docsParaLimpar.push(docG5Criado.id);
     try {
@@ -887,7 +905,7 @@ async function main() {
         documento_id: docG5Criado.id,
         pessoa_id: titIdG,
         pagina: 1,
-        conteudo: `Certidão do Registro Notarial. Certifico a requerimento que ${nomeTitularG} possui assento no Livro 12, Folha 34. Nada mais consta.`,
+        conteudo: `CARTEIRA NACIONAL DE HABILITAÇÃO. Nome: ${nomeTitularG}. Data de Nascimento: 06/10/1984. CPF: 111.222.333-44. Validade: 26/08/2034. Categoria AB. Local: São Paulo/SP.`,
         embedding: Array(1536).fill(0),
       });
     } catch {}
@@ -895,9 +913,9 @@ async function main() {
     const docsAtualizadosG = await obterTodosDocumentos();
     const historicoG: Mensagem[] = [];
 
-    // --- Passo G1 ---
-    const msgG1 = `Qual o endereço do ${nomeTitularG}?`;
-    console.log(`[Usuário]: "${msgG1}"`);
+    // --- Passo G1: Pergunta sobre endereço ---
+    const msgG1 = `Onde o ${nomeTitularG} mora?`;
+    console.log(`[Usuário - G1]: "${msgG1}"`);
     historicoG.push({
       id: `msg-g1-user`,
       remetente: 'cliente',
@@ -914,9 +932,71 @@ async function main() {
       documentosDisponiveis: docsAtualizadosG,
     });
 
-    console.log(`[VEGA]: "${resG1.textoResposta}"`);
+    console.log(`[VEGA - G1]:\n${resG1.textoResposta}`);
     const toolsG1 = (resG1.rastro?.etapas || []).filter((e) => e.nome.startsWith('Tool:'));
-    console.log(`[Tools acionadas]: ${toolsG1.map((t) => t.nome).join(', ') || 'Nenhuma'}\n`);
+    console.log(`[Tools G1]: ${toolsG1.map((t) => t.nome).join(', ') || 'Nenhuma'}\n`);
+
+    historicoG.push({
+      id: `msg-g1-vega`,
+      remetente: 'assistente',
+      nomeRemetente: 'VEGA',
+      horario: formatarHorario(),
+      timestamp: formatarDataIso(),
+      texto: resG1.textoResposta,
+      opcoes: resG1.opcoes,
+    });
+
+    // --- Passo G2: Pedido de número inexistente na lista ("Me mande o pdf do item 5") ---
+    const msgG2 = 'Me mande o pdf do item 5';
+    console.log(`[Usuário - G2]: "${msgG2}"`);
+    historicoG.push({
+      id: `msg-g2-user`,
+      remetente: 'cliente',
+      nomeRemetente: contatoTeste.nome,
+      horario: formatarHorario(),
+      timestamp: formatarDataIso(),
+      texto: msgG2,
+    });
+
+    const resG2 = await processarMensagemChat({
+      mensagemUsuario: msgG2,
+      historicoRecente: historicoG.slice(0, -1),
+      contato: contatoTeste,
+      documentosDisponiveis: docsAtualizadosG,
+    });
+
+    console.log(`[VEGA - G2]:\n${resG2.textoResposta}\n`);
+
+    historicoG.push({
+      id: `msg-g2-vega`,
+      remetente: 'assistente',
+      nomeRemetente: 'VEGA',
+      horario: formatarHorario(),
+      timestamp: formatarDataIso(),
+      texto: resG2.textoResposta,
+    });
+
+    // --- Passo G3: Pedido de número válido na lista ("Me mande o pdf do item 3") ---
+    const msgG3 = 'Me mande o pdf do item 3';
+    console.log(`[Usuário - G3]: "${msgG3}"`);
+    historicoG.push({
+      id: `msg-g3-user`,
+      remetente: 'cliente',
+      nomeRemetente: contatoTeste.nome,
+      horario: formatarHorario(),
+      timestamp: formatarDataIso(),
+      texto: msgG3,
+    });
+
+    const resG3 = await processarMensagemChat({
+      mensagemUsuario: msgG3,
+      historicoRecente: historicoG.slice(0, -1),
+      contato: contatoTeste,
+      documentosDisponiveis: docsAtualizadosG,
+    });
+
+    console.log(`[VEGA - G3]:\n${resG3.textoResposta}`);
+    console.log(`[Anexos G3]: ${resG3.anexos?.map((a) => `${a.nome} (${a.titulo || a.nome})`).join(', ') || 'Nenhum'}\n`);
 
     // ================================================================
     // VALIDAÇÕES DAS REGRAS
@@ -1056,27 +1136,48 @@ async function main() {
     console.log(`F1: Perguntou se quer atualizar (${perguntouSeQuerAtualizarF1 ? 'OK' : 'FALTOU'})?: ${perguntouSeQuerAtualizarF1 ? '✅ SIM' : '❌ NÃO'}`);
     console.log(`F1: Alerta completo de documento posterior divergente?: ${alertouDocPosteriorCompletoF1 ? '✅ SIM' : '❌ NÃO'}`);
 
-    // 12. Cenário G1: Busca completa por titular, exclusão estrita de documentos sem endereço e mais recente correto
+    // 12. Cenário G: 5 Documentos, Agrupamento por Valor, Data de Emissão e Referências a Itens
     const textoG1 = resG1.textoResposta.toLowerCase();
-    const trouxeOs3ComEndereco =
-      (textoG1.includes('palmeiras') || textoG1.includes('ir 2024') || textoG1.includes('imposto de renda')) &&
-      (textoG1.includes('brasil') || textoG1.includes('locação') || textoG1.includes('locacao')) &&
-      (textoG1.includes('anjos') || textoG1.includes('energia'));
+
+    // Critério 1: Agrupou os 2 documentos com mesmo endereço (Diploma e CREA) em 1 único item
+    const agrupouDiplomaECrea =
+      textoG1.includes('renee') &&
+      (textoG1.includes('diploma') && (textoG1.includes('crea') || textoG1.includes('profissional')));
+
+    // Critério 2: Certidão de casamento usou data de registro 12/04/2010 e descartou nascimento 06/10/1984
+    const certidaoUsouDataRegistro =
+      textoG1.includes('12/04/2010') && !textoG1.includes('06/10/1984');
+
+    // Critério 3: CNH sem endereço foi completamente excluída
     const naoListouCnhSemEndereco =
-      !textoG1.includes('cnh') && !textoG1.includes('habilitação') && !textoG1.includes('habilitacao');
-    const naoUsouValidadeComoData =
-      !textoG1.includes('2034');
-    const exibiuDataNaoIdentificada =
-      textoG1.includes('não identificada') || textoG1.includes('nao identificada') || textoG1.includes('não informada') || textoG1.includes('nao informada');
+      !textoG1.includes('cnh') && !textoG1.includes('2034');
+
+    // Critério 4: Resposta enxuta (sem rótulos crus como "Número:" ou "Bairro/Distrito:")
+    const respostaEnxutaSemRotulosCrus =
+      !resG1.textoResposta.includes('Número:') &&
+      !resG1.textoResposta.includes('Bairro/Distrito:') &&
+      !resG1.textoResposta.includes('LOGRADOURO:');
+
+    // Critério 5: Indicou mais recente correto (Declaração de IR 2024)
     const indicouMaisRecenteCorreto =
       (textoG1.includes('mais recente') || textoG1.includes('recente')) &&
-      (textoG1.includes('ir') || textoG1.includes('palmeiras') || textoG1.includes('imposto de renda'));
+      (textoG1.includes('ir') || textoG1.includes('declaração') || textoG1.includes('declaracao'));
 
-    console.log(`G1: Lista trouxe apenas os 3 documentos com endereço?: ${trouxeOs3ComEndereco ? '✅ SIM' : '❌ NÃO'}`);
+    // Critério 6: Passo G2 ("item 5" fora do range) avisou que a lista tinha apenas 3 opções
+    const textoG2 = resG2.textoResposta.toLowerCase();
+    const avisouQtdOpcoesG2 =
+      textoG2.includes('apenas 3 opções') || textoG2.includes('apenas 3 opcoes') || textoG2.includes('3 opções') || textoG2.includes('3 opcoes');
+
+    // Critério 7: Passo G3 ("item 3") enviou anexo do documento correspondente
+    const enviouAnexoG3 = Boolean(resG3.anexos && resG3.anexos.length > 0);
+
+    console.log(`G1: Agrupou Diploma e CREA em um único item com mesmo endereço?: ${agrupouDiplomaECrea ? '✅ SIM' : '❌ NÃO'}`);
+    console.log(`G1: Certidão de Casamento usou 12/04/2010 e descartou nascimento 06/10/1984?: ${certidaoUsouDataRegistro ? '✅ SIM' : '❌ NÃO'}`);
     console.log(`G1: CNH sem endereço foi excluída da lista?: ${naoListouCnhSemEndereco ? '✅ SIM' : '❌ NÃO'}`);
-    console.log(`G1: Nenhum documento usou validade 2034 como data?: ${naoUsouValidadeComoData ? '✅ SIM' : '❌ NÃO'}`);
-    console.log(`G1: Documento sem data de emissão identificável exibiu "data não identificada"?: ${exibiuDataNaoIdentificada ? '✅ SIM' : '❌ NÃO'}`);
+    console.log(`G1: Resposta enxuta (sem rótulos crus "Número:", "Bairro/Distrito:")?: ${respostaEnxutaSemRotulosCrus ? '✅ SIM' : '❌ NÃO'}`);
     console.log(`G1: Indicação de mais recente apontou para Declaração de IR 2024?: ${indicouMaisRecenteCorreto ? '✅ SIM' : '❌ NÃO'}`);
+    console.log(`G2: "Me mande o pdf do item 5" informou que havia apenas 3 opções e perguntou qual?: ${avisouQtdOpcoesG2 ? '✅ SIM' : '❌ NÃO'}`);
+    console.log(`G3: "Me mande o pdf do item 3" enviou o anexo do documento correto?: ${enviouAnexoG3 ? '✅ SIM' : '❌ NÃO'}`);
 
     console.log('\n================================================================');
     console.log('TODAS AS CONVERSAS SIMULADAS COM SUCESSO!');

@@ -54,6 +54,7 @@ import {
   CorrecaoPendenteFicha,
   DadosEstruturadosMensagem,
   FichaTitular,
+  OpcaoDocumento,
 } from '../types.js';
 import { extrairPrimeiroNome, formatarFraseAcompanhamento, nomesSaoEquivalentesComTolerancia, limparFormaTratamentoNome } from '../utils/nomeUtils.js';
 import { criarAnexoParaDocumento, gerarPdfDeMarkdown } from '../pdfService.js';
@@ -7220,6 +7221,49 @@ function normalizarDataParaExibicao(dataStr: string): string {
   return dataStr;
 }
 
+export function dataEstaEmContextoDeNascimentoOuValidade(texto: string, index: number, matchLen: number): boolean {
+  const trechoAntes = texto.slice(Math.max(0, index - 80), index).toLowerCase();
+  const trechoDepois = texto.slice(index + matchLen, Math.min(texto.length, index + matchLen + 50)).toLowerCase();
+
+  const ehNascimento =
+    /(?:nascid[oa]|nascimento|data de nascimento|d\.n\.|nasceu|filh[oa]\s+de|natural\s+de|menor|idade|anos\s+de\s+idade)/i.test(
+      trechoAntes
+    ) || /\b(nascimento|nascid[oa])\b/i.test(trechoDepois);
+
+  const ehValidade =
+    /(?:validade|vencimento|v[aá]lido\s+at[eé]|vence\s+em|expira\s+em|validade\s+at[eé])/i.test(trechoAntes) ||
+    /(?:validade|vencimento)/i.test(trechoDepois);
+
+  return ehNascimento || ehValidade;
+}
+
+export function validarAnoRazoavelEmissao(dataStr: string): boolean {
+  const matchAno = dataStr.match(/\b(19\d{2}|20\d{2})\b/);
+  if (!matchAno) return false;
+  const ano = parseInt(matchAno[1], 10);
+  const anoAtual = new Date().getFullYear();
+  return ano >= 1950 && ano <= anoAtual;
+}
+
+export function converterMesExtenso(mesNome: string): string {
+  const meses: Record<string, string> = {
+    janeiro: '01', fevereiro: '02', março: '03', marco: '03', abril: '04',
+    maio: '05', junho: '06', julho: '07', agosto: '08',
+    setembro: '09', outubro: '10', novembro: '11', dezembro: '12'
+  };
+  return meses[mesNome.toLowerCase()] || '01';
+}
+
+export function converterDataParaBr(dStr: string): string {
+  if (dStr.includes(' de ')) {
+    const m = dStr.match(/(\d{1,2})\s+de\s+([a-zç]+)\s+de\s+(\d{4})/i);
+    if (m) {
+      return `${m[1].padStart(2, '0')}/${converterMesExtenso(m[2])}/${m[3]}`;
+    }
+  }
+  return normalizarDataParaExibicao(dStr.replace(/[-.]/g, '/'));
+}
+
 /**
  * 2. EXTRAÇÃO DA DATA DE EMISSÃO / REFERÊNCIA DO DOCUMENTO (Item 2)
  * Extrai a data de emissão ou fato jurídico do documento a partir de seus metadados ou trechos.
@@ -7229,65 +7273,201 @@ export function extrairDataEmissaoDocumento(
   doc: DocumentoRegistro,
   trechosDoDoc: string[] = []
 ): string | null {
-  // 1. Metadado explícito dataEmissao
-  if (doc.dataEmissao) {
-    const dataFmt = formatarDataParaExibicao(doc.dataEmissao);
-    if (dataFmt && dataFmt !== 'Data inválida') return dataFmt;
-  }
-  if (doc.metadata?.data_emissao) {
-    const dataFmt = formatarDataParaExibicao(doc.metadata.data_emissao);
-    if (dataFmt && dataFmt !== 'Data inválida') return dataFmt;
-  }
-
   const textoUnificado = `${doc.titulo || ''} ${doc.descricao || ''} ${trechosDoDoc.join(' ')}`;
+
+  // 1. Metadado explícito dataEmissao / metadata.data_emissao
+  const dataMeta = doc.dataEmissao || doc.metadata?.data_emissao;
+  if (dataMeta) {
+    const dataFmt = formatarDataParaExibicao(dataMeta);
+    if (dataFmt && dataFmt !== 'Data inválida' && validarAnoRazoavelEmissao(dataFmt)) {
+      const valFmt = doc.dataValidade ? formatarDataParaExibicao(doc.dataValidade) : '';
+      if (!valFmt || dataFmt !== valFmt) {
+        const idxNoTexto = textoUnificado.indexOf(dataFmt);
+        if (idxNoTexto === -1 || !dataEstaEmContextoDeNascimentoOuValidade(textoUnificado, idxNoTexto, dataFmt.length)) {
+          return dataFmt;
+        }
+      }
+    }
+  }
 
   // 2. Declaração de Imposto de Renda (DIRPF)
   const matchExercicio = textoUnificado.match(/exerc[ií]cio\s+(\d{4})/i);
   if (matchExercicio) {
     const anoExercicio = matchExercicio[1];
     const matchRecibo = textoUnificado.match(/(?:recibo|transmiss[aã]o|entrega|emiss[aã]o|gerado em|data[:\s]+)(\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4})/i);
-    if (matchRecibo) {
-      return normalizarDataParaExibicao(matchRecibo[1]);
+    if (matchRecibo && !dataEstaEmContextoDeNascimentoOuValidade(textoUnificado, matchRecibo.index || 0, matchRecibo[0].length)) {
+      const dataBr = normalizarDataParaExibicao(matchRecibo[1]);
+      if (validarAnoRazoavelEmissao(dataBr)) return dataBr;
     }
     return `30/04/${anoExercicio}`;
   }
 
-  // 3. Padrões explícitos de data de emissão/expedição/lavratura
-  const regexEmissao = /(?:data de emiss[aã]o|data da emiss[aã]o|data de expedi[cç][aã]o|data da expedi[cç][aã]o|emitido em|lavrado em|data do registro|data do documento|assinado em|expedido em|emiss[aã]o[:\s]+|expedi[cç][aã]o[:\s]+)(\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4})/i;
-  const matchEmissao = textoUnificado.match(regexEmissao);
-  if (matchEmissao) {
-    return normalizarDataParaExibicao(matchEmissao[1]);
+  // 3. Certidão civil formato tabular: "Dia Mês Ano 12 04 2010"
+  const matchTabular = textoUnificado.match(/Dia\s+M[eê]s\s+Ano\s*(\d{1,2})\s+(\d{1,2})\s+(\d{4})/i);
+  if (matchTabular) {
+    const dia = matchTabular[1].padStart(2, '0');
+    const mes = matchTabular[2].padStart(2, '0');
+    const ano = matchTabular[3];
+    const dataTab = `${dia}/${mes}/${ano}`;
+    if (validarAnoRazoavelEmissao(dataTab)) return dataTab;
   }
 
-  // 4. Padrão por extenso em certidões/contratos: "15 de janeiro de 2022"
-  const regexExtenso = /(\d{1,2})\s+de\s+(janeiro|fevereiro|março|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+de\s+(\d{4})/i;
-  const matchExtenso = textoUnificado.match(regexExtenso);
-  if (matchExtenso) {
-    const dia = matchExtenso[1].padStart(2, '0');
-    const mesNome = matchExtenso[2].toLowerCase();
-    const ano = matchExtenso[3];
-    const meses: Record<string, string> = {
-      janeiro: '01', fevereiro: '02', março: '03', marco: '03', abril: '04',
-      maio: '05', junho: '06', julho: '07', agosto: '08',
-      setembro: '09', outubro: '10', novembro: '11', dezembro: '12'
-    };
-    const mes = meses[mesNome] || '01';
-    return `${dia}/${mes}/${ano}`;
+  // 4. Padrões explícitos com palavras-chave de emissão/registro
+  const regexExplicit = /(?:data do registro|data de registro|registro do casamento|termo do registro|termo lavrado|lavrado aos?|lavrado em|assento lavrado|casamento celebrado|casamento realizado|contra[ií]ram matrim[oô]nio|expedido em|emitido em|data da expedi[cç][aã]o|data de expedi[cç][aã]o|concluiu em|colação de grau|data da assinatura|firmado em|assinado em|situação cadastral extraída em)[\s\S]{0,60}?(\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4}|\d{1,2}\s+de\s+[a-zç]+\s+de\s+\d{4})/gi;
+
+  let mExplicit: RegExpExecArray | null;
+  while ((mExplicit = regexExplicit.exec(textoUnificado)) !== null) {
+    const dataCapturada = mExplicit[1];
+    const idx = mExplicit.index;
+    if (!dataEstaEmContextoDeNascimentoOuValidade(textoUnificado, idx, mExplicit[0].length)) {
+      const dataConv = converterDataParaBr(dataCapturada);
+      if (validarAnoRazoavelEmissao(dataConv)) return dataConv;
+    }
   }
 
-  // 5. Data explícita no texto/descrição que denote emissão ou contrato
-  const matchDataDoc = (doc.descricao || '').match(/(?:documento de|emissão em|emissao em|firmado em)\s*(\d{1,2}\/\d{1,2}\/\d{4})/i);
-  if (matchDataDoc) {
-    return matchDataDoc[1];
+  // 5. Local e data no final de certidões/termos (ex.: "OURINHOS-SP, 12 de abril de 2010")
+  const regexLocalData = /(?:[A-ZÀ-Ú\s]{3,25})[\s\-]+(?:SP|RJ|MG|PR|SC|RS|DF|GO)?,?\s*(\d{1,2})\s+de\s+(janeiro|fevereiro|março|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+de\s+(\d{4})/gi;
+  let mLocal: RegExpExecArray | null;
+  while ((mLocal = regexLocalData.exec(textoUnificado)) !== null) {
+    const idx = mLocal.index;
+    if (!dataEstaEmContextoDeNascimentoOuValidade(textoUnificado, idx, mLocal[0].length)) {
+      const dia = mLocal[1].padStart(2, '0');
+      const mes = converterMesExtenso(mLocal[2]);
+      const ano = mLocal[3];
+      const dataConv = `${dia}/${mes}/${ano}`;
+      if (validarAnoRazoavelEmissao(dataConv)) return dataConv;
+    }
   }
 
-  // REGRA ABSOLUTA: NUNCA usar doc.dataValidade e NUNCA usar doc.dataCadastro!
+  // 6. Varredura geral de datas por extenso descartando contexto de nascimento e validade
+  const regexExtenso = /(\d{1,2})\s+de\s+(janeiro|fevereiro|março|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+de\s+(\d{4})/gi;
+  let mExt: RegExpExecArray | null;
+  while ((mExt = regexExtenso.exec(textoUnificado)) !== null) {
+    const idx = mExt.index;
+    if (!dataEstaEmContextoDeNascimentoOuValidade(textoUnificado, idx, mExt[0].length)) {
+      const dia = mExt[1].padStart(2, '0');
+      const mes = converterMesExtenso(mExt[2]);
+      const ano = mExt[3];
+      const dataConv = `${dia}/${mes}/${ano}`;
+      if (validarAnoRazoavelEmissao(dataConv)) return dataConv;
+    }
+  }
+
+  // REGRA ABSOLUTA: NUNCA usar doc.dataValidade e NUNCA usar doc.dataCadastro! Se não identificar, retorna null.
   return null;
 }
 
 /**
- * 2.1. EXTRAÇÃO DE ENDEREÇO DE TRECHOS
- * Procura ocorrência real de endereço residencial ou comercial.
+ * 2.1. LIMPEZA E NORMALIZAÇÃO DE ENDEREÇO (Title Case, sem rótulos crus, com CEP formatado)
+ */
+export function limparENormalizarEndereco(raw: string): string {
+  if (!raw) return '';
+  let s = raw.trim();
+
+  // 1. Trunca quando começam outros campos do documento/cartório/certidão
+  const delimitadoresCorte = [
+    /\b(?:Nilceia|Nomes completos|Filho de|Filha de|Nascid[oa]|Natural de|Data do registro|Regime de bens|Observações|Casamento celebrado|O conteúdo da certidão|Expedido em|Número de registro|Registro Nacional|Título\(s\)|Decreto Federal|Diploma\/Certificado|A presente certidão|Esta certidão|Eletrônico|Telefone|E-mail|Email|Natureza da Ocupação|Ocupação Principal|Tipo de declaração|Nº do recibo|DEPENDENTES|ALIMENTANDOS|RENDIMENTOS)\b/i,
+    /\b(?:CPF|RG|CNPJ)\s*[:\s]*\d/i,
+  ];
+  for (const delim of delimitadoresCorte) {
+    const idx = s.search(delim);
+    if (idx > 10) {
+      s = s.slice(0, idx).trim();
+    }
+  }
+
+  // 2. Remove rótulos crus de formulários
+  s = s.replace(/\b(?:LOGRADOURO|Logradouro|ENDEREÇO|Endereço|ENDERECO|Endereco)\s*[:\s]+/gi, '');
+  s = s.replace(/\b(?:NÚMERO|Número|NUMERO|Numero|Nº|N°|No\.?)\s*[:\s]+/gi, '');
+  s = s.replace(/\b(?:COMPLEMENTO|Complemento)\s*[:\s]+(?=[A-Za-z0-9])/gi, '');
+  s = s.replace(/\b(?:COMPLEMENTO|Complemento)\s*[:\s]*/gi, '');
+  s = s.replace(/\b(?:BAIRRO\/DISTRITO|Bairro\/Distrito|BAIRRO|Bairro|DISTRITO|Distrito)\s*[:\s]+/gi, '');
+  s = s.replace(/\b(?:MUNICÍPIO|Município|MUNICIPIO|Municipio|CIDADE|Cidade)\s*[:\s]+/gi, '');
+  s = s.replace(/\b(?:UF|ESTADO|Estado)\s*[:\s]+/gi, '');
+
+  // 3. Normaliza e extrai CEP se presente
+  let cepFormatado = '';
+  const matchCep = s.match(/\b(?:CEP:?\s*)?(\d{2})\.?(\d{3})-?(\d{3})\b/i);
+  if (matchCep) {
+    cepFormatado = `CEP ${matchCep[1]}${matchCep[2]}-${matchCep[3]}`;
+    s = s.replace(/\b(?:CEP:?\s*)?\d{2}\.?\d{3}-?\d{3}\b/i, '');
+  }
+
+  // 4. Remove caracteres estranhos (••, *****, resíduos)
+  s = s.replace(/[•*]+/g, ' ');
+  s = s.replace(/[\t\r\n]+/g, ' ');
+  s = s.replace(/\s*,\s*/g, ', ');
+  s = s.replace(/,\s*,+/g, ',');
+  s = s.replace(/\s+/g, ' ');
+  s = s.replace(/^[,.\s-]+|[,.\s-]+$/g, '');
+
+  // 5. Normaliza siglas e capitalização
+  const ufs = new Set(['SP', 'RJ', 'MG', 'PR', 'SC', 'RS', 'ES', 'BA', 'DF', 'GO', 'MT', 'MS', 'PE', 'CE', 'PA', 'AM', 'MA', 'RN', 'PB', 'AL', 'SE', 'PI', 'TO', 'RO', 'AC', 'AP', 'RR']);
+  const minusculas = new Set(['de', 'da', 'do', 'dos', 'das', 'e', 'em', 'no', 'na', 'nos', 'nas']);
+
+  const partes = s.split(',').map((p) => p.trim()).filter(Boolean);
+  const partesFormatadas = partes.map((parte) => {
+    return parte.split(' - ').map((subParte) => {
+      return subParte.split(' ').map((palavra, idx) => {
+        const pUp = palavra.toUpperCase().replace(/[^A-Z]/g, '');
+        if (ufs.has(pUp) && palavra.length <= 4) {
+          return pUp;
+        }
+        const pLow = palavra.toLowerCase();
+        if (minusculas.has(pLow) && idx > 0) {
+          return pLow;
+        }
+        if (pLow.startsWith('nº') || pLow.startsWith('n°')) {
+          return 'nº ' + pLow.slice(2).trim();
+        }
+        if (pLow === 'jd.' || pLow === 'jd') return 'Jardim';
+        if (pLow === 'res.' || pLow === 'res') return 'Residencial';
+        return pLow.charAt(0).toUpperCase() + pLow.slice(1);
+      }).join(' ');
+    }).join('-');
+  });
+
+  let resultado = partesFormatadas.join(', ');
+  resultado = resultado.replace(/\s*-\s*([A-Z]{2})\b/g, '-$1');
+  resultado = resultado.replace(/,\s*([A-Z]{2})\b/g, '-$1');
+  resultado = resultado.replace(/\bEm\s+([A-ZÀ-Ú])/g, '$1');
+
+  if (cepFormatado) {
+    resultado += `, ${cepFormatado}`;
+  }
+
+  const matchFimUf = resultado.match(/^(.*?[A-Z]{2}(?:,\s*CEP\s*\d{5}-\d{3})?)/);
+  if (matchFimUf && matchFimUf[1].length >= 15) {
+    resultado = matchFimUf[1];
+  }
+
+  return resultado.replace(/\s+/g, ' ').replace(/^,\s*/, '').trim();
+}
+
+/**
+ * 2.2. EXTRAÇÃO DE CHAVE DE COMPARAÇÃO DE ENDEREÇO (Logradouro base + número)
+ */
+export function extrairChaveComparacaoEndereco(endereco: string): string {
+  const norm = endereco
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+  const matchNum = norm.match(/\b(?:n[ºo°]?\s*)?(\d+)\b/);
+  const numero = matchNum ? matchNum[1] : '';
+
+  let logradouro = norm;
+  logradouro = logradouro.replace(/\bcep\s*[\d.-]+\b/g, '');
+  logradouro = logradouro.replace(/\b(?:rua|avenida|av|alameda|travessa|estrada|rodovia|praca|res|residencial|apto|ap|bloco|jd|jardim)\b/g, '');
+  const palavras = logradouro.match(/[a-z]{3,}/g) || [];
+  const baseLogradouro = palavras.slice(0, 3).join('_');
+
+  return `${baseLogradouro}_${numero}`;
+}
+
+/**
+ * 2.3. EXTRAÇÃO DE ENDEREÇO DE TRECHOS
+ * Procura ocorrência real de endereço residencial ou comercial e normaliza.
  * Retorna null se não contiver endereço ou se só contiver negativa ("não traz endereço").
  */
 export function extrairEnderecoDeTrechos(trechos: string[]): { endereco: string; trechoCompleto: string } | null {
@@ -7301,8 +7481,8 @@ export function extrairEnderecoDeTrechos(trechos: string[]): { endereco: string;
     const regexLogradouro = /(?:rua|avenida|av\.|alameda|rodovia|travessa|estrada|pra[cç]a|logradouro|endere[cç]o\s+residencial|endere[cç]o[:\s]+)(?:[^\n\r,\.]+)[,\s]+(?:\d+|nº\s*\d+|s\/n)[^\n\r]*/i;
     const match = t.match(regexLogradouro);
     if (match) {
-      let endLimpo = match[0].trim().replace(/^endere[cç]o\s*(?:residencial)?[:\s]*/i, '');
-      endLimpo = endLimpo.replace(/[,.;\s]+$/, '');
+      let endBruto = match[0].trim().replace(/^endere[cç]o\s*(?:residencial)?[:\s]*/i, '');
+      const endLimpo = limparENormalizarEndereco(endBruto);
       if (endLimpo.length >= 8) {
         return {
           endereco: endLimpo,
@@ -7315,10 +7495,13 @@ export function extrairEnderecoDeTrechos(trechos: string[]): { endereco: string;
     if (t.includes('DECLARAÇÃO DE AJUSTE ANUAL') || t.includes('IMPOSTO SOBRE A RENDA') || t.includes('DIRPF') || t.includes('CADASTRO NACIONAL')) {
       const matchIrEnd = t.match(/(?:LOGRADOURO|ENDEREÇO|RUA|AVENIDA|AV\.|ALAMEDA)[\s:]+([^\n\r]+)/i);
       if (matchIrEnd && matchIrEnd[1].length >= 8) {
-        return {
-          endereco: matchIrEnd[1].trim().replace(/[,.;\s]+$/, ''),
-          trechoCompleto: t.trim(),
-        };
+        const endLimpo = limparENormalizarEndereco(matchIrEnd[1]);
+        if (endLimpo.length >= 8) {
+          return {
+            endereco: endLimpo,
+            trechoCompleto: t.trim(),
+          };
+        }
       }
     }
 
@@ -7326,10 +7509,13 @@ export function extrairEnderecoDeTrechos(trechos: string[]): { endereco: string;
     const regexCepCidade = /(?:rua|av|avenida|alameda|bairro)[^\n\r]+CEP\s*\d{5}-?\d{3}/i;
     const matchCep = t.match(regexCepCidade);
     if (matchCep) {
-      return {
-        endereco: matchCep[0].trim(),
-        trechoCompleto: t.trim(),
-      };
+      const endLimpo = limparENormalizarEndereco(matchCep[0]);
+      if (endLimpo.length >= 8) {
+        return {
+          endereco: endLimpo,
+          trechoCompleto: t.trim(),
+        };
+      }
     }
   }
 
@@ -7433,11 +7619,24 @@ export async function toolBuscarDocumentos(
     trecho?: string;
     valor?: string;
   }>;
+  opcoes_lista?: OpcaoDocumento[];
   total_fontes_com_dado?: number;
   orientacao_resposta?: string;
   mensagem?: string;
 }> {
   const termoNorm = (consulta || '').toLowerCase().trim();
+
+  // 0. BLOQUEIO DE BUSCA POR ITENS DE LISTA (Item 1)
+  const regexItemLista = /^(?:me\s+)?(?:mande|manda|envie|envia|quero|solta|solte)?\s*(?:o\s+)?(?:pdf\s+d[oa]\s+|arquivo\s+d[oa]\s+|documento\s+d[oa]\s+)?(?:item|op[cç][aã]o|n[úu]mero|n[ºo°]|o\s+quinto|o\s+primeiro|o\s+segundo|o\s+terceiro)\s*\d*$/i;
+  if (regexItemLista.test(termoNorm)) {
+    return {
+      documentos: [],
+      total_fontes_com_dado: 0,
+      orientacao_resposta: 'ATENÇÃO: A consulta enviada refere-se a uma opção de lista numerada anterior. NUNCA execute busca textual com "item X" ou "opção X". Chame a ferramenta enviar_documento passando o doc_id da opção.',
+      mensagem: 'Referência a item de lista detectada. Chame enviar_documento.',
+    };
+  }
+
   let titularNorm = (titularNome || '').toLowerCase().trim();
   let titObj: FichaTitular | null = null;
   const todosTits = await obterTodosTitulares();
@@ -7475,7 +7674,6 @@ export async function toolBuscarDocumentos(
 
       return false;
     });
-    console.log(`[DEBUG toolBuscarDocumentos] docsDoTitular encontrados para "${titularNorm}": ${docsDoTitular.length}`);
 
     const docIds = docsDoTitular.map((d) => d.id);
     const supabase = getSupabaseClient();
@@ -7556,60 +7754,115 @@ export async function toolBuscarDocumentos(
       };
     }
 
-    // Determinação rigorosa da fonte mais recente:
-    // 1. Prioridade absoluta para a maior data de emissão/referência comprovada (NUNCA validade nem armazenamento).
-    // 2. Se NENHUM documento tiver data de emissão identificada (todas incertas), usa a maior data de armazenamento, explicando explicitamente.
-    const docsComDataEmissao = documentosComDado.filter((d) => d.dataEmissaoDate !== null);
-    let maisRecente: (typeof documentosComDado)[0];
-    let explicacaoMaisRecente = '';
+    // 1. Agrupamento por valor equivalente (mesmo logradouro e número) - Item 3
+    const mapaGrupos = new Map<string, {
+      endereco: string;
+      docs: typeof documentosComDado;
+      maiorDataEmissaoDate: Date | null;
+      maiorDataArmazDate: Date | null;
+      docMaisRecenteDoGrupo: (typeof documentosComDado)[0];
+    }>();
 
-    if (docsComDataEmissao.length > 0) {
-      docsComDataEmissao.sort((a, b) => a.dataEmissaoDate!.getTime() - b.dataEmissaoDate!.getTime());
-      maisRecente = docsComDataEmissao[docsComDataEmissao.length - 1];
-    } else {
-      const docsOrdenadosPorArmaz = [...documentosComDado].sort((a, b) => {
-        const tA = a.dataArmazDate ? a.dataArmazDate.getTime() : 0;
-        const tB = b.dataArmazDate ? b.dataArmazDate.getTime() : 0;
-        return tA - tB;
-      });
-      maisRecente = docsOrdenadosPorArmaz[docsOrdenadosPorArmaz.length - 1];
-      explicacaoMaisRecente = ' (considerando a data de armazenamento, pois as datas dos documentos não foram identificadas)';
+    for (const d of documentosComDado) {
+      const chave = extrairChaveComparacaoEndereco(d.valor);
+      if (!mapaGrupos.has(chave)) {
+        mapaGrupos.set(chave, {
+          endereco: d.valor,
+          docs: [d],
+          maiorDataEmissaoDate: d.dataEmissaoDate,
+          maiorDataArmazDate: d.dataArmazDate,
+          docMaisRecenteDoGrupo: d,
+        });
+      } else {
+        const g = mapaGrupos.get(chave)!;
+        g.docs.push(d);
+        if (d.dataEmissaoDate && (!g.maiorDataEmissaoDate || d.dataEmissaoDate.getTime() > g.maiorDataEmissaoDate.getTime())) {
+          g.maiorDataEmissaoDate = d.dataEmissaoDate;
+          g.docMaisRecenteDoGrupo = d;
+        }
+        if (d.dataArmazDate && (!g.maiorDataArmazDate || d.dataArmazDate.getTime() > g.maiorDataArmazDate.getTime())) {
+          g.maiorDataArmazDate = d.dataArmazDate;
+        }
+      }
     }
 
-    // Ordenação da lista para apresentação:
-    // Documentos com data de emissão comprovada vêm ordenados cronologicamente (mais antigo -> mais recente).
-    // Documentos sem data de emissão identificada vêm em seguida.
-    documentosComDado.sort((a, b) => {
-      if (a.dataEmissaoDate && b.dataEmissaoDate) {
-        return a.dataEmissaoDate.getTime() - b.dataEmissaoDate.getTime();
+    const grupos = Array.from(mapaGrupos.values());
+
+    // 2. Ordenação dos grupos cronologicamente (do mais antigo para o mais recente)
+    grupos.sort((a, b) => {
+      if (a.maiorDataEmissaoDate && b.maiorDataEmissaoDate) {
+        return a.maiorDataEmissaoDate.getTime() - b.maiorDataEmissaoDate.getTime();
       }
-      if (a.dataEmissaoDate && !b.dataEmissaoDate) return -1;
-      if (!a.dataEmissaoDate && b.dataEmissaoDate) return 1;
-      const tA = a.dataArmazDate ? a.dataArmazDate.getTime() : 0;
-      const tB = b.dataArmazDate ? b.dataArmazDate.getTime() : 0;
+      if (a.maiorDataEmissaoDate && !b.maiorDataEmissaoDate) return -1;
+      if (!a.maiorDataEmissaoDate && b.maiorDataEmissaoDate) return 1;
+      const tA = a.maiorDataArmazDate ? a.maiorDataArmazDate.getTime() : 0;
+      const tB = b.maiorDataArmazDate ? b.maiorDataArmazDate.getTime() : 0;
       return tA - tB;
     });
 
+    const grupoMaisRecente = grupos[grupos.length - 1];
+    const docMaisRecenteGeral = grupoMaisRecente.docMaisRecenteDoGrupo;
+
+    // 3. Montagem da lista de opções estruturadas para resolução de referências (Item 1)
+    const opcoesLista: OpcaoDocumento[] = [];
+    grupos.forEach((g, idx) => {
+      const num = idx + 1;
+      const nomesDocs = g.docs.map((x) => x.nome_documento).join(' e ');
+      opcoesLista.push({
+        id: g.docMaisRecenteDoGrupo.doc_id,
+        titulo: g.docMaisRecenteDoGrupo.nome_documento,
+        numero: num,
+        doc_id: g.docMaisRecenteDoGrupo.doc_id,
+        doc_ids: g.docs.map((x) => x.doc_id),
+        nome_documento: nomesDocs,
+        nomes_documentos: g.docs.map((x) => x.nome_documento),
+        valor: g.endereco,
+        mais_recente: g === grupoMaisRecente,
+      });
+    });
+
     let orientacao: string;
-    if (documentosComDado.length === 1) {
-      orientacao = `Apenas 1 documento no Cofre contém o endereço do titular: "${maisRecente.nome_documento}". Responda direto ao usuário informando o endereço e citando a fonte, SEM aviso de conflito nem numeração.`;
+    if (grupos.length === 1) {
+      const gUnico = grupos[0];
+      const nomesDocs = gUnico.docs.map((x) => x.nome_documento).join(' e ');
+      orientacao =
+        `Apenas 1 endereço foi localizado nos documentos do titular ("${gUnico.endereco}"). ` +
+        `Responda direto ao usuário informando o endereço e citando a(s) fonte(s) documental(is) (${nomesDocs}), ` +
+        `SEM aviso de conflito e SEM lista numerada.`;
     } else {
       const nomeTitularFormatado = titularNorm
         .split(' ')
         .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
         .join(' ');
+
+      const itensTexto = grupos
+        .map((g, idx) => {
+          const num = idx + 1;
+          const docsDesc = g.docs
+            .map((d) => {
+              const dataTxt =
+                d.data_documento !== 'data do documento não identificada'
+                  ? `documento de ${d.data_documento}`
+                  : 'data não identificada';
+              return `${d.nome_documento} (${dataTxt})`;
+            })
+            .join(' e ');
+          return `*${num}º)* ${g.endereco}\nAparece em: ${docsDesc}`;
+        })
+        .join('\n\n');
+
       orientacao =
-        `Foram encontrados ${documentosComDado.length} documentos com endereços diferentes no Cofre. ` +
-        `Escreva a resposta seguindo rigorosamente o formato de divergência do assistente.md:\n` +
-        `1) Abertura de conflito em tom natural: "Atenção: encontrei informações diferentes sobre o endereço do ${nomeTitularFormatado}, vindas de documentos diferentes:"\n\n` +
-        `2) Fontes numeradas (*1º)*, *2º)*, ...) com UMA LINHA EM BRANCO entre cada uma para o WhatsApp:\n` +
-        `*1º)* [Nome do Documento] (documento de [data_documento], armazenado em [data_armazenamento]): [endereço]\n\n` +
-        `*2º)* [Nome do Documento] (documento de [data_documento], armazenado em [data_armazenamento]): [endereço]\n\n` +
-        `3) Fechamento indicando o mais recente com base estritamente na data de emissão comprovada: "O mais recente é o da ${maisRecente.nome_documento}${explicacaoMaisRecente}. Qual devo considerar como correto?"\n\n` +
+        `Foram encontrados ${grupos.length} endereços diferentes no Cofre para ${nomeTitularFormatado} após agrupar documentos com o mesmo endereço. ` +
+        `Escreva a resposta seguindo rigorosamente o formato de divergência enxuto:\n\n` +
+        `Atenção: encontrei informações diferentes sobre o endereço do ${nomeTitularFormatado}, vindas de documentos diferentes:\n\n` +
+        `${itensTexto}\n\n` +
+        `O mais recente é o da ${docMaisRecenteGeral.nome_documento}. Qual devo considerar como correto?\n\n` +
         `Regras obrigatórias:\n` +
-        `- Documentos que não contêm endereço NÃO entram na lista.\n` +
-        `- Se a data do documento não foi identificada, escreva "(documento com data não identificada, armazenado em dd/mm/aaaa)". NUNCA use data de validade como data de documento.\n` +
-        `- Se o usuário pedir para enviar o documento ("me mande o documento mais recente"), acione a ferramenta "enviar_documento" com doc_id=${maisRecente.doc_id}.`;
+        `- Cada opção agrupa documentos que trazem o mesmo endereço (ex: Diploma e CREA viram um único item).\n` +
+        `- Resposta enxuta: use Title Case, sem rótulos crus, com CEP formatado e sem datas de armazenamento no texto das opções.\n` +
+        `- Mapeamento das opções estruturadas:\n` +
+        opcoesLista.map((o) => `  Opção ${o.numero}: doc_id=${o.doc_id} (${o.nome_documento})`).join('\n') +
+        `\n- Se o usuário pedir para enviar (ex: "me mande o pdf do item X", "o 2", "o mais recente", "o da certidão"), acione a ferramenta enviar_documento com o doc_id correspondente!`;
     }
 
     return {
@@ -7623,7 +7876,8 @@ export async function toolBuscarDocumentos(
         trecho: d.trecho,
         score: d.score,
       })),
-      total_fontes_com_dado: documentosComDado.length,
+      opcoes_lista: opcoesLista,
+      total_fontes_com_dado: grupos.length,
       orientacao_resposta: orientacao,
       mensagem: orientacao,
     };
@@ -7988,7 +8242,8 @@ async function toolListarDocumentosTitular(
 async function toolEnviarDocumento(
   docId: string,
   todosDocs: DocumentoRegistro[] = [],
-  anexosAcumulados: Anexo[]
+  anexosAcumulados: Anexo[],
+  historicoRecente: Mensagem[] = []
 ): Promise<{
   sucesso: boolean;
   doc_id?: string;
@@ -7997,14 +8252,36 @@ async function toolEnviarDocumento(
   erro?: string;
   mensagem?: string;
 }> {
+  let docs = todosDocs && todosDocs.length > 0 ? todosDocs : await obterTodosDocumentos();
   const idLimpo = (docId || '').trim();
-  let doc = todosDocs.find(
+  let doc = docs.find(
     (d) => d.id === idLimpo || d.metadata?.id_legado === idLimpo
   );
   if (!doc) {
-    doc = todosDocs.find(
-      (d) => d.titulo.toLowerCase().includes(idLimpo.toLowerCase())
-    );
+    const idNorm = idLimpo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    doc = docs.find((d) => {
+      const titNorm = d.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const arqNorm = (d.arquivo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return titNorm.includes(idNorm) || idNorm.includes(titNorm) || arqNorm.includes(idNorm);
+    });
+  }
+  if (!doc) {
+    doc = localizarDocumentoCitadoNoCofre(idLimpo, docs) || undefined;
+  }
+
+  // Fallback: Recuperação de contexto pelo histórico recente (Regra 13)
+  if (!doc && historicoRecente && historicoRecente.length > 0) {
+    for (let i = historicoRecente.length - 1; i >= 0; i--) {
+      const txt = (historicoRecente[i].texto || '').toLowerCase();
+      const docNoHist = docs.find((d) => {
+        const titLower = d.titulo.toLowerCase();
+        return txt.includes(titLower);
+      });
+      if (docNoHist) {
+        doc = docNoHist;
+        break;
+      }
+    }
   }
 
   if (!doc) {
@@ -8088,6 +8365,127 @@ async function toolBuscarConhecimento(
       dadosEstruturados: i.dadosEstruturados,
     })),
   };
+}
+
+/**
+ * Extrai as opções da última lista numerada de opções enviada pelo assistente no histórico.
+ * Suporta leitura estruturada de m.opcoes e fallback por regex em m.texto.
+ */
+export function extrairOpcoesDaUltimaLista(historico: Mensagem[]): OpcaoDocumento[] {
+  for (let i = historico.length - 1; i >= 0; i--) {
+    const m = historico[i];
+    if (m.remetente !== 'assistente') continue;
+
+    // 1. Prioridade absoluta: m.opcoes estruturado
+    if (m.opcoes && Array.isArray(m.opcoes) && m.opcoes.length > 0) {
+      return m.opcoes;
+    }
+
+    // 2. Fallback: Parse no texto de m.texto procurando marcadores numerados (*1º)*, 1º), *1)*, etc.)
+    const regexLinhas = /(?:^|\n)\s*\*?(\d+)[ºª\)]\*?\s*(.+?)(?=(?:\n\s*\*?\d+[ºª\)]|\n\s*O mais recente|\n\s*Qual devo considerar|$))/gis;
+    const opcoesExtraidas: OpcaoDocumento[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = regexLinhas.exec(m.texto || '')) !== null) {
+      const num = parseInt(match[1], 10);
+      const bloco = match[2].trim();
+      const matchDoc = bloco.match(/Aparece em:\s*([^\n\r]+)/i);
+      const nomeDoc = matchDoc ? matchDoc[1].trim() : bloco.split(/[:\n]/)[0].trim();
+      opcoesExtraidas.push({
+        id: `opcao_${num}`,
+        titulo: nomeDoc,
+        numero: num,
+        nome_documento: nomeDoc,
+        valor: bloco,
+      });
+    }
+
+    if (opcoesExtraidas.length > 0) {
+      return opcoesExtraidas;
+    }
+  }
+  return [];
+}
+
+export interface ReferenciaItemDetectada {
+  tipo: 'numero' | 'ordinal' | 'mais_recente' | 'nome_documento';
+  numero?: number;
+  termoDoc?: string;
+  querEnviarPdf: boolean;
+}
+
+export function detectarReferenciaItemLista(
+  mensagem: string,
+  opcoesAtivas: OpcaoDocumento[]
+): ReferenciaItemDetectada | null {
+  const msgNorm = mensagem
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+  const querEnviarPdf = /(?:mande|manda|envie|envia|quero|solta|solte|baixar|ver|abrir|pdf|arquivo|documento)/i.test(msgNorm);
+
+  // 1. Número explícito: "item 5", "o item 3", "opcao 2", "o 5", "mande o pdf do item 5"
+  const matchItemNum = msgNorm.match(/\b(?:item|op[cç][aã]o|n[úu]mero|n[ºo°]|o)?\s*(\d+)\b/i);
+  if (matchItemNum) {
+    const num = parseInt(matchItemNum[1], 10);
+    const ehRefClara =
+      /\b(?:item|op[cç][aã]o|n[úu]mero|n[ºo°])\s*\d+\b/i.test(msgNorm) ||
+      /^(?:me\s+)?(?:mande|manda|envie|envia|quero|solta|solte)?\s*(?:o\s+)?(?:pdf\s+d[oa]\s+|arquivo\s+d[oa]\s+|documento\s+d[oa]\s+)?(?:o\s+)?\d+\s*$/i.test(msgNorm) ||
+      /^(?:o\s+)?\d+$/i.test(msgNorm);
+
+    if (ehRefClara) {
+      return {
+        tipo: 'numero',
+        numero: num,
+        querEnviarPdf: querEnviarPdf || true,
+      };
+    }
+  }
+
+  // 2. Ordinais por extenso
+  const ordinais: Record<string, number> = {
+    primeiro: 1, primeira: 1, '1º': 1, '1ª': 1,
+    segundo: 2, segunda: 2, '2º': 2, '2ª': 2,
+    terceiro: 3, terceira: 3, '3º': 3, '3ª': 3,
+    quarto: 4, quarta: 4, '4º': 4, '4ª': 4,
+    quinto: 5, quinta: 5, '5º': 5, '5ª': 5,
+  };
+  for (const [ord, n] of Object.entries(ordinais)) {
+    if (new RegExp(`\\b(?:o|a)?\\s*${ord}\\b`, 'i').test(msgNorm)) {
+      return {
+        tipo: 'ordinal',
+        numero: n,
+        querEnviarPdf: querEnviarPdf || true,
+      };
+    }
+  }
+
+  // 3. "O mais recente" / "o endereço mais recente" / "o documento mais recente"
+  if (/\b(?:o\s+)?(?:mais\s+recente|recente|ultimo|último)\b/i.test(msgNorm)) {
+    return {
+      tipo: 'mais_recente',
+      querEnviarPdf: querEnviarPdf || true,
+    };
+  }
+
+  // 4. Referência por nome de documento que conste nas opções (ex: "o da certidão", "o do crea", "o do ir")
+  if (opcoesAtivas.length > 0 && querEnviarPdf) {
+    for (const op of opcoesAtivas) {
+      const nomeOp = (op.nome_documento || op.titulo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const palavras = nomeOp.split(/\s+/).filter((w: string) => w.length >= 3 && !['documento', 'oficial', 'para', 'com'].includes(w));
+      if (palavras.some((p: string) => msgNorm.includes(p))) {
+        return {
+          tipo: 'nome_documento',
+          numero: op.numero,
+          termoDoc: op.nome_documento || op.titulo,
+          querEnviarPdf: true,
+        };
+      }
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -8181,6 +8579,59 @@ export async function executarOrquestradorIaCentral(dados: {
     }
   }
 
+  // 3.5. RESOLUÇÃO DE REFERÊNCIA A ITENS DE LISTA NUMERADA ANTERIOR (Item 1)
+  const opcoesAtivas = extrairOpcoesDaUltimaLista(historicoRecente);
+  if (opcoesAtivas.length > 0) {
+    const refDetectada = detectarReferenciaItemLista(mensagemUsuario, opcoesAtivas);
+    if (refDetectada) {
+      // 1. Se indicou um número que não existe na lista
+      if (refDetectada.numero !== undefined) {
+        if (refDetectada.numero > opcoesAtivas.length || refDetectada.numero < 1) {
+          const total = opcoesAtivas.length;
+          const textoQtd = total === 1 ? 'apenas 1 opção' : `apenas ${total} opções`;
+          return {
+            textoResposta: `A última lista tinha ${textoQtd}. Qual delas você gostaria que eu envie?`,
+            origem: 'motor',
+            intencaoDetectada: 'pedir_arquivo',
+            perguntaReescrita: mensagemUsuario,
+          };
+        }
+      }
+
+      // 2. Encontra a opção correspondente
+      let opcaoEscolhida: OpcaoDocumento | undefined = undefined;
+      if (refDetectada.tipo === 'mais_recente') {
+        opcaoEscolhida = opcoesAtivas.find((o) => o.mais_recente) || opcoesAtivas[opcoesAtivas.length - 1];
+      } else if (refDetectada.numero !== undefined) {
+        opcaoEscolhida = opcoesAtivas.find((o) => o.numero === refDetectada.numero);
+      } else if (refDetectada.termoDoc) {
+        opcaoEscolhida = opcoesAtivas.find((o) => (o.nome_documento || o.titulo) === refDetectada.termoDoc);
+      }
+
+      if (opcaoEscolhida && refDetectada.querEnviarPdf) {
+        const docIdAlvo = opcaoEscolhida.doc_id || opcaoEscolhida.id;
+        const docs = dados.documentosDisponiveis || (await obterTodosDocumentos());
+        const doc =
+          docs.find((d) => d.id === docIdAlvo) ||
+          docs.find((d) =>
+            (d.titulo || '').toLowerCase().includes((opcaoEscolhida!.nome_documento || opcaoEscolhida!.titulo).toLowerCase())
+          );
+
+        if (doc) {
+          const textoDoc = formatarFraseAcompanhamento(doc.titulo, contato.nome, doc.titular);
+          const anexo = await criarAnexoParaDocumento(doc);
+          return {
+            textoResposta: textoDoc,
+            anexos: [anexo],
+            origem: 'motor',
+            intencaoDetectada: 'pedir_arquivo',
+            perguntaReescrita: doc.titulo,
+          };
+        }
+      }
+    }
+  }
+
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
     throw new Error('OPENAI_API_KEY ausente no .env');
@@ -8198,6 +8649,22 @@ export async function executarOrquestradorIaCentral(dados: {
     ? 'É o primeiro contato do dia nesta conversa. Você pode incluir uma saudação cordial e breve no início da sua resposta.'
     : 'NÃO é o primeiro contato do dia nesta conversa. É TERMINANTEMENTE PROIBIDO enviar saudações (como "Olá", "Bom dia", "Tudo bem", etc.). Responda diretamente ao assunto em andamento.';
 
+  const blocoOpcoesAnteriores = opcoesAtivas.length > 0
+    ? `\n<opcoes_lista_anterior>\n` +
+      `Última lista numerada de opções apresentada ao usuário nesta conversa:\n` +
+      opcoesAtivas
+        .map(
+          (o) =>
+            `${o.numero}º) ${o.nome_documento || o.titulo} (doc_id: ${o.doc_id || o.id}) - Valor: ${o.valor || ''}`
+        )
+        .join('\n') +
+      `\n\nINSTRUÇÕES OBRIGATÓRIAS SOBRE ITENS DA LISTA:\n` +
+      `- Se o usuário pedir para enviar ou se referir a "item X", "opção X", "o X", "o da certidão", "o mais recente", etc., você DEVE chamar a ferramenta enviar_documento passando o doc_id correspondente acima.\n` +
+      `- NUNCA pesquise termos como "item X", "o X", "opção X" em buscar_documentos.\n` +
+      `- Se o número solicitado for maior que o total da lista (${opcoesAtivas.length}), responda que a última lista tinha apenas ${opcoesAtivas.length} opções e pergunte qual delas ele deseja.\n` +
+      `</opcoes_lista_anterior>`
+    : '';
+
   const promptBase = carregarPromptAssistente();
   const systemPrompt = `${promptBase}
 
@@ -8211,7 +8678,7 @@ Nível de Acesso: ${contato.nivelAcesso || 'geral'}
 
 <status_saudacao>
 ${statusSaudacao}
-</status_saudacao>`;
+</status_saudacao>${blocoOpcoesAnteriores}`;
 
   // Últimas ~20 mensagens da conversa
   const historicoLimitado = historicoRecente.slice(-20);
@@ -8266,6 +8733,7 @@ ${statusSaudacao}
   const MAX_VOLTAS = 6;
   let volta = 0;
 
+  let opcoesGeradasNestaResposta: OpcaoDocumento[] | undefined = undefined;
   const docsEncontradosParaVerificacao: Array<{
     nome_documento: string;
     data_documento?: string;
@@ -8321,6 +8789,9 @@ ${statusSaudacao}
         if (nomeTool === 'buscar_documentos') {
           const titularEfetivo = args.titular || ultimoTitularFoco;
           resultadoTool = await toolBuscarDocumentos(args.consulta, titularEfetivo, todosDocs);
+          if (resultadoTool.opcoes_lista && resultadoTool.opcoes_lista.length > 0) {
+            opcoesGeradasNestaResposta = resultadoTool.opcoes_lista;
+          }
           if (resultadoTool.mensagem) {
             dadosRetornadosTools.push(resultadoTool.mensagem);
           }
@@ -8357,7 +8828,7 @@ ${statusSaudacao}
           }
           if (resultadoTool.campos) {
             for (const [campo, obj] of Object.entries<any>(resultadoTool.campos)) {
-              let infoCampo = `${campo}: ${obj.valor} (origem: ${obj.origemNome})`;
+              let infoCampo = `${campo}: ${obj.valor} (origem: ${obj.origemNome}${obj.origemId ? ` [doc_id: ${obj.origemId}]` : ''})`;
               if (obj.confirmadoPor) {
                 infoCampo += ` (confirmado por ${obj.confirmadoPor} em ${obj.dataConfirmacao || obj.dataConferencia})`;
               }
@@ -8421,7 +8892,7 @@ ${statusSaudacao}
             }
           }
         } else if (nomeTool === 'enviar_documento') {
-          resultadoTool = await toolEnviarDocumento(args.doc_id, todosDocs, anexosAcumulados);
+          resultadoTool = await toolEnviarDocumento(args.doc_id, todosDocs, anexosAcumulados, historicoLimitado);
           if (resultadoTool.doc_id) {
             fontesRetornadasRastro.push({
               id: resultadoTool.doc_id,
@@ -8547,6 +9018,7 @@ ${statusSaudacao}
   return {
     textoResposta: textoLimpoFinal,
     anexos: anexosAcumulados.length > 0 ? anexosAcumulados : undefined,
+    opcoes: opcoesGeradasNestaResposta && opcoesGeradasNestaResposta.length > 0 ? opcoesGeradasNestaResposta : undefined,
     origem: 'ia',
     intencaoDetectada: 'pergunta_conteudo',
     perguntaReescrita: mensagemUsuario,
