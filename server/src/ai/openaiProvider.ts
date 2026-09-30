@@ -220,9 +220,26 @@ export async function interpretarComIA(dados: {
   for (const tit of todosTitulares) {
     blocoTitulares += `[Titular: ${tit.nome}]\n`;
     for (const [cKey, reg] of Object.entries(tit.campos)) {
-      if (!reg || !reg.conferido) continue;
+      if (!reg || !reg.valor) continue;
+      // REGRA 4: Antes de usar campo da ficha, verificar se documento de origem ainda existe (se não for manual)
+      const ehManual = Boolean(reg.manual || reg.origem === 'corrigido pelo chat');
+      if (!ehManual && reg.origem) {
+        const docExiste = catalogoFiltrado.some(
+          (d) => d.id === reg.origem || d.metadata?.id_legado === reg.origem
+        );
+        if (!docExiste) {
+          console.warn(
+            `[OpenAIProvider ⚠️] Documento de origem "${reg.origem}" (${reg.origemNome}) do campo "${cKey}" do titular "${tit.nome}" não existe mais no Cofre. Ignorando campo da ficha.`
+          );
+          continue;
+        }
+      }
       if (nivelUsuario !== 'diretoria' && reg.origemVisibilidade === 'diretoria') continue;
-      blocoTitulares += `- ${cKey}: ${reg.valor} (Origem: ${reg.origemNome || reg.origem})\n`;
+
+      const confStr = reg.conferido ? 'conferido: true' : 'conferido: false';
+      const dataConfStr = reg.dataConferencia ? `, dataConferencia: "${reg.dataConferencia}"` : '';
+      const origemNomeStr = reg.origemNome || reg.origem || 'Ficha Cadastral';
+      blocoTitulares += `- ${cKey}: ${reg.valor} (origemNome: "${origemNomeStr}", ${confStr}${dataConfStr})\n`;
     }
     const docsDeste = catalogoFiltrado.filter(
       (d) => d.titular && d.titular.toLowerCase().includes(tit.nome.toLowerCase().split(' ')[0])
@@ -267,6 +284,9 @@ Você deve responder com um dos formatos JSON abaixo:
 5) Se o usuário consultar dados de algum titular (RG, CPF, profissão, estado civil, endereço, etc.):
    - Responda usando EXCLUSIVAMENTE os dados do bloco <fichas_titulares>.
    - É PROIBIDO alterar, completar ou formatar números (ex: RG, CPF devem sair exatamente como gravados).
+   - OBRIGATÓRIO CITAR A FONTE DO DADO DA FICHA:
+     * Se conferido: true: cite a fonte e a data de conferência (ex: "Pela ficha cadastral, vindo da CNH Thomaz, conferido em 17/09/2026").
+     * Se conferido: false: avise que o dado ainda não foi conferido (ex: "Pela ficha cadastral, vindo da CTPS Carteira Digital (atenção: dado ainda não foi conferido)").
    - Se o usuário fizer um pedido genérico ("dados do fulano", "me passa as informações dele"), pergunte educadamente o que ele precisa (dados cadastrais ou documentos em anexo).
    - Se algum campo for pedido e não constar na ficha conferida, informe como "não cadastrado".
    - Ao final, cite quais documentos em anexo estão disponíveis para envio se solicitado.

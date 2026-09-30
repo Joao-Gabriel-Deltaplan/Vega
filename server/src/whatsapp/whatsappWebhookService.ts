@@ -182,6 +182,23 @@ export function extrairTextoMensagem(mensagemObj: any): string {
 }
 
 /**
+ * Extrai o texto da mensagem citada (reply) na estrutura da Evolution API / Baileys
+ */
+export function extrairMensagemCitada(mensagemObj: any): string | null {
+  if (!mensagemObj) return null;
+  const contextInfo =
+    mensagemObj.extendedTextMessage?.contextInfo ||
+    mensagemObj.imageMessage?.contextInfo ||
+    mensagemObj.documentMessage?.contextInfo ||
+    mensagemObj.videoMessage?.contextInfo ||
+    mensagemObj.audioMessage?.contextInfo;
+
+  if (!contextInfo || !contextInfo.quotedMessage) return null;
+  const texto = extrairTextoMensagem(contextInfo.quotedMessage);
+  return texto ? texto.trim() : null;
+}
+
+/**
  * Resposta fixa para remetentes não autorizados
  */
 export const RESPOSTA_NAO_AUTORIZADO = 'Este número não tem acesso à VEGA.';
@@ -974,6 +991,10 @@ export async function processarEventoEvolution(
 
     // Mensagem de texto tradicional
     textoMensagem = extrairTextoMensagem(evento.message);
+    const textoCitado = extrairMensagemCitada(evento.message);
+    if (textoCitado && textoMensagem) {
+      textoMensagem = `[Em resposta à mensagem: "${textoCitado}"]\n${textoMensagem}`;
+    }
     if (!textoMensagem) {
       // Se não for texto, nem áudio, nem documento/imagem suportado ou não suportado
       const msgType = String(evento?.messageType || 'desconhecido');

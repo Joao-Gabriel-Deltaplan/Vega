@@ -199,6 +199,8 @@ export interface CampoTitular {
   conferido: boolean;
   dataConferencia?: string;
   manual?: boolean;
+  confirmadoPor?: string;
+  dataConfirmacao?: string;
   historicoCorrecao?: HistoricoCorrecaoCampo;
 }
 

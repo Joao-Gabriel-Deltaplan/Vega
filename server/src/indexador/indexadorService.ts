@@ -464,6 +464,28 @@ export async function salvarCamposSugeridosNoTitular(
   if (!camposSugeridos || Object.keys(camposSugeridos).length === 0) return;
   if (!titularNome || !titularNome.trim()) return;
 
+  // REGRA 3: Padronizar o campo origem para sempre guardar o id do documento
+  let idOrigemEfetivo = docIdOrigem;
+  let tituloOrigemEfetivo = docTituloOrigem || docIdOrigem;
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(docIdOrigem);
+  if (!isUuid && docIdOrigem) {
+    try {
+      const supabase = getSupabaseClient();
+      const { data: docMatch } = await supabase
+        .from('documentos')
+        .select('id, titulo')
+        .or(`id.eq.${docIdOrigem},titulo.ilike.${docIdOrigem},arquivo.ilike.${docIdOrigem}`)
+        .maybeSingle();
+
+      if (docMatch) {
+        idOrigemEfetivo = docMatch.id;
+        tituloOrigemEfetivo = docMatch.titulo || tituloOrigemEfetivo;
+      }
+    } catch (e) {
+      // Mantém valor original se falhar consulta
+    }
+  }
+
   const todos = await obterTodosTitulares();
   const nomeTitularBusca = titularNome.toLowerCase().trim();
 
@@ -516,8 +538,8 @@ export async function salvarCamposSugeridosNoTitular(
         }
         titular.campos.filiacao = {
           valor: textoFiliacao,
-          origem: docIdOrigem,
-          origemNome: docTituloOrigem,
+          origem: idOrigemEfetivo,
+          origemNome: tituloOrigemEfetivo,
           origemVisibilidade: 'diretoria',
           conferido: false, // SUGERIDO, NÃO CONFERIDO!
         };
@@ -535,8 +557,8 @@ export async function salvarCamposSugeridosNoTitular(
 
       titular.campos[campoDestino] = {
         valor: valor.trim(),
-        origem: docIdOrigem,
-        origemNome: docTituloOrigem,
+        origem: idOrigemEfetivo,
+        origemNome: tituloOrigemEfetivo,
         origemVisibilidade: 'diretoria',
         conferido: false, // SUGERIDO, NÃO CONFERIDO!
       };

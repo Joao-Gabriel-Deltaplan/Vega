@@ -18,6 +18,7 @@ import {
   atualizarDocumento,
   obterTodosTitulares,
   resolverTitularCadastrado,
+  removerDocumento,
 } from '../storage.js';
 import { DocumentoRegistro, ItemConhecimento } from '../types.js';
 import { atualizarValidadeDocumento } from '../vencimentos/alertaVencimentoService.js';
@@ -227,11 +228,10 @@ export async function removerDocumentoSupabaseBackground(arquivo: string): Promi
       const { data: docs } = await supabase.from('documentos').select('id').eq('arquivo', arquivo);
       if (docs && docs.length > 0) {
         for (const d of docs) {
-          await supabase.from('trechos').delete().eq('documento_id', d.id);
-          await supabase.from('documentos').delete().eq('id', d.id);
+          await removerDocumento(d.id);
         }
       }
-      console.log(`[Indexador Automático ✅] Documento "${arquivo}" removido do Supabase.`);
+      console.log(`[Indexador Automático ✅] Documento "${arquivo}" removido do Supabase com sucesso.`);
     } catch (err: any) {
       console.error(`[Indexador Automático ❌] Erro ao remover "${arquivo}" do Supabase:`, err?.message || err);
     }

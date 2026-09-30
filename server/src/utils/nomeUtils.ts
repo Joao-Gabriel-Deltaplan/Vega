@@ -3,23 +3,66 @@
 const PREFIXOS_TRATAMENTO = [
   /^dr\b\.?/i,
   /^dra\b\.?/i,
+  /^doutor\b/i,
+  /^doutora\b/i,
   /^sr\b\.?/i,
   /^sra\b\.?/i,
+  /^senhor\b/i,
+  /^senhora\b/i,
   /^eng\b\.?/i,
   /^engª\b\.?/i,
   /^eng\.ª\b\.?/i,
   /^enga\b\.?/i,
+  /^engenheiro\b/i,
+  /^engenheira\b/i,
   /^arq\b\.?/i,
   /^arqa\b\.?/i,
+  /^arquiteto\b/i,
+  /^arquiteta\b/i,
   /^prof\b\.?/i,
   /^profa\b\.?/i,
+  /^professor\b/i,
+  /^professora\b/i,
   /^adv\b\.?/i,
   /^adva\b\.?/i,
+  /^advogado\b/i,
+  /^advogada\b/i,
+  /^diretor\b/i,
+  /^diretora\b/i,
+  /^presidente\b/i,
+  /^gerente\b/i,
+  /^coordenador\b/i,
+  /^coordenadora\b/i,
 ];
+
+/**
+ * Remove formas de tratamento, títulos e cargos do início do nome,
+ * retornando o nome real completo.
+ * Ex: "Diretor João Gabriel Brandini" -> "João Gabriel Brandini"
+ *     "Diretor João"                  -> "João"
+ *     "Dr. Thomaz Brandini"           -> "Thomaz Brandini"
+ */
+export function limparFormaTratamentoNome(nomeCompleto?: string): string {
+  if (!nomeCompleto) return '';
+  const partes = nomeCompleto.trim().split(/\s+/);
+
+  while (partes.length > 0) {
+    const primeira = partes[0].trim();
+    const ehPrefixo = PREFIXOS_TRATAMENTO.some((rx) => rx.test(primeira));
+    if (ehPrefixo) {
+      partes.shift();
+    } else {
+      break;
+    }
+  }
+
+  return partes.join(' ').replace(/^[.,;:!?\s]+/, '').trim();
+}
 
 /**
  * Extrai a primeira palavra real do nome, ignorando pronomes de tratamento e títulos.
  * Ex: "Dr. Ricardo Alves" -> "Ricardo"
+ *     "Diretor João" -> "João"
  *     "Sra. Maria Souza" -> "Maria"
  *     "Ana" -> "Ana"
  *     "" ou "Dr." -> ""
@@ -175,10 +218,22 @@ export function nomesSaoEquivalentesComTolerancia(nomeA: string, nomeB: string):
   const fonB = normalizarFoneticaNome(bLimpo);
   if (fonA === fonB) return true;
 
-  // 3. Comparação de primeiro nome fonético
-  const pA = fonA.split(/\s+/)[0];
-  const pB = fonB.split(/\s+/)[0];
-  if (pA && pB && pA.length >= 3 && pA === pB) return true;
+  // 3. Comparação de primeiro nome fonético (se um deles for só primeiro nome ou se sobrenomes baterem)
+  const palavrasA = fonA.split(/\s+/).filter(Boolean);
+  const palavrasB = fonB.split(/\s+/).filter(Boolean);
+  const pA = palavrasA[0];
+  const pB = palavrasB[0];
+  if (pA && pB && pA.length >= 3 && pA === pB) {
+    // Se ambos têm sobrenome/múltiplas palavras e os complementos divergem completamente, NÃO são a mesma pessoa!
+    if (palavrasA.length > 1 && palavrasB.length > 1) {
+      const restoA = palavrasA.slice(1).join(' ');
+      const restoB = palavrasB.slice(1).join(' ');
+      if (restoA !== restoB && !restoA.includes(restoB) && !restoB.includes(restoA)) {
+        return false;
+      }
+    }
+    return true;
+  }
 
   // 4. Se um contém o outro (ex: "Thomaz" em "Thomaz Lustri Fabre")
   if (fonA.length >= 3 && fonB.length >= 3) {

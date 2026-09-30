@@ -450,7 +450,7 @@ export function mapearLinhaDocumento(row: any): DocumentoRegistro {
     apelidos: row.apelidos || [],
     visibilidade: (row.visibilidade as VisibilidadeDoc) || 'diretoria',
     tamanho: row.tamanho ? row.tamanho.trim() : undefined,
-    dataCadastro: row.created_at ? new Date(row.created_at).toLocaleDateString('pt-BR') : undefined,
+    dataCadastro: row.metadata?.dataCadastro || row.metadata?.data_cadastro || (row.created_at ? new Date(row.created_at).toLocaleDateString('pt-BR') : undefined),
     createdAt: row.created_at || undefined,
     statusIndexacao: row.status_indexacao || 'indexado',
     erroIndexacao: row.erro_indexacao || undefined,
@@ -550,11 +550,15 @@ export async function adicionarDocumento(documento: DocumentoRegistro): Promise<
 
     // Se já tiver UUID válido, faz upsert pelo ID
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(documento.id);
+    const metaBase = { ...(documento.metadata || {}) };
+    if (documento.dataCadastro) {
+      metaBase.dataCadastro = documento.dataCadastro;
+    }
     if (isUuid) {
       payload.id = documento.id;
-      if (documento.metadata) payload.metadata = documento.metadata;
+      payload.metadata = metaBase;
     } else {
-      payload.metadata = { ...(documento.metadata || {}), id_legado: documento.id };
+      payload.metadata = { ...metaBase, id_legado: documento.id };
     }
 
     const { data, error } = await supabase
@@ -683,7 +687,7 @@ export async function removerDocumento(id: string): Promise<boolean> {
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
     // 1. Busca metadados do documento antes de excluir
-    let busca = supabase.from('documentos').select('id, arquivo, storage_path');
+    let busca = supabase.from('documentos').select('id, titulo, arquivo, storage_path, metadata');
     if (isUuid) {
       busca = busca.eq('id', id);
     } else {
@@ -694,7 +698,43 @@ export async function removerDocumento(id: string): Promise<boolean> {
     if (!doc) return false;
 
     const realId = doc.id;
+    const idLegado = (doc.metadata as any)?.id_legado;
     const chaveStorage = doc.storage_path || sanitizarChaveStorage(doc.arquivo);
+
+    // 1.1 Limpeza na Ficha Cadastral (REGRA 2):
+    // Ao excluir um documento do Cofre, remover da ficha de todos os titulares os campos
+    // cuja origem seja o id desse documento, exceto os campos com manual: true.
+    try {
+      const titulares = await obterTodosTitulares();
+      for (const tit of titulares) {
+        let alterou = false;
+        const camposRestantes: Record<string, any> = {};
+        for (const [campoKey, reg] of Object.entries(tit.campos || {})) {
+          const ehManual = Boolean(reg.manual || reg.origem === 'corrigido pelo chat');
+          const coincideOrigem =
+            reg.origem === realId ||
+            reg.origem === id ||
+            (idLegado && reg.origem === idLegado) ||
+            (doc.titulo && reg.origem === doc.titulo) ||
+            (doc.arquivo && reg.origem === doc.arquivo);
+
+          if (!ehManual && coincideOrigem) {
+            alterou = true;
+            console.log(
+              `[Titulares 🧹] Removido campo "${campoKey}" da ficha do titular "${tit.nome}" (origem: "${reg.origem}") devido à exclusão do documento ${realId} ("${doc.titulo}").`
+            );
+          } else {
+            camposRestantes[campoKey] = reg;
+          }
+        }
+        if (alterou) {
+          tit.campos = camposRestantes;
+          await salvarOuAtualizarTitular(tit);
+        }
+      }
+    } catch (errTit) {
+      console.warn('[Storage Supabase ⚠️] Aviso ao limpar campos de titulares ao excluir documento:', errTit);
+    }
 
     // 2. Remove trechos vetoriais associados
     await supabase.from('trechos').delete().eq('documento_id', realId);

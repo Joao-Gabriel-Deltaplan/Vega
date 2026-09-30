@@ -788,9 +788,38 @@ app.patch('/api/titulares/:id', async (req, res) => {
         : [];
     }
     if (campos && typeof campos === 'object') {
+      const todosDocs = await obterTodosDocumentos();
+      const camposPadronizados: Record<string, any> = {};
+      for (const [cKey, reg] of Object.entries(campos)) {
+        if (reg && typeof reg === 'object') {
+          const regObj = { ...(reg as any) };
+          const ehManual = Boolean(regObj.manual || regObj.origem === 'corrigido pelo chat');
+          // Padroniza o campo origem para sempre guardar o id do documento
+          if (!ehManual && regObj.origem) {
+            const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(regObj.origem);
+            if (!isUuid) {
+              const docMatch = todosDocs.find(
+                (d) =>
+                  d.id === regObj.origem ||
+                  (d.metadata as any)?.id_legado === regObj.origem ||
+                  d.titulo.toLowerCase() === regObj.origem.toLowerCase() ||
+                  d.arquivo.toLowerCase() === regObj.origem.toLowerCase() ||
+                  (regObj.origemNome && d.titulo.toLowerCase() === regObj.origemNome.toLowerCase())
+              );
+              if (docMatch) {
+                regObj.origemNome = docMatch.titulo || regObj.origemNome || regObj.origem;
+                regObj.origem = docMatch.id;
+              }
+            }
+          }
+          camposPadronizados[cKey] = regObj;
+        } else {
+          camposPadronizados[cKey] = reg;
+        }
+      }
       fichaExistente.campos = {
         ...fichaExistente.campos,
-        ...campos,
+        ...camposPadronizados,
       };
     }
     fichaExistente.atualizadoEm = new Date().toLocaleDateString('pt-BR');

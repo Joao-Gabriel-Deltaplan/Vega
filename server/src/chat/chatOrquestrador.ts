@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import OpenAI from 'openai';
 import { getSupabaseClient } from '../db/supabaseClient.js';
 import { gerarEmbedding } from '../ai/openaiProvider.js';
@@ -53,10 +55,11 @@ import {
   DadosEstruturadosMensagem,
   FichaTitular,
 } from '../types.js';
-import { extrairPrimeiroNome, formatarFraseAcompanhamento, nomesSaoEquivalentesComTolerancia } from '../utils/nomeUtils.js';
-import { criarAnexoParaDocumento } from '../pdfService.js';
+import { extrairPrimeiroNome, formatarFraseAcompanhamento, nomesSaoEquivalentesComTolerancia, limparFormaTratamentoNome } from '../utils/nomeUtils.js';
+import { criarAnexoParaDocumento, gerarPdfDeMarkdown } from '../pdfService.js';
 import { mascararDadosSensiveis, mascararDocumento, truncarTrecho } from '../utils/segurancaUtils.js';
 import { gerarLinksNavegacao } from '../utils/geoLinks.js';
+import { salvarRastro } from '../rastros/rastroService.js';
 
 /**
  * Sanitiza rigorosamente qualquer texto que será entregue ao usuário no WhatsApp ou no painel.
@@ -77,6 +80,17 @@ export function sanitizarRespostaTextoFinal(texto: string): string {
   // 3. Remove quaisquer crases triplas ou duplas residuais
   limpo = limpo.replace(/```+/g, '');
 
+  // 3.5. Remove códigos internos (doc_id, UUIDs, IDs técnicos) para nunca exibir ao usuário
+  limpo = limpo.replace(/\[\s*(?:doc_?id|id|código|codigo)\s*:\s*[^\]]+\]/gi, '');
+  limpo = limpo.replace(/\(?\b(?:doc_?id|id|código|codigo)\s*:\s*[a-zA-Z0-9_-]+\)?/gi, '');
+  limpo = limpo.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '');
+  limpo = limpo.replace(/\b(?:doc|tit)_[a-zA-Z0-9_]{5,}\b/gi, '');
+
+  // 3.6. Garante que opções numeradas de listas de divergência fiquem em linha própria com linha em branco entre elas (\n\n) para WhatsApp
+  limpo = limpo.replace(/([^\n])\s*\n\s*(\*?\b\d+º\)?\*?)/gi, '$1\n\n$2');
+  limpo = limpo.replace(/([^\n])\s+(\*?\b[1-9]\d*º\)?\*?)/gi, '$1\n\n$2');
+  limpo = limpo.replace(/([^\n])\s*\n\s*(O mais recente|A mais recente|Qual devo considerar)/gi, '$1\n\n$2');
+
   // 4. Normaliza quebras de linha múltiplas e espaços
   limpo = limpo
     .split('\n')
@@ -93,6 +107,51 @@ export function sanitizarRespostaTextoFinal(texto: string): string {
     .trim();
 
   return limpo;
+}
+
+/**
+ * Extrai o valor específico (ex: endereço residencial) de uma descrição ou trecho de documento.
+ */
+export function extrairValorDeTrechoOuDescricao(texto?: string): string {
+  if (!texto) return '';
+  const matchRotulo = texto.match(/(?:endereço(?:\s+residencial)?|endereco(?:\s+residencial)?)\s*:\s*([^.\n]+(?:\.[^.\n]+)?)/i);
+  if (matchRotulo) {
+    return matchRotulo[1].trim().replace(/\.$/, '');
+  }
+  const matchLogradouro = texto.match(/\b((?:Alameda|Rua|Av\.|Avenida|Travessa|Rodovia|Estrada)\s+[^.\n]+)/i);
+  if (matchLogradouro) {
+    return matchLogradouro[1].trim().replace(/\.$/, '');
+  }
+  return texto.replace(/^.*?:\s*/, '').trim();
+}
+
+export function formatarDataParaExibicao(dataStr?: string | null): string {
+  if (!dataStr) return '';
+  const s = dataStr.trim();
+  const matchBr = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+  if (matchBr) {
+    const dia = matchBr[1].padStart(2, '0');
+    const mes = matchBr[2].padStart(2, '0');
+    const ano = matchBr[3];
+    return `${dia}/${mes}/${ano}`;
+  }
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+}
+
+export function parseDataBrOuIso(dataStr?: string | null): Date | null {
+  if (!dataStr) return null;
+  const s = dataStr.trim();
+  const matchBr = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+  if (matchBr) {
+    const dia = parseInt(matchBr[1], 10);
+    const mes = parseInt(matchBr[2], 10) - 1;
+    const ano = parseInt(matchBr[3], 10);
+    return new Date(ano, mes, dia);
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
 }
 
 
@@ -5560,6 +5619,8 @@ async function executarProcessamentoMensagemChatInterno(dados: {
       origemNome: string;
       docOrigem?: DocumentoRegistro;
       conferido: boolean;
+      dataConferencia?: string;
+      daFicha?: boolean;
       encontrado: boolean;
     }
 
@@ -5634,8 +5695,32 @@ async function executarProcessamentoMensagemChatInterno(dados: {
       }
 
       // Consulta o campo na ficha do titular (apenas se for campo estruturado existente)
+      let usarCampoFicha = false;
+      let regFicha: any = null;
       if (campoId && titular && titular.campos[campoId]) {
-        const reg = titular.campos[campoId]!;
+        regFicha = titular.campos[campoId]!;
+        // REGRA 4: Antes de usar um campo da ficha numa resposta, verificar se o documento de origem ainda existe.
+        // Se não existir e o campo não for manual, não usar e registrar no log.
+        const ehManual = Boolean(regFicha.manual || regFicha.origem === 'corrigido pelo chat');
+        if (!ehManual && regFicha.origem) {
+          const docExiste = todosDocs.some(
+            (d) => d.id === regFicha.origem || d.metadata?.id_legado === regFicha.origem
+          );
+          if (!docExiste) {
+            console.warn(
+              `[ChatOrquestrador ⚠️] Documento de origem "${regFicha.origem}" (${regFicha.origemNome}) do campo "${campoId}" do titular "${titular.nome}" não existe mais no Cofre. Não usando campo da ficha.`
+            );
+            usarCampoFicha = false;
+          } else {
+            usarCampoFicha = true;
+          }
+        } else {
+          usarCampoFicha = true;
+        }
+      }
+
+      if (usarCampoFicha && regFicha) {
+        const reg = regFicha;
         let valorBruto = reg.valor;
 
         if (campoId === 'filiacao') {
@@ -5649,15 +5734,15 @@ async function executarProcessamentoMensagemChatInterno(dados: {
         }
 
         // Valor para exibição na resposta do usuário (completo se MOSTRAR_DOCUMENTOS_COMPLETOS=true)
-        let valorParaUsuario = formatarValorParaUsuario(campoId, valorBruto);
+        let valorParaUsuario = formatarValorParaUsuario(campoId as any, valorBruto);
         // Valor mascarado para o rastro de auditoria (Ver raciocínio)
-        let valorParaRastro = mascararValorCampo(campoId, valorBruto);
+        let valorParaRastro = mascararValorCampo(campoId as any, valorBruto);
 
         const docOrigem = resolverDocumentoOrigem(
           reg.origem,
           reg.origemNome,
           todosDocs,
-          campoId,
+          campoId as any,
           titular.nome
         );
 
@@ -5669,6 +5754,8 @@ async function executarProcessamentoMensagemChatInterno(dados: {
           origemNome: reg.origemNome || reg.origem || 'Ficha Cadastral',
           docOrigem,
           conferido: Boolean(reg.conferido),
+          dataConferencia: reg.dataConferencia,
+          daFicha: true,
           encontrado: true,
         });
       } else {
@@ -5717,8 +5804,12 @@ async function executarProcessamentoMensagemChatInterno(dados: {
           if (trechosCandidatos.length === 0) {
             const termoBuscaCampo = `${label} ${primeiroNomeTitular}`;
             const trechosVet = await executarBuscaVetorial(termoBuscaCampo, idTitularAlvo, 8);
-            if (trechosVet.length > 0 && trechosVet[0].similaridade >= 0.40) {
-              trechosCandidatos.push(...trechosVet);
+            // Regra 19: estritamente restrita aos documentos vinculados àquele titular
+            const trechosDoTitular = trechosVet.filter(
+              (tv) => tv.pessoa_id === idTitularAlvo
+            );
+            if (trechosDoTitular.length > 0 && trechosDoTitular[0].similaridade >= 0.40) {
+              trechosCandidatos.push(...trechosDoTitular);
             }
           }
 
@@ -5814,13 +5905,28 @@ NÃO inclua explicações nem frases antes ou depois, apenas o valor exato.`;
       mensagemUsuario.includes(';') ||
       /\b(documentos|esses|estes|dados|campos)\b/i.test(mensagemUsuario);
 
+    const formatarSufixoFonte = (cp: InfoCampoProcessado, formatoItalico = false): string => {
+      if (!cp.daFicha || !cp.origemNome || cp.origemNome === 'Não encontrado' || cp.origemNome === 'Documentos do Cofre') {
+        return '';
+      }
+      let texto = '';
+      if (cp.conferido) {
+        const dataConf = cp.dataConferencia ? `, conferido em ${cp.dataConferencia}` : '';
+        texto = `pela ficha cadastral, vindo de ${cp.origemNome}${dataConf}`;
+      } else {
+        texto = `pela ficha cadastral, vindo de ${cp.origemNome} - atenção: dado ainda não foi conferido`;
+      }
+      return formatoItalico ? ` _(${texto})_` : ` (${texto})`;
+    };
+
     let textoResposta = '';
     if (ehListaMultipla) {
       const linhas = camposProcessados.map((cp) => {
         if (!cp.encontrado) {
           return `*${cp.label}:* não encontrei nos documentos.`;
         }
-        return `*${cp.label}:* ${cp.valorFormatado}`;
+        const sufixo = formatarSufixoFonte(cp, true);
+        return `*${cp.label}:* ${cp.valorFormatado}${sufixo}`;
       });
       textoResposta = `${prefixoSaudacao}${linhas.join('\n')}`;
     } else {
@@ -5829,18 +5935,21 @@ NÃO inclua explicações nem frases antes ou depois, apenas o valor exato.`;
       const artigo = ehFeminino ? 'a' : 'o';
 
       if (cp.encontrado) {
+        let fraseBase = '';
         if (cp.label === 'Mãe') {
-          textoResposta = `${prefixoSaudacao}A mãe ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
+          fraseBase = `A mãe ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}`;
         } else if (cp.label === 'Pai') {
-          textoResposta = `${prefixoSaudacao}O pai ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
+          fraseBase = `O pai ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}`;
         } else if (cp.label === 'CPF') {
-          textoResposta = `${prefixoSaudacao}O CPF ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
+          fraseBase = `O CPF ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}`;
         } else if (cp.label === 'RG') {
-          textoResposta = `${prefixoSaudacao}O RG ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
+          fraseBase = `O RG ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}`;
         } else {
           const artCap = ehFeminino ? 'A' : 'O';
-          textoResposta = `${prefixoSaudacao}${artCap} ${cp.label.toLowerCase()} ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}.`;
+          fraseBase = `${artCap} ${cp.label.toLowerCase()} ${prepTitular} ${primeiroNomeTitular} é ${cp.valorFormatado}`;
         }
+        const sufixo = formatarSufixoFonte(cp, false);
+        textoResposta = `${prefixoSaudacao}${fraseBase}${sufixo}.`;
       } else {
         textoResposta = `${prefixoSaudacao}Não encontrei ${artigo} ${cp.label.toLowerCase()} ${prepTitular} *${primeiroNomeTitular}* nos documentos.`;
       }
@@ -6782,6 +6891,1319 @@ export function validarCorrespondenciaCampoResposta(
 }
 
 /**
+ * 4. ORQUESTRADOR CENTRAL DA VEGA COM FUNCTION CALLING (GPT-5.4-MINI)
+ * Cérebro único da VEGA: toda mensagem é interpretada pela IA com o histórico recente da conversa,
+ * e a IA decide dinamicamente quais ferramentas acionar em sequência para responder.
+ */
+
+export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'buscar_documentos',
+      description: 'Busca documentos e trechos arquivados no Cofre da Delta Plan por busca textual no catálogo e busca vetorial semântica. Retorna doc_id, nome_documento, titular, data_documento, data_armazenamento, score e trecho.',
+      parameters: {
+        type: 'object',
+        properties: {
+          consulta: {
+            type: 'string',
+            description: 'Termo de busca, assunto, tipo ou trecho procurado (ex: "Declaração de IR", "contrato social", "certidão de casamento", "comprovante de endereço", "endereço do Thomaz")',
+          },
+          titular: {
+            type: 'string',
+            description: 'Nome do titular para restringir a busca aos documentos dele (opcional)',
+          },
+        },
+        required: ['consulta'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'consultar_ficha_titular',
+      description: 'Consulta os dados cadastrais oficiais do titular (CPF, RG, endereço, estado civil, filiação, CNH, datas, etc.) validados no cadastro da Delta Plan. Retorna valor, origemNome, conferido, dataConferencia, manual, confirmadoPor, dataConfirmacao e alerta se houver documento posterior no Cofre com valor divergente. Você DEVE acionar esta ferramenta SEMPRE que houver pergunta sobre endereço, filiação ou dados cadastrais (mesmo com pronomes como "qual o endereço dele?"), identificando o titular pelo histórico recente.',
+      parameters: {
+        type: 'object',
+        properties: {
+          nome: {
+            type: 'string',
+            description: 'Nome completo, primeiro nome ou apelido do titular cadastrado (ex: "Thomaz")',
+          },
+        },
+        required: ['nome'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'confirmar_versao_dado',
+      description: 'Grava na ficha cadastral do titular a versão correta de um dado/campo escolhido pelo usuário entre as fontes divergentes apresentadas na conversa (ex: "a 2", "a correta é a 2", "é a da certidão"). Registra o valor escolhido, documento de origem, conferido: true, manual: true, confirmadoPor (nome do usuário), dataConfirmacao e histórico.',
+      parameters: {
+        type: 'object',
+        properties: {
+          titular: {
+            type: 'string',
+            description: 'Nome do titular (ex: "Thomaz", "Dario Divergente")',
+          },
+          campo: {
+            type: 'string',
+            description: 'Identificador do campo cadastral (ex: "endereco", "cpf", "rg", "estadoCivil")',
+          },
+          valor_escolhido: {
+            type: 'string',
+            description: 'O valor exato da versão escolhida pelo usuário para o campo',
+          },
+          doc_id_origem: {
+            type: 'string',
+            description: 'ID interno do documento de origem da versão escolhida (se disponível)',
+          },
+          nome_documento_origem: {
+            type: 'string',
+            description: 'Nome ou título do documento de origem da versão escolhida (ex: "Contrato de Locacao 2023")',
+          },
+        },
+        required: ['titular', 'campo', 'valor_escolhido'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'listar_documentos_titular',
+      description: 'Lista todos os documentos oficiais salvos no Cofre pertencentes a um titular específico.',
+      parameters: {
+        type: 'object',
+        properties: {
+          titular: {
+            type: 'string',
+            description: 'Nome do titular cadastrado (ex: "Thomaz")',
+          },
+        },
+        required: ['titular'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'enviar_documento',
+      description: 'Anexa e envia o arquivo físico original (PDF ou imagem) do Cofre para o usuário no WhatsApp. A IA resolve "esse documento" ou "o documento" pelos doc_id que já apareceram nas buscas ou no histórico.',
+      parameters: {
+        type: 'object',
+        properties: {
+          doc_id: {
+            type: 'string',
+            description: 'ID do documento no Cofre (UUID)',
+          },
+        },
+        required: ['doc_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gerar_pdf',
+      description: 'Gera um documento PDF oficial corporativo da Delta Plan a partir de conteúdo em Markdown e anexa para envio.',
+      parameters: {
+        type: 'object',
+        properties: {
+          titulo: {
+            type: 'string',
+            description: 'Título do documento PDF',
+          },
+          conteudo_markdown: {
+            type: 'string',
+            description: 'Conteúdo em Markdown a ser renderizado no corpo do PDF',
+          },
+        },
+        required: ['titulo', 'conteudo_markdown'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'buscar_conhecimento',
+      description: 'Consulta a Base de Conhecimento interna da Delta Plan (chaves PIX, links de sistemas, regras de negócio, telefones e procedimentos).',
+      parameters: {
+        type: 'object',
+        properties: {
+          termo: {
+            type: 'string',
+            description: 'Termo de busca na base de conhecimento (ex: "pix do Thomaz", "link do ERP")',
+          },
+          categoria: {
+            type: 'string',
+            description: 'Categoria opcional (Financeiro, RH, TI, Geral)',
+          },
+        },
+        required: ['termo'],
+      },
+    },
+  },
+];
+
+/**
+ * Checa se é o primeiro contato do dia considerando o fuso de Brasília (America/Sao_Paulo)
+ */
+export function verificarSeEhPrimeiroContatoDoDia(historico: Mensagem[]): boolean {
+  if (!historico || historico.length === 0) return true;
+
+  const hojeBrasilia = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+
+  const msgsAssistenteHoje = historico.filter((m) => {
+    if (!m.timestamp || m.remetente !== 'assistente') return false;
+    try {
+      const dataMsg = new Intl.DateTimeFormat('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date(m.timestamp));
+      return dataMsg === hojeBrasilia;
+    } catch {
+      return false;
+    }
+  });
+
+  return msgsAssistenteHoje.length === 0;
+}
+
+/**
+ * Lê as instruções oficiais de prompts/assistente.md
+ */
+export function carregarPromptAssistente(): string {
+  try {
+    const caminho = path.resolve(process.cwd(), 'prompts/assistente.md');
+    if (fs.existsSync(caminho)) {
+      const c = fs.readFileSync(caminho, 'utf-8').trim();
+      if (c) return c;
+    }
+  } catch {}
+  return obterConfiguracoesVegaSync().promptPersona || 'Você é a assistente corporativa VEGA da Delta Plan.';
+}
+
+/**
+ * REDE DE SEGURANÇA (Item 4):
+ * Se a resposta final trouxer dado pessoal (CPF, RG, endereço com número) e nenhuma tool
+ * tiver retornado esse dado nesta conversa, bloqueia o envio e substitui pela frase padrão.
+ */
+export function verificarSegurancaDadosPessoais(params: {
+  textoResposta: string;
+  dadosRetornadosTools: string[];
+  historicoMensagens: Mensagem[];
+  mensagemUsuarioAtual?: string;
+}): { aprovado: boolean; motivo?: string; dadoSuspeito?: string } {
+  const { textoResposta, dadosRetornadosTools, historicoMensagens, mensagemUsuarioAtual } = params;
+
+  // 1. Respaldo oficial aceito:
+  // - Resultados de tools desta resposta
+  // - Resultados de tools registrados no histórico (em rastro.etapas e rastro.documentosEncontrados)
+  // - Mensagens escritas pelo usuário (remetente === 'cliente' e mensagemUsuarioAtual)
+  // ATENÇÃO: Respostas anteriores da própria VEGA (remetente === 'assistente') NUNCA contam como respaldo!
+  const partesRespaldo: string[] = [...dadosRetornadosTools];
+
+  if (mensagemUsuarioAtual) {
+    partesRespaldo.push(mensagemUsuarioAtual);
+  }
+
+  for (const msg of historicoMensagens) {
+    if (msg.remetente === 'cliente') {
+      partesRespaldo.push(msg.texto || '');
+    }
+
+    if (msg.rastro) {
+      if (Array.isArray(msg.rastro.documentosEncontrados)) {
+        for (const doc of msg.rastro.documentosEncontrados) {
+          if (doc.titulo) partesRespaldo.push(doc.titulo);
+          if (doc.trecho) partesRespaldo.push(doc.trecho);
+        }
+      }
+      if (Array.isArray(msg.rastro.etapas)) {
+        for (const etapa of msg.rastro.etapas) {
+          if (etapa.nome?.startsWith('Tool:') && etapa.detalhes) {
+            if (etapa.detalhes.resultado) {
+              partesRespaldo.push(
+                typeof etapa.detalhes.resultado === 'string'
+                  ? etapa.detalhes.resultado
+                  : JSON.stringify(etapa.detalhes.resultado)
+              );
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const normalizar = (txt: string) =>
+    txt
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+
+  const corpus = normalizar(partesRespaldo.join(' '));
+
+  // A. CPF (11 dígitos formatados)
+  const padraoCpf = /\b(\d{3}\.?\d{3}\.?\d{3}-?\d{2})\b/g;
+  let matchCpf;
+  while ((matchCpf = padraoCpf.exec(textoResposta)) !== null) {
+    const cpf = matchCpf[1];
+    const apenasDigitos = cpf.replace(/\D/g, '');
+    if (apenasDigitos.length === 11) {
+      if (!corpus.includes(apenasDigitos) && !corpus.includes(normalizar(cpf))) {
+        return {
+          aprovado: false,
+          motivo: `CPF ${cpf} citado na resposta não constava em nenhuma tool executada nem foi informado pelo usuário.`,
+          dadoSuspeito: cpf,
+        };
+      }
+    }
+  }
+
+  // B. RG / Documento de identificação (7 a 9 dígitos numéricos com pontuação padrão)
+  const padraoRg = /\b(\d{1,2}\.?\d{3}\.?\d{3}-?[0-9xX])\b/g;
+  let matchRg;
+  while ((matchRg = padraoRg.exec(textoResposta)) !== null) {
+    const rg = matchRg[1];
+    const digitos = rg.replace(/\D/g, '');
+    if (digitos.length >= 7 && digitos.length <= 9) {
+      if (!corpus.includes(digitos) && !corpus.includes(normalizar(rg))) {
+        return {
+          aprovado: false,
+          motivo: `RG/Identidade ${rg} citado na resposta não constava em nenhuma tool executada nem foi informado pelo usuário.`,
+          dadoSuspeito: rg,
+        };
+      }
+    }
+  }
+
+  // C. Endereço específico com logradouro e número (ex: "Rua X, 123" ou "Avenida Y, nº 45")
+  const padraoEndereco = /\b(?:rua|avenida|av\.?|alameda|travessa|rodovia|praça)\s+([A-Za-zÀ-ÿ0-9\s]{2,40}?)(?:,\s*|\s+)(?:n[º°]?\s*|\bn[º°]?\s*)?(\d{1,6})\b/gi;
+  let matchEnd;
+  while ((matchEnd = padraoEndereco.exec(textoResposta)) !== null) {
+    const enderecoCompleto = matchEnd[0];
+    const nomeLogradouro = normalizar(matchEnd[1].trim());
+    const numeroRua = matchEnd[2];
+    if (!corpus.includes(nomeLogradouro) || !corpus.includes(numeroRua)) {
+      return {
+        aprovado: false,
+        motivo: `Endereço "${enderecoCompleto}" citado na resposta não constava em nenhuma tool executada nem foi informado pelo usuário.`,
+        dadoSuspeito: enderecoCompleto,
+      };
+    }
+  }
+
+  return { aprovado: true };
+}
+
+/**
+ * Tool 1: buscar_documentos(consulta, titular?)
+ */
+async function toolBuscarDocumentos(
+  consulta: string,
+  titularNome?: string,
+  todosDocs: DocumentoRegistro[] = []
+): Promise<{
+  documentos: Array<{
+    doc_id: string;
+    nome_documento: string;
+    titular: string;
+    data_documento?: string;
+    data_armazenamento?: string;
+    score: number;
+    trecho?: string;
+  }>;
+  mensagem?: string;
+}> {
+  const termoNorm = (consulta || '').toLowerCase().trim();
+  let titularNorm = (titularNome || '').toLowerCase().trim();
+  if (!titularNorm && consulta) {
+    try {
+      const todosTits = await obterTodosTitulares();
+      const cLower = consulta.toLowerCase();
+      const achado = todosTits.find((t) => t.nome && cLower.includes(t.nome.toLowerCase()));
+      if (achado) {
+        titularNorm = achado.nome.toLowerCase();
+      }
+    } catch {}
+  }
+
+  const resultados: Array<{
+    doc_id: string;
+    nome_documento: string;
+    titular: string;
+    data_documento?: string;
+    data_armazenamento?: string;
+    score: number;
+    trecho?: string;
+  }> = [];
+
+  // 1. Catálogo direto
+  for (const d of todosDocs) {
+    if (titularNorm && !titularCorresponde(d.titular, titularNorm)) {
+      continue;
+    }
+    const tituloNorm = (d.titulo || '').toLowerCase();
+    const tipoNorm = (d.tipo || '').toLowerCase();
+    const descNorm = (d.descricao || '').toLowerCase();
+    const apelidosNorm = (d.apelidos || []).map((a) => a.toLowerCase()).join(' ');
+
+    const palavrasTermo = termoNorm.split(/\s+/).filter((p) => p.length >= 3);
+    if (termoNorm.includes('enderec') || termoNorm.includes('residen') || termoNorm.includes('mora')) {
+      palavrasTermo.push('endereco', 'endereço', 'residencia', 'residência', 'residencial', 'locacao', 'locação', 'imposto', 'comprovante');
+    }
+
+    const coincidePalavras =
+      palavrasTermo.length > 0 &&
+      palavrasTermo.some(
+        (p) => tituloNorm.includes(p) || tipoNorm.includes(p) || descNorm.includes(p) || apelidosNorm.includes(p)
+      );
+
+    const coincide =
+      termoNorm === '' ||
+      termoNorm === 'todos' ||
+      tituloNorm.includes(termoNorm) ||
+      tipoNorm.includes(termoNorm) ||
+      descNorm.includes(termoNorm) ||
+      apelidosNorm.includes(termoNorm) ||
+      termoNorm.includes(tituloNorm) ||
+      termoNorm.includes(tipoNorm) ||
+      coincidePalavras;
+
+    if (coincide) {
+      resultados.push({
+        doc_id: d.id,
+        nome_documento: d.titulo,
+        titular: d.titular || 'Não especificado',
+        data_documento: formatarDataParaExibicao(d.dataValidade || d.dataCadastro),
+        data_armazenamento: formatarDataParaExibicao(d.dataCadastro),
+        score: 1.0,
+        trecho: d.descricao || `Documento ${d.tipo || 'oficial'} arquivado no Cofre`,
+      });
+    }
+  }
+
+  // 2. Busca vetorial por trechos
+  try {
+    const titulares = await obterTodosTitulares();
+    const titObj = titularNorm ? titulares.find((t) => titularCorresponde(t.nome, titularNorm)) : null;
+    const trechosVetoriais = await executarBuscaVetorial(consulta, titObj?.id || null, 5);
+    for (const tv of trechosVetoriais) {
+      const doc = todosDocs.find((d) => d.id === tv.documento_id);
+      if (titularNorm && (!doc || !titularCorresponde(doc.titular, titularNorm))) {
+        continue;
+      }
+      const titulo = tv.titulo_documento || doc?.titulo || 'Documento do Cofre';
+      resultados.push({
+        doc_id: tv.documento_id,
+        nome_documento: titulo,
+        titular: doc?.titular || 'Não especificado',
+        data_documento: formatarDataParaExibicao(doc?.dataValidade || doc?.dataCadastro),
+        data_armazenamento: formatarDataParaExibicao(doc?.dataCadastro),
+        score: Number((tv.similaridade || 0.8).toFixed(2)),
+        trecho: tv.conteudo,
+      });
+    }
+  } catch (err) {
+    console.warn('[VEGA Tools] Falha na busca vetorial:', err);
+  }
+
+  // 3. Pessoa não cadastrada (cônjuge, sócio, testemunha)
+  if (titularNorm && !resultados.some((r) => titularCorresponde(r.titular, titularNorm))) {
+    try {
+      const trechosPessoa = await buscarTrechosPorNomePessoaNoCofre(titularNorm, consulta, todosDocs);
+      for (const tp of trechosPessoa) {
+        resultados.push({
+          doc_id: tp.documento_id,
+          nome_documento: tp.titulo_documento,
+          titular: tp.titulo_documento,
+          data_documento: formatarDataParaExibicao(new Date().toISOString()),
+          data_armazenamento: formatarDataParaExibicao(new Date().toISOString()),
+          score: 0.9,
+          trecho: tp.conteudo,
+        });
+      }
+    } catch {}
+  }
+
+  // Deduplica por doc_id e trecho similar
+  const vistos = new Set<string>();
+  const filtrados = resultados.filter((r) => {
+    const chave = `${r.doc_id}_${(r.trecho || '').substring(0, 50)}`;
+    if (vistos.has(chave)) return false;
+    vistos.add(chave);
+    return true;
+  });
+
+  if (filtrados.length === 0) {
+    return { documentos: [], mensagem: `Nenhum documento encontrado no Cofre para a consulta informada.` };
+  }
+
+  // Se encontrou múltiplos documentos de endereço com valores/trechos potencialmente diferentes
+  let instrucaoDivergencia: string | undefined = undefined;
+  if (
+    filtrados.length >= 2 &&
+    (termoNorm.includes('enderec') || termoNorm.includes('residen') || termoNorm.includes('mora') || consulta.toLowerCase().includes('endereço') || consulta.toLowerCase().includes('endereco'))
+  ) {
+    // Ordena cronologicamente para listar 1º, 2º, 3º
+    filtrados.sort((a, b) => {
+      const dA = parseDataBrOuIso(a.data_documento || a.data_armazenamento || '')?.getTime() || 0;
+      const dB = parseDataBrOuIso(b.data_documento || b.data_armazenamento || '')?.getTime() || 0;
+      return dA - dB;
+    });
+
+    const maisRecente = filtrados[filtrados.length - 1];
+    const nomeTitularExibicao = titularNorm
+      ? titularNorm.split(' ').map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ')
+      : 'titular';
+
+    instrucaoDivergencia =
+      `ATENÇÃO: Múltiplos documentos de endereço encontrados com datas diferentes no Cofre. ` +
+      `Se a intenção do usuário for perguntar o endereço do titular, formate a resposta no seguinte formato de divergência com cada opção em linha própria e linha em branco entre elas. ` +
+      `Porém, se o usuário pediu para ENVIAR o documento (ex: "me mande o documento mais recente", "me mande o documento"), você DEVE acionar em seguida a ferramenta "enviar_documento" com o doc_id do documento mais recente (${maisRecente.nome_documento}) para enviar o anexo, em vez de repetir a lista de divergência!\n\n` +
+      `1) Abertura de conflito em tom natural: "Atenção: encontrei informações diferentes sobre o endereço do ${nomeTitularExibicao}, vindas de documentos diferentes:"\n\n` +
+      `2) Fontes numeradas (1º, 2º, ...), com UMA LINHA EM BRANCO entre cada uma delas para leitura no WhatsApp:\n\n` +
+      filtrados
+        .map(
+          (f, idx) =>
+            `${idx + 1}º) ${f.nome_documento} (documento de ${f.data_documento || 'data não informada'}, armazenado em ${f.data_armazenamento || 'data não informada'}): ${f.trecho?.replace(/^.*?:\s*/, '') || f.trecho}`
+        )
+        .join('\n\n') +
+      `\n\n3) Fechamento indicando o mais recente e perguntando: "O mais recente é o d[o/a] ${maisRecente.nome_documento}. Qual devo considerar como correto?"\n\n` +
+      `IMPORTANTE: Cada opção numerada DEVE ficar em uma linha própria, com uma linha em branco entre elas. NUNCA mostre doc_id ou UUIDs.`;
+  }
+
+  return {
+    documentos: filtrados.slice(0, 6),
+    mensagem: instrucaoDivergencia,
+  };
+}
+
+/**
+ * Tool 2: consultar_ficha_titular(nome)
+ */
+async function toolConsultarFichaTitular(
+  nome: string,
+  todosDocs: DocumentoRegistro[] = []
+): Promise<{
+  encontrado: boolean;
+  titular?: string;
+  id?: string;
+  alerta_documento_posterior?: string;
+  instrucao_resposta?: string;
+  mensagem?: string;
+  campos?: Record<string, {
+    valor: string;
+    origemNome: string;
+    origemId?: string;
+    conferido: boolean;
+    dataConferencia?: string;
+    manual: boolean;
+    confirmadoPor?: string;
+    dataConfirmacao?: string;
+    documentoPosteriorNoCofre?: {
+      doc_id: string;
+      nome_documento: string;
+      data_armazenamento: string;
+      data_documento?: string;
+      trecho?: string;
+      instrucaoObrigatoria: string;
+    };
+  }>;
+}> {
+  let titular = await obterTitularPorNome(nome);
+  if (!titular) {
+    const todosT = await obterTodosTitulares();
+    titular = todosT.find((t) => titularCorresponde(t.nome, nome)) || null;
+  }
+
+  if (!titular) {
+    return {
+      encontrado: false,
+      mensagem: `Nenhum titular cadastrado com o nome "${nome}".`,
+    };
+  }
+
+  const camposValidados: Record<string, any> = {};
+  for (const [campoId, campoObj] of Object.entries(titular.campos || {})) {
+    if (!campoObj || !campoObj.valor) continue;
+
+    // Regra 4: se não for manual e tiver documento de origem, checa se ainda existe no Cofre
+    const ehManual = Boolean(campoObj.manual || campoObj.origem === 'corrigido pelo chat');
+    if (!ehManual && campoObj.origem) {
+      const docExiste = todosDocs.some(
+        (d) => d.id === campoObj.origem || d.metadata?.id_legado === campoObj.origem
+      );
+      if (!docExiste) {
+        console.warn(
+          `[VEGA Ficha ⚠️] Campo "${campoId}" do titular "${titular.nome}" ignorado: documento de origem "${campoObj.origem}" (${campoObj.origemNome || 'sem nome'}) não existe mais no Cofre.`
+        );
+        continue;
+      }
+    }
+
+    const itemValidado: any = {
+      valor: campoObj.valor,
+      origemNome: campoObj.origemNome || 'Documento do Cofre',
+      origemId: campoObj.origem,
+      conferido: Boolean(campoObj.conferido),
+      dataConferencia: campoObj.dataConferencia,
+      manual: Boolean(campoObj.manual),
+      confirmadoPor: campoObj.confirmadoPor,
+      dataConfirmacao: campoObj.dataConfirmacao,
+    };
+
+    // Exceção: checa se há documento armazenado DEPOIS da data de confirmação
+    if (campoObj.confirmadoPor && (campoObj.dataConfirmacao || campoObj.dataConferencia)) {
+      const dataConf = parseDataBrOuIso(campoObj.dataConfirmacao || campoObj.dataConferencia || '');
+      if (dataConf) {
+        const docsPosteriores = todosDocs.filter((d) => {
+          if (!titularCorresponde(d.titular, titular!.nome)) return false;
+          if (d.id === campoObj.origem || d.metadata?.id_legado === campoObj.origem) return false;
+          const dataArmazenamento = parseDataBrOuIso(d.dataCadastro || d.metadata?.dataCadastro || d.dataValidade || '');
+          return dataArmazenamento && dataArmazenamento.getTime() > dataConf.getTime();
+        });
+
+        if (docsPosteriores.length > 0) {
+          docsPosteriores.sort((a, b) => {
+            const dA = parseDataBrOuIso(a.dataCadastro || a.metadata?.dataCadastro || a.dataValidade || '')?.getTime() || 0;
+            const dB = parseDataBrOuIso(b.dataCadastro || b.metadata?.dataCadastro || b.dataValidade || '')?.getTime() || 0;
+            return dB - dA;
+          });
+          const docMaisRecente = docsPosteriores[0];
+          const dataArmazExib = formatarDataParaExibicao(docMaisRecente.dataCadastro || docMaisRecente.metadata?.dataCadastro || docMaisRecente.dataValidade);
+          const dataConfExib = formatarDataParaExibicao(campoObj.dataConfirmacao || campoObj.dataConferencia || '');
+          const nomeConfLimpo = limparFormaTratamentoNome(campoObj.confirmadoPor || '');
+          const primeiroNomeConf = extrairPrimeiroNome(nomeConfLimpo) || nomeConfLimpo || 'Usuário';
+
+          // Extrai o novo valor (endereço, etc.) do documento posterior a partir da descrição ou trecho
+          const novoValorEncontrado = extrairValorDeTrechoOuDescricao(docMaisRecente.descricao || '') || 'outro endereço';
+          const valorAtualFormatado = campoObj.valor ? `(${campoObj.valor})` : '';
+
+          const alertaExato = `Esse endereço ${valorAtualFormatado} foi confirmado por ${primeiroNomeConf} em ${dataConfExib}, mas depois entrou o ${docMaisRecente.titulo} com outro endereço: ${novoValorEncontrado}. Quer atualizar?`;
+
+          itemValidado.documentoPosteriorNoCofre = {
+            doc_id: docMaisRecente.id,
+            nome_documento: docMaisRecente.titulo,
+            data_armazenamento: dataArmazExib,
+            data_documento: formatarDataParaExibicao(docMaisRecente.dataValidade || docMaisRecente.dataCadastro),
+            trecho: docMaisRecente.descricao,
+            instrucaoObrigatoria: `Existe um documento posterior no Cofre ("${docMaisRecente.titulo}") armazenado em ${dataArmazExib} com endereço/dados diferentes. Você DEVE alertar exatamente assim ao usuário, mostrando o valor atual confirmado e o novo valor encontrado: "${alertaExato}"`,
+          };
+        }
+      }
+    }
+
+    camposValidados[campoId] = itemValidado;
+  }
+
+  const totalCampos = Object.keys(camposValidados).length;
+  let alertaDocPosterior: string | undefined = undefined;
+  let instrucaoConfirmado: string | undefined = undefined;
+
+  for (const [campoId, item] of Object.entries<any>(camposValidados)) {
+    if (item.documentoPosteriorNoCofre) {
+      alertaDocPosterior = item.documentoPosteriorNoCofre.instrucaoObrigatoria;
+      break;
+    } else if (item.confirmadoPor) {
+      const nomeConfLimpo = limparFormaTratamentoNome(item.confirmadoPor || '');
+      const primeiroNomeConf = extrairPrimeiroNome(nomeConfLimpo) || nomeConfLimpo || 'Usuário';
+      instrucaoConfirmado = `O ${campoId} do titular ${titular.nome} está confirmado na ficha cadastral por ${nomeConfLimpo} em ${item.dataConfirmacao || item.dataConferencia} conforme ${item.origemNome}. Você DEVE entregar diretamente ao usuário citando a fonte, quem confirmou (cite apenas o primeiro nome, "${primeiroNomeConf}") e quando: "O endereço do ${titular.nome} é ${item.valor}, conforme o/a ${item.origemNome}, confirmado por ${primeiroNomeConf} em ${item.dataConfirmacao || item.dataConferencia}." NUNCA use formas de tratamento como "Diretor João". Não liste divergências antigas nem responda apenas o endereço solto.`;
+    }
+  }
+
+  const mensagemPadrao =
+    totalCampos === 0
+      ? `A ficha cadastral do titular "${titular.nome}" não possui campos cadastrais preenchidos. Você DEVE acionar em seguida a ferramenta "buscar_documentos" com consulta="endereço" e titular="${titular.nome}" para verificar os documentos arquivados desse titular no Cofre antes de responder.`
+      : undefined;
+
+  const mensagemFinal = alertaDocPosterior || instrucaoConfirmado || mensagemPadrao;
+
+  return {
+    encontrado: true,
+    titular: titular.nome,
+    id: titular.id,
+    alerta_documento_posterior: alertaDocPosterior,
+    instrucao_resposta: instrucaoConfirmado,
+    mensagem: mensagemFinal,
+    campos: camposValidados,
+  };
+}
+
+/**
+ * Tool: confirmar_versao_dado(titular, campo, valor_escolhido, doc_id_origem?, nome_documento_origem?)
+ */
+async function toolConfirmarVersaoDado(params: {
+  titular: string;
+  campo: string;
+  valor_escolhido: string;
+  doc_id_origem?: string;
+  nome_documento_origem?: string;
+  usuarioNome: string;
+  todosDocs: DocumentoRegistro[];
+}): Promise<{
+  sucesso: boolean;
+  mensagem: string;
+  valorSalvo?: string;
+  documentoOrigem?: string;
+}> {
+  const { titular: nomeTit, campo, valor_escolhido, doc_id_origem, nome_documento_origem, usuarioNome, todosDocs } = params;
+  let titular = await obterTitularPorNome(nomeTit);
+  if (!titular) {
+    const todosT = await obterTodosTitulares();
+    titular = todosT.find((t) => titularCorresponde(t.nome, nomeTit)) || null;
+  }
+
+  if (!titular) {
+    return {
+      sucesso: false,
+      mensagem: `Titular "${nomeTit}" não foi encontrado no cadastro oficial.`,
+    };
+  }
+
+  let docOrigem: DocumentoRegistro | undefined;
+  if (doc_id_origem) {
+    docOrigem = todosDocs.find(
+      (d) => d.id === doc_id_origem || d.metadata?.id_legado === doc_id_origem
+    );
+  }
+  if (!docOrigem && nome_documento_origem) {
+    const termoNorm = nome_documento_origem.toLowerCase();
+    docOrigem = todosDocs.find((d) => d.titulo.toLowerCase().includes(termoNorm));
+  }
+
+  const campoKey = (campo || 'endereco') as CampoTitularId;
+  const valorAnterior = titular.campos?.[campoKey]?.valor || '';
+  const dataHojeStr = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+
+  if (!titular.campos) titular.campos = {};
+
+  const nomeDocFinal = docOrigem?.titulo || nome_documento_origem || 'documento do Cofre';
+  const idDocFinal = docOrigem?.id || doc_id_origem || 'corrigido pelo chat';
+
+  // REGRA: Gravar confirmadoPor com o nome real do contato autorizado (ex: "João Gabriel Brandini" ou "João"),
+  // NUNCA com forma de tratamento como "Diretor João".
+  const nomeRealConfirmador = limparFormaTratamentoNome(usuarioNome) || usuarioNome || 'Usuário';
+  const primeiroNomeConfirmador = extrairPrimeiroNome(nomeRealConfirmador) || nomeRealConfirmador;
+
+  titular.campos[campoKey] = {
+    valor: valor_escolhido,
+    origem: idDocFinal,
+    origemNome: nomeDocFinal,
+    origemVisibilidade: 'diretoria',
+    conferido: true,
+    dataConferencia: dataHojeStr,
+    manual: true,
+    confirmadoPor: nomeRealConfirmador,
+    dataConfirmacao: dataHojeStr,
+    historicoCorrecao: {
+      valorAnterior,
+      valorNovo: valor_escolhido,
+      corrigidoPor: nomeRealConfirmador,
+      dataHora: new Date().toISOString(),
+    },
+  };
+
+  await salvarOuAtualizarTitular(titular);
+  console.log(
+    `[VEGA Ficha ✅] Campo "${campoKey}" do titular "${titular.nome}" confirmado por "${nomeRealConfirmador}" com valor "${valor_escolhido}" (origem: ${nomeDocFinal}).`
+  );
+
+  return {
+    sucesso: true,
+    mensagem: `Anotado: o ${campoKey} de ${titular.nome} passa a ser ${valor_escolhido}, conforme ${nomeDocFinal}. O dado foi confirmado por ${nomeRealConfirmador} em ${dataHojeStr}. Confirme ao usuário em uma frase curta (pode citar apenas o primeiro nome, "${primeiroNomeConfirmador}").`,
+    valorSalvo: valor_escolhido,
+    documentoOrigem: nomeDocFinal,
+  };
+}
+
+/**
+ * Tool 3: listar_documentos_titular(titular)
+ */
+async function toolListarDocumentosTitular(
+  titular: string,
+  todosDocs: DocumentoRegistro[] = []
+): Promise<{
+  titular: string;
+  total: number;
+  documentos: Array<{
+    doc_id: string;
+    nome_documento: string;
+    tipo?: string;
+    data_documento?: string;
+    status_indexacao?: string;
+  }>;
+}> {
+  const docs = todosDocs.filter((d) => titularCorresponde(d.titular, titular));
+  return {
+    titular,
+    total: docs.length,
+    documentos: docs.map((d) => ({
+      doc_id: d.id,
+      nome_documento: d.titulo,
+      tipo: d.tipo,
+      data_documento: d.dataValidade || d.dataCadastro,
+      status_indexacao: d.statusIndexacao,
+    })),
+  };
+}
+
+/**
+ * Tool 4: enviar_documento(doc_id)
+ */
+async function toolEnviarDocumento(
+  docId: string,
+  todosDocs: DocumentoRegistro[] = [],
+  anexosAcumulados: Anexo[]
+): Promise<{
+  sucesso: boolean;
+  doc_id?: string;
+  nome_documento?: string;
+  titular?: string;
+  erro?: string;
+  mensagem?: string;
+}> {
+  const idLimpo = (docId || '').trim();
+  let doc = todosDocs.find(
+    (d) => d.id === idLimpo || d.metadata?.id_legado === idLimpo
+  );
+  if (!doc) {
+    doc = todosDocs.find(
+      (d) => d.titulo.toLowerCase().includes(idLimpo.toLowerCase())
+    );
+  }
+
+  if (!doc) {
+    return {
+      sucesso: false,
+      erro: `Documento com id ou termo "${idLimpo}" não foi encontrado no Cofre.`,
+    };
+  }
+
+  const anexo = await criarAnexoParaDocumento(doc);
+  const jaExiste = anexosAcumulados.some((a) => a.url === anexo.url || a.nome === anexo.nome);
+  if (!jaExiste) {
+    anexosAcumulados.push(anexo);
+  }
+
+  return {
+    sucesso: true,
+    doc_id: doc.id,
+    nome_documento: doc.titulo,
+    titular: doc.titular,
+    mensagem: `Documento "${doc.titulo}" (${doc.titular || 'Cofre'}) anexado com sucesso para envio físico ao usuário.`,
+  };
+}
+
+/**
+ * Tool 5: gerar_pdf(titulo, conteudo_markdown)
+ */
+async function toolGerarPdf(
+  titulo: string,
+  conteudoMarkdown: string,
+  anexosAcumulados: Anexo[]
+): Promise<{
+  sucesso: boolean;
+  titulo: string;
+  nome_arquivo: string;
+  mensagem: string;
+}> {
+  const anexo = await gerarPdfDeMarkdown({
+    titulo: titulo || 'Documento Oficial Delta Plan',
+    conteudo_markdown: conteudoMarkdown || '',
+  });
+  anexosAcumulados.push(anexo);
+  return {
+    sucesso: true,
+    titulo: anexo.titulo || titulo || 'Documento Oficial Delta Plan',
+    nome_arquivo: anexo.nome,
+    mensagem: `PDF oficial "${anexo.titulo || titulo}" gerado com layout corporativo Delta Plan e anexado para envio.`,
+  };
+}
+
+/**
+ * Tool 6: buscar_conhecimento(termo, categoria?)
+ */
+async function toolBuscarConhecimento(
+  termo: string,
+  categoria?: string
+): Promise<{
+  total: number;
+  itens: Array<{
+    id: string;
+    titulo: string;
+    categoria: string;
+    tipo: string;
+    conteudo: string;
+    dadosEstruturados?: any;
+  }>;
+}> {
+  const resK = await buscarConhecimento(termo);
+  let itens = resK.resultados || (resK.instrucao ? [resK.instrucao] : []);
+  if (categoria) {
+    itens = itens.filter((i) => (i.categoria || '').toLowerCase().includes(categoria.toLowerCase()));
+  }
+  return {
+    total: itens.length,
+    itens: itens.map((i) => ({
+      id: i.id,
+      titulo: i.titulo,
+      categoria: i.categoria,
+      tipo: i.tipo || 'regra',
+      conteudo: i.conteudo,
+      dadosEstruturados: i.dadosEstruturados,
+    })),
+  };
+}
+
+/**
+ * MOTOR CENTRAL DA VEGA: Function Calling com gpt-5.4-mini
+ */
+export async function executarOrquestradorIaCentral(dados: {
+  mensagemUsuario: string;
+  historicoRecente: Mensagem[];
+  contato: Contato;
+  documentosDisponiveis?: DocumentoRegistro[];
+  documentoIdDireto?: string;
+}): Promise<ResultadoChatOrquestrador> {
+  const inicioTotal = Date.now();
+  const { mensagemUsuario, historicoRecente, documentoIdDireto } = dados;
+  const contato = dados.contato || { id: 'anonimo', nome: '', telefone: '', canal: 'whatsapp' as const };
+  const primeiroNome = extrairPrimeiroNome(contato?.nome || '');
+  const vocativo = primeiroNome ? `, ${primeiroNome}` : '';
+
+  // 1. AUTORIZAÇÃO DO NÚMERO
+  if (contato.id === 'ct-nao-auth') {
+    return {
+      textoResposta: 'Este número não tem acesso à VEGA.',
+      origem: 'motor',
+      intencaoDetectada: 'saudacao_ou_vago',
+      perguntaReescrita: mensagemUsuario,
+    };
+  }
+
+  // 2. CASO ESPECIAL: Clique direto em opção ou documento sugerido
+  if (documentoIdDireto) {
+    if (documentoIdDireto.startsWith('k-')) {
+      const todosK = await obterTodosConhecimentos();
+      const itemK = todosK.find((k) => k.id === documentoIdDireto);
+      const textoK = itemK
+        ? `Sobre ${itemK.titulo}${vocativo}:\n${itemK.conteudo}`
+        : 'Instrução não localizada na base de conhecimento.';
+      return {
+        textoResposta: textoK,
+        origem: 'motor',
+        intencaoDetectada: 'pergunta_conteudo',
+        perguntaReescrita: itemK?.titulo || documentoIdDireto,
+        dadosEstruturados: itemK ? extrairDadosEstruturadosDeItemConhecimento(itemK) : undefined,
+      };
+    } else {
+      const docs = dados.documentosDisponiveis || (await obterTodosDocumentos());
+      const doc = docs.find((d) => d.id === documentoIdDireto);
+      if (doc) {
+        const textoDoc = formatarFraseAcompanhamento(doc.titulo, contato.nome, doc.titular);
+        const anexo = await criarAnexoParaDocumento(doc);
+        return {
+          textoResposta: textoDoc,
+          anexos: [anexo],
+          origem: 'motor',
+          intencaoDetectada: 'pedir_arquivo',
+          perguntaReescrita: doc.titulo,
+        };
+      }
+    }
+  }
+
+  // 3. RESOLUÇÃO DE CONFIRMAÇÃO DE EXCLUSÃO PENDENTE
+  const ultimaMsgAssistente = [...historicoRecente].reverse().find((m) => m.remetente === 'assistente');
+  const correcaoPendente = ultimaMsgAssistente?.correcaoPendente;
+  if (correcaoPendente && correcaoPendente.campoId === ('apagar_documento' as any) && correcaoPendente.documentoId) {
+    const msgLimpa = mensagemUsuario.toLowerCase().trim();
+    const querConfirmar =
+      isConfirmacaoSimples(mensagemUsuario) ||
+      /^(sim|s|pode|confirmo|confirma|apaga|apagar|exclui|excluir|com certeza|claro)/i.test(msgLimpa);
+    const querCancelar = /^(n[aã]o|n|cancela|cancelar|deixa|esquece|manter|mantem)/i.test(msgLimpa);
+
+    if (querConfirmar) {
+      await removerDocumento(correcaoPendente.documentoId);
+      const docTitulo = correcaoPendente.documentoTitulo || 'documento';
+      const textoSucesso = `Documento *${docTitulo}* apagado com sucesso do Cofre.`;
+      return {
+        textoResposta: textoSucesso,
+        origem: 'motor',
+        intencaoDetectada: 'apagar_documento',
+        perguntaReescrita: `Exclusão confirmada: ${docTitulo}`,
+      };
+    }
+    if (querCancelar) {
+      const docTitulo = correcaoPendente.documentoTitulo || 'documento';
+      const textoCancelado = `Operação cancelada. O documento *${docTitulo}* continua salvo no Cofre.`;
+      return {
+        textoResposta: textoCancelado,
+        origem: 'motor',
+        intencaoDetectada: 'apagar_documento',
+        perguntaReescrita: `Exclusão cancelada: ${docTitulo}`,
+      };
+    }
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error('OPENAI_API_KEY ausente no .env');
+  }
+  const openai = new OpenAI({ apiKey });
+  const chatModel = process.env.OPENAI_CHAT_MODEL?.trim() || 'gpt-5.4-mini';
+
+  const todosDocs = dados.documentosDisponiveis && dados.documentosDisponiveis.length > 0
+    ? dados.documentosDisponiveis
+    : await obterTodosDocumentos();
+
+  // 4. CONTEXTO DA CONVERSA E SAUDAÇÃO
+  const ehPrimeiroContatoDoDia = verificarSeEhPrimeiroContatoDoDia(historicoRecente);
+  const statusSaudacao = ehPrimeiroContatoDoDia
+    ? 'É o primeiro contato do dia nesta conversa. Você pode incluir uma saudação cordial e breve no início da sua resposta.'
+    : 'NÃO é o primeiro contato do dia nesta conversa. É TERMINANTEMENTE PROIBIDO enviar saudações (como "Olá", "Bom dia", "Tudo bem", etc.). Responda diretamente ao assunto em andamento.';
+
+  const promptBase = carregarPromptAssistente();
+  const systemPrompt = `${promptBase}
+
+<contato_atual>
+Nome: ${contato.nome}
+Primeiro Nome: ${primeiroNome || contato.nome}
+Cargo: ${contato.cargo || 'Colaborador'}
+Setor: ${contato.setor || 'Geral'}
+Nível de Acesso: ${contato.nivelAcesso || 'geral'}
+</contato_atual>
+
+<status_saudacao>
+${statusSaudacao}
+</status_saudacao>`;
+
+  // Últimas ~20 mensagens da conversa
+  const historicoLimitado = historicoRecente.slice(-20);
+  const mensagensOpenAi: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: 'system', content: systemPrompt },
+  ];
+
+  for (const m of historicoLimitado) {
+    if (m.remetente === 'cliente') {
+      mensagensOpenAi.push({ role: 'user', content: m.texto });
+    } else if (m.remetente === 'assistente') {
+      mensagensOpenAi.push({ role: 'assistant', content: m.texto });
+    }
+  }
+
+  // Mensagem atual do usuário
+  mensagensOpenAi.push({ role: 'user', content: mensagemUsuario });
+
+  // 5. LOOP DE FUNCTION CALLING
+  const anexosAcumulados: Anexo[] = [];
+  const dadosRetornadosTools: string[] = [];
+  const fontesRetornadasRastro: DocumentoRastro[] = [];
+  const etapasRastro: EtapaRastro[] = [
+    {
+      ordem: 1,
+      nome: 'Contexto da Conversa',
+      descricao: `Injetadas ${historicoLimitado.length} mensagens anteriores no histórico. Primeiro contato do dia: ${ehPrimeiroContatoDoDia ? 'Sim' : 'Não'}.`,
+      tempoMs: Date.now() - inicioTotal,
+      detalhes: {
+        totalMensagensHistorico: historicoLimitado.length,
+        ehPrimeiroContatoDoDia,
+      },
+    },
+  ];
+
+  let ordemEtapa = 2;
+  let tokensPromptTotal = 0;
+  let tokensCompletionTotal = 0;
+  let tokensGeraisTotal = 0;
+  let respostaTextoFinal = '';
+
+  let ultimoTitularFoco: string | undefined = undefined;
+  try {
+    const todosTits = await obterTodosTitulares();
+    const msgLower = mensagemUsuario.toLowerCase();
+    const tAchado = todosTits.find((t) => t.nome && msgLower.includes(t.nome.toLowerCase()));
+    if (tAchado) {
+      ultimoTitularFoco = tAchado.nome;
+    }
+  } catch {}
+
+  const MAX_VOLTAS = 6;
+  let volta = 0;
+
+  while (volta < MAX_VOLTAS) {
+    volta++;
+    const inicioChamadaIa = Date.now();
+
+    const respostaIa = await chamarChatComTelemetria(
+      openai,
+      {
+        model: chatModel,
+        messages: mensagensOpenAi,
+        tools: TOOLS_ORQUESTRADOR,
+        tool_choice: 'auto',
+        temperature: 0.1,
+      },
+      {
+        motivo: 'chat_orquestrador_central',
+        contatoId: contato.id,
+        contatoNome: contato.nome,
+      }
+    );
+
+    const uso = respostaIa.usage;
+    if (uso) {
+      tokensPromptTotal += uso.prompt_tokens || 0;
+      tokensCompletionTotal += uso.completion_tokens || 0;
+      tokensGeraisTotal += uso.total_tokens || 0;
+    }
+
+    const escolha = respostaIa.choices?.[0];
+    const msgResposta = escolha?.message;
+    if (!msgResposta) break;
+
+    mensagensOpenAi.push(msgResposta);
+
+    if (msgResposta.tool_calls && msgResposta.tool_calls.length > 0) {
+      for (const tCall of msgResposta.tool_calls) {
+        if (tCall.type !== 'function') continue;
+        const nomeTool = tCall.function.name;
+        let args: any = {};
+        try {
+          args = JSON.parse(tCall.function.arguments || '{}');
+        } catch {}
+
+        const inicioTool = Date.now();
+        let resultadoTool: any = null;
+
+        if (nomeTool === 'buscar_documentos') {
+          const titularEfetivo = args.titular || ultimoTitularFoco;
+          resultadoTool = await toolBuscarDocumentos(args.consulta, titularEfetivo, todosDocs);
+          if (resultadoTool.mensagem) {
+            dadosRetornadosTools.push(resultadoTool.mensagem);
+          }
+          if (resultadoTool.documentos && Array.isArray(resultadoTool.documentos)) {
+            for (const doc of resultadoTool.documentos) {
+              dadosRetornadosTools.push(
+                `${doc.nome_documento} ${doc.titular} (documento de ${doc.data_documento || ''}, armazenado em ${doc.data_armazenamento || ''}) ${doc.trecho || ''}`
+              );
+              fontesRetornadasRastro.push({
+                id: doc.doc_id,
+                titulo: doc.nome_documento,
+                similaridade: Number(((doc.score || 0.8) * 100).toFixed(1)),
+                trecho: doc.trecho ? truncarTrecho(doc.trecho, 300) : undefined,
+                usadoNaResposta: true,
+              });
+            }
+          }
+        } else if (nomeTool === 'consultar_ficha_titular') {
+          if (args.nome) {
+            ultimoTitularFoco = args.nome;
+          }
+          resultadoTool = await toolConsultarFichaTitular(args.nome, todosDocs);
+          if (resultadoTool.mensagem) {
+            dadosRetornadosTools.push(resultadoTool.mensagem);
+          }
+          if (resultadoTool.campos) {
+            for (const [campo, obj] of Object.entries<any>(resultadoTool.campos)) {
+              let infoCampo = `${campo}: ${obj.valor} (origem: ${obj.origemNome})`;
+              if (obj.confirmadoPor) {
+                infoCampo += ` (confirmado por ${obj.confirmadoPor} em ${obj.dataConfirmacao || obj.dataConferencia})`;
+              }
+              if (obj.documentoPosteriorNoCofre) {
+                infoCampo += ` (documento posterior no Cofre: ${obj.documentoPosteriorNoCofre.nome_documento} - ${obj.documentoPosteriorNoCofre.trecho || ''} - ${obj.documentoPosteriorNoCofre.instrucaoObrigatoria})`;
+                fontesRetornadasRastro.push({
+                  id: obj.documentoPosteriorNoCofre.doc_id,
+                  titulo: obj.documentoPosteriorNoCofre.nome_documento,
+                  similaridade: 100,
+                  trecho: obj.documentoPosteriorNoCofre.trecho,
+                  usadoNaResposta: true,
+                });
+              }
+              dadosRetornadosTools.push(infoCampo);
+              if (obj.origemId) {
+                fontesRetornadasRastro.push({
+                  id: obj.origemId,
+                  titulo: obj.origemNome,
+                  similaridade: 100,
+                  usadoNaResposta: true,
+                });
+              }
+            }
+          }
+        } else if (nomeTool === 'confirmar_versao_dado') {
+          const titularEfetivo = args.titular || ultimoTitularFoco || '';
+          resultadoTool = await toolConfirmarVersaoDado({
+            titular: titularEfetivo,
+            campo: args.campo || 'endereco',
+            valor_escolhido: args.valor_escolhido || '',
+            doc_id_origem: args.doc_id_origem,
+            nome_documento_origem: args.nome_documento_origem,
+            usuarioNome: contato.nome,
+            todosDocs,
+          });
+          if (resultadoTool.sucesso) {
+            dadosRetornadosTools.push(
+              `${resultadoTool.mensagem} ${resultadoTool.valorSalvo || ''} ${resultadoTool.documentoOrigem || ''}`
+            );
+            if (resultadoTool.documentoOrigem) {
+              fontesRetornadasRastro.push({
+                id: args.doc_id_origem || 'confirmacao_chat',
+                titulo: resultadoTool.documentoOrigem,
+                similaridade: 100,
+                usadoNaResposta: true,
+              });
+            }
+          }
+        } else if (nomeTool === 'listar_documentos_titular') {
+          const titularEfetivo = args.titular || ultimoTitularFoco;
+          resultadoTool = await toolListarDocumentosTitular(titularEfetivo, todosDocs);
+          if (resultadoTool.documentos) {
+            for (const doc of resultadoTool.documentos) {
+              dadosRetornadosTools.push(`${doc.nome_documento} (${doc.tipo || ''})`);
+              fontesRetornadasRastro.push({
+                id: doc.doc_id,
+                titulo: doc.nome_documento,
+                similaridade: 100,
+                usadoNaResposta: true,
+              });
+            }
+          }
+        } else if (nomeTool === 'enviar_documento') {
+          resultadoTool = await toolEnviarDocumento(args.doc_id, todosDocs, anexosAcumulados);
+          if (resultadoTool.doc_id) {
+            fontesRetornadasRastro.push({
+              id: resultadoTool.doc_id,
+              titulo: resultadoTool.nome_documento || 'Documento Oficial',
+              similaridade: 100,
+              usadoNaResposta: true,
+            });
+          }
+        } else if (nomeTool === 'gerar_pdf') {
+          resultadoTool = await toolGerarPdf(args.titulo, args.conteudo_markdown, anexosAcumulados);
+        } else if (nomeTool === 'buscar_conhecimento') {
+          resultadoTool = await toolBuscarConhecimento(args.termo, args.categoria);
+          if (resultadoTool.itens) {
+            for (const it of resultadoTool.itens) {
+              dadosRetornadosTools.push(`${it.titulo}: ${it.conteudo}`);
+            }
+          }
+        } else {
+          resultadoTool = { erro: `Tool "${nomeTool}" desconhecida.` };
+        }
+
+        const tempoTool = Date.now() - inicioTool;
+        etapasRastro.push({
+          ordem: ordemEtapa++,
+          nome: `Tool: ${nomeTool}`,
+          descricao: `Executada ferramenta "${nomeTool}" (${tempoTool}ms).`,
+          tempoMs: tempoTool,
+          detalhes: {
+            argumentos: args,
+            resultado: resultadoTool,
+          },
+        });
+
+        mensagensOpenAi.push({
+          role: 'tool',
+          tool_call_id: tCall.id,
+          content: JSON.stringify(resultadoTool),
+        });
+      }
+    } else {
+      respostaTextoFinal = msgResposta.content || '';
+      break;
+    }
+  }
+
+  // 6. REDE DE SEGURANÇA NO CÓDIGO (Item 4)
+  const checagemSeguranca = verificarSegurancaDadosPessoais({
+    textoResposta: respostaTextoFinal,
+    dadosRetornadosTools,
+    historicoMensagens: historicoLimitado,
+    mensagemUsuarioAtual: mensagemUsuario,
+  });
+
+  if (!checagemSeguranca.aprovado) {
+    console.warn(`[VEGA Segurança 🛡️] Bloqueio anti-invenção ativado: ${checagemSeguranca.motivo}`);
+    respostaTextoFinal = 'Não encontrei essa informação nos documentos.';
+    etapasRastro.push({
+      ordem: ordemEtapa++,
+      nome: 'Rede de Segurança Anti-Invenção (Item 4)',
+      descricao: `Bloqueado envio de dado sem comprovação em tools: ${checagemSeguranca.motivo}`,
+      tempoMs: 1,
+      detalhes: {
+        bloqueado: true,
+        motivo: checagemSeguranca.motivo,
+        dadoSuspeito: checagemSeguranca.dadoSuspeito,
+      },
+    });
+  } else {
+    etapasRastro.push({
+      ordem: ordemEtapa++,
+      nome: 'Rede de Segurança Anti-Invenção (Item 4)',
+      descricao: 'Verificação concluída: todos os dados citados possuem respaldo comprovado.',
+      tempoMs: 1,
+      detalhes: { aprovado: true },
+    });
+  }
+
+  // 7. SANITIZAÇÃO RIGOROSA DO TEXTO FINAL
+  const textoLimpoFinal = sanitizarRespostaTextoFinal(respostaTextoFinal);
+  const tempoTotalMs = Date.now() - inicioTotal;
+  const custoEstimadoUsd = calcularCustoEstimado(chatModel, tokensPromptTotal, tokensCompletionTotal);
+
+  // 8. RASTRO COMPLETO (Item 5)
+  const rastro: RastroRegistro = {
+    mensagemId: '',
+    usuarioNome: contato.nome,
+    usuarioId: contato.id,
+    mensagemOriginal: mensagemUsuario,
+    perguntaReescrita: mensagemUsuario,
+    intencaoDetectada: 'ia_central',
+    tipoBusca: 'function_calling_ia',
+    documentosEncontrados: fontesRetornadasRastro,
+    enviouAnexo: anexosAcumulados.length > 0,
+    anexosDetalhes: anexosAcumulados.map((a) => ({
+      nome: a.nome,
+      titulo: a.titulo,
+      tamanho: a.tamanho,
+      tipo: a.tipo,
+    })),
+    respostaFinal: mascararDadosSensiveis(textoLimpoFinal),
+    modeloUsado: chatModel,
+    tokensTotal: tokensGeraisTotal,
+    tokensPrompt: tokensPromptTotal,
+    tokensCompletion: tokensCompletionTotal,
+    custoEstimadoUsd,
+    tempoTotalMs,
+    etapas: etapasRastro,
+  };
+
+  try {
+    salvarRastro(rastro).catch(() => {});
+  } catch {}
+
+  return {
+    textoResposta: textoLimpoFinal,
+    anexos: anexosAcumulados.length > 0 ? anexosAcumulados : undefined,
+    origem: 'ia',
+    intencaoDetectada: 'pergunta_conteudo',
+    perguntaReescrita: mensagemUsuario,
+    rastro,
+  };
+}
+
+/**
  * 4. ORQUESTRADOR PRINCIPAL DO CHAT COM RASTRO DE RACIOCÍNIO E SANITIZAÇÃO RIGOROSA
  */
 export async function processarMensagemChat(dados: {
@@ -6810,7 +8232,7 @@ export async function processarMensagemChat(dados: {
   // 2. EXECUÇÃO PROTEGIDA CONTRA FALHAS TÉCNICAS INESPERADAS
   let resultado: ResultadoChatOrquestrador;
   try {
-    resultado = await executarProcessamentoMensagemChatInterno(dados);
+    resultado = await executarOrquestradorIaCentral(dados);
   } catch (erroFatal: any) {
     const msgErro = erroFatal?.message || String(erroFatal);
     console.error('[VEGA Chat ❌] Falha técnica durante processamento da mensagem:', erroFatal);
