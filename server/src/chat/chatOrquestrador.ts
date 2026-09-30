@@ -2585,14 +2585,30 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'listar_documentos_cofre',
+      description: 'Devolve um panorama geral e resumido do acervo do Cofre Delta: total de documentos cadastrados, agrupados por titular (incluindo "Documentos da Empresa (Delta Plan)"), com a contagem e os tipos principais de cada grupo. Use SEMPRE que o usuário fizer perguntas gerais ou amplas sobre o catálogo ou acervo (ex.: "liste todos os documentos", "o que tem no cofre?", "quais documentos você tem acesso?", "o que você tem arquivado?", "quais documentos existem?"). NUNCA use o nome do remetente como titular para perguntas gerais. Opcionalmente aceita filtro por tipo de documento.',
+      parameters: {
+        type: 'object',
+        properties: {
+          filtro_tipo: {
+            type: 'string',
+            description: 'Filtro opcional por tipo de documento (ex: "Contrato", "CNH", "Certidão", "ART")',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'listar_documentos_titular',
-      description: 'Lista todos os documentos oficiais salvos no Cofre pertencentes a um titular específico.',
+      description: 'Lista todos os documentos oficiais salvos no Cofre pertencentes a um titular específico. Use quando o usuário perguntar expressamente sobre os documentos de uma pessoa específica (ex: "quais documentos o Thomaz tem?") OU quando usar primeira pessoa para os seus próprios documentos (ex: "quais são os meus documentos?", "o que você tem sobre mim?"). NUNCA use para perguntas gerais sobre o acervo do Cofre.',
       parameters: {
         type: 'object',
         properties: {
           titular: {
             type: 'string',
-            description: 'Nome do titular cadastrado (ex: "Thomaz")',
+            description: 'Nome do titular cadastrado (ex: "Thomaz") ou nome do próprio contato caso ele peça "meus documentos"',
           },
         },
         required: ['titular'],
@@ -2655,6 +2671,30 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
           },
         },
         required: ['termo'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ler_documento_completo',
+      description: 'Retorna a íntegra de TODOS os trechos/conteúdo de um documento do Cofre em ordem sequencial. Use OBRIGATORIAMENTE quando o usuário solicitar varreduras completas ou listar TODOS os itens de um tipo dentro de um documento (ex: "quais contas bancárias aparecem no IR", "todos os bens", "todos os dependentes", "quantos imóveis"), para evitar que a resposta fique incompleta por trazer apenas trechos parciais.',
+      parameters: {
+        type: 'object',
+        properties: {
+          doc_id: {
+            type: 'string',
+            description: 'ID interno do documento no Cofre (UUID) ou identificador obtido via buscar_documentos ou listar_documentos_titular',
+          },
+          termo_documento: {
+            type: 'string',
+            description: 'Nome, título ou tipo do documento caso o doc_id exato ainda não seja conhecido (ex: "IR Thomaz", "Declaração de Ajuste Anual")',
+          },
+          titular: {
+            type: 'string',
+            description: 'Nome do titular do documento (opcional)',
+          },
+        },
       },
     },
   },
@@ -3251,6 +3291,11 @@ export async function toolBuscarDocumentos(
   }
 
   let titularNorm = (titularNome || '').toLowerCase().trim();
+  // Normalização fonética / transcrição de nomes conhecidos (ex: "Danil Ceia", "Danilceia", "nil ceia" -> "nilceia")
+  if (/^danil\s*ceia$/i.test(titularNorm) || /^nil\s*ceia$/i.test(titularNorm) || titularNorm === 'danilceia') {
+    titularNorm = 'nilceia';
+  }
+
   let titObj: FichaTitular | null = null;
   const todosTits = await obterTodosTitulares();
 
@@ -3262,8 +3307,20 @@ export async function toolBuscarDocumentos(
     titObj = todosTits.find((t) => t.nome && cLower.includes(t.nome.toLowerCase())) || null;
     if (titObj) {
       titularNorm = titObj.nome.toLowerCase();
+    } else {
+      // Se não encontrou titular cadastrado, checa se há menção a pessoa não cadastrada na consulta
+      const matchPessoa = /(?:d[oa]\s+|de\s+)(danil\s*ceia|danilceia|nilceia(?:\s+[a-zà-öø-ÿ]+)*|[a-zà-öø-ÿ]{3,}(?:\s+[a-zà-öø-ÿ]{3,})*)/i.exec(consulta);
+      if (matchPessoa && matchPessoa[1]) {
+        const extraido = matchPessoa[1].toLowerCase().trim();
+        const palavrasIgnoradas = ['empresa', 'documento', 'sistema', 'pasta', 'cofre', 'arquivo', 'ano', 'mes'];
+        if (!palavrasIgnoradas.includes(extraido)) {
+          titularNorm = extraido === 'danilceia' || extraido === 'danil ceia' ? 'nilceia' : extraido;
+        }
+      }
     }
   }
+
+  const ehPessoaNaoCadastrada = Boolean(titularNorm && !titObj);
 
   const ehBuscaEndereco = /(?:endere[cç]|residen|mora|casa|bairro|rua|logradouro|onde ele mora|onde ela mora)/i.test(consulta);
   if (titularNorm && ehBuscaEndereco) {
@@ -3508,60 +3565,154 @@ export async function toolBuscarDocumentos(
     valor?: string;
   }> = [];
 
-  for (const d of todosDocs) {
-    if (titularNorm && !titularCorresponde(d.titular, titularNorm)) {
-      continue;
+  const primeiroNomePessoa = titularNorm ? (extrairPrimeiroNome(titularNorm) || titularNorm).toLowerCase() : '';
+  const termoSemAcento = titularNorm ? titularNorm.normalize('NFD').replace(/[\u0300-\u036f]/g, '') : '';
+  const primeiroNomeSemAcento = primeiroNomePessoa.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  if (ehPessoaNaoCadastrada) {
+    // =============================================================
+    // CASO ESPECIAL: PESSOA SEM CADASTRO DE TITULAR
+    // A busca continua em todo o Cofre: títulos, nomes de arquivos,
+    // descrições, metadados e trechos de todos os documentos.
+    // =============================================================
+    for (const d of todosDocs) {
+      const titDocNorm = (d.titulo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const arqDocNorm = (d.arquivo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const descDocNorm = (d.descricao || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const donoProvavelNorm = ((d.metadata?.donoProvavel || d.metadata?.nomeNoDocumento || d.metadata?.donoDocumento || '') as string)
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+
+      const coincidePessoa =
+        (termoSemAcento.length >= 3 && (titDocNorm.includes(termoSemAcento) || arqDocNorm.includes(termoSemAcento) || descDocNorm.includes(termoSemAcento) || donoProvavelNorm.includes(termoSemAcento))) ||
+        (primeiroNomeSemAcento.length >= 3 && (titDocNorm.includes(primeiroNomeSemAcento) || arqDocNorm.includes(primeiroNomeSemAcento) || descDocNorm.includes(primeiroNomeSemAcento) || donoProvavelNorm.includes(primeiroNomeSemAcento))) ||
+        // Caso específico de nomes com abreviação no arquivo (ex.: "CNH ONLINE NIL.pdf" para Nilceia)
+        (primeiroNomeSemAcento === 'nilceia' && (arqDocNorm.includes('nil') || titDocNorm.includes('nil')));
+
+      if (coincidePessoa) {
+        const dataEmissao = extrairDataEmissaoDocumento(d, [d.descricao || '']);
+        resultados.push({
+          doc_id: d.id,
+          nome_documento: d.titulo,
+          titular: d.titular || 'Delta Plan',
+          data_documento: dataEmissao || 'data do documento não identificada',
+          data_armazenamento: formatarDataParaExibicao(d.dataCadastro),
+          score: 1.0,
+          trecho: d.descricao || `Documento ${d.tipo || 'oficial'} arquivado no Cofre`,
+        });
+      }
     }
-    const tituloNorm = (d.titulo || '').toLowerCase();
-    const tipoNorm = (d.tipo || '').toLowerCase();
-    const descNorm = (d.descricao || '').toLowerCase();
-    const apelidosNorm = (d.apelidos || []).map((a) => a.toLowerCase()).join(' ');
 
-    const coincide =
-      termoNorm === '' ||
-      termoNorm === 'todos' ||
-      tituloNorm.includes(termoNorm) ||
-      tipoNorm.includes(termoNorm) ||
-      descNorm.includes(termoNorm) ||
-      apelidosNorm.includes(termoNorm) ||
-      termoNorm.includes(tituloNorm) ||
-      termoNorm.includes(tipoNorm);
-
-    if (coincide) {
-      const dataEmissao = extrairDataEmissaoDocumento(d, [d.descricao || '']);
-      resultados.push({
-        doc_id: d.id,
-        nome_documento: d.titulo,
-        titular: d.titular || 'Não especificado',
-        data_documento: dataEmissao || 'data do documento não identificada',
-        data_armazenamento: formatarDataParaExibicao(d.dataCadastro),
-        score: 1.0,
-        trecho: d.descricao || `Documento ${d.tipo || 'oficial'} arquivado no Cofre`,
-      });
+    // Busca direta na tabela trechos do Supabase por ocorrência do nome em todo o Cofre
+    try {
+      const trechosPessoa = await buscarTrechosPorNomePessoaNoCofre(titularNorm, consulta, todosDocs);
+      for (const tp of trechosPessoa) {
+        const doc = todosDocs.find((d) => d.id === tp.documento_id);
+        const titulo = tp.titulo_documento || doc?.titulo || 'Documento do Cofre';
+        const dataEmissao = doc ? extrairDataEmissaoDocumento(doc, [tp.conteudo]) : null;
+        resultados.push({
+          doc_id: tp.documento_id,
+          nome_documento: titulo,
+          titular: doc?.titular || 'Delta Plan',
+          data_documento: dataEmissao || 'data do documento não identificada',
+          data_armazenamento: formatarDataParaExibicao(doc?.dataCadastro),
+          score: 1.0,
+          trecho: tp.conteudo,
+        });
+      }
+    } catch (errPessoa) {
+      console.warn('[VEGA Tools] Falha ao buscar trechos por nome de pessoa não cadastrada:', errPessoa);
     }
-  }
 
-  try {
-    const trechosVetoriais = await executarBuscaVetorial(consulta, titObj?.id || null, 8);
-    for (const tv of trechosVetoriais) {
-      const doc = todosDocs.find((d) => d.id === tv.documento_id);
-      if (titularNorm && (!doc || !titularCorresponde(doc.titular, titularNorm))) {
+    // Busca vetorial ampla sem filtro de titular (p_pessoa_id: null)
+    try {
+      const termoBuscaVetorial = `${titularNome || titularNorm} ${consulta}`.trim();
+      const trechosVetoriais = await executarBuscaVetorial(termoBuscaVetorial, null, 8);
+      for (const tv of trechosVetoriais) {
+        const doc = todosDocs.find((d) => d.id === tv.documento_id);
+        const conteudoNorm = tv.conteudo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const contemNome =
+          (termoSemAcento.length >= 3 && conteudoNorm.includes(termoSemAcento)) ||
+          (primeiroNomeSemAcento.length >= 3 && conteudoNorm.includes(primeiroNomeSemAcento)) ||
+          resultados.some((r) => r.doc_id === tv.documento_id);
+
+        if (contemNome) {
+          const titulo = tv.titulo_documento || doc?.titulo || 'Documento do Cofre';
+          const dataEmissao = doc ? extrairDataEmissaoDocumento(doc, [tv.conteudo]) : null;
+          resultados.push({
+            doc_id: tv.documento_id,
+            nome_documento: titulo,
+            titular: doc?.titular || 'Delta Plan',
+            data_documento: dataEmissao || 'data do documento não identificada',
+            data_armazenamento: formatarDataParaExibicao(doc?.dataCadastro),
+            score: Number(Number(tv.similaridade ?? 0.85).toFixed(2)),
+            trecho: tv.conteudo,
+          });
+        }
+      }
+    } catch (errVet) {
+      console.warn('[VEGA Tools] Falha na busca vetorial de pessoa não cadastrada:', errVet);
+    }
+  } else {
+    // -------------------------------------------------------------
+    // BUSCA CONVENCIONAL (com titular cadastrado ou busca geral)
+    // -------------------------------------------------------------
+    for (const d of todosDocs) {
+      if (titularNorm && !titularCorresponde(d.titular, titularNorm)) {
         continue;
       }
-      const titulo = tv.titulo_documento || doc?.titulo || 'Documento do Cofre';
-      const dataEmissao = doc ? extrairDataEmissaoDocumento(doc, [tv.conteudo]) : null;
-      resultados.push({
-        doc_id: tv.documento_id,
-        nome_documento: titulo,
-        titular: doc?.titular || 'Não especificado',
-        data_documento: dataEmissao || 'data do documento não identificada',
-        data_armazenamento: formatarDataParaExibicao(doc?.dataCadastro),
-        score: Number((tv.similaridade || 0.8).toFixed(2)),
-        trecho: tv.conteudo,
-      });
+      const tituloNorm = (d.titulo || '').toLowerCase();
+      const tipoNorm = (d.tipo || '').toLowerCase();
+      const descNorm = (d.descricao || '').toLowerCase();
+      const apelidosNorm = (d.apelidos || []).map((a) => a.toLowerCase()).join(' ');
+
+      const coincide =
+        termoNorm === '' ||
+        termoNorm === 'todos' ||
+        tituloNorm.includes(termoNorm) ||
+        tipoNorm.includes(termoNorm) ||
+        descNorm.includes(termoNorm) ||
+        apelidosNorm.includes(termoNorm) ||
+        termoNorm.includes(tituloNorm) ||
+        termoNorm.includes(tipoNorm);
+
+      if (coincide) {
+        const dataEmissao = extrairDataEmissaoDocumento(d, [d.descricao || '']);
+        resultados.push({
+          doc_id: d.id,
+          nome_documento: d.titulo,
+          titular: d.titular || 'Não especificado',
+          data_documento: dataEmissao || 'data do documento não identificada',
+          data_armazenamento: formatarDataParaExibicao(d.dataCadastro),
+          score: 1.0,
+          trecho: d.descricao || `Documento ${d.tipo || 'oficial'} arquivado no Cofre`,
+        });
+      }
     }
-  } catch (err) {
-    console.warn('[VEGA Tools] Falha na busca vetorial:', err);
+
+    try {
+      const trechosVetoriais = await executarBuscaVetorial(consulta, titObj?.id || null, 8);
+      for (const tv of trechosVetoriais) {
+        const doc = todosDocs.find((d) => d.id === tv.documento_id);
+        if (titularNorm && (!doc || !titularCorresponde(doc.titular, titularNorm))) {
+          continue;
+        }
+        const titulo = tv.titulo_documento || doc?.titulo || 'Documento do Cofre';
+        const dataEmissao = doc ? extrairDataEmissaoDocumento(doc, [tv.conteudo]) : null;
+        resultados.push({
+          doc_id: tv.documento_id,
+          nome_documento: titulo,
+          titular: doc?.titular || 'Não especificado',
+          data_documento: dataEmissao || 'data do documento não identificada',
+          data_armazenamento: formatarDataParaExibicao(doc?.dataCadastro),
+          score: Number((tv.similaridade || 0.8).toFixed(2)),
+          trecho: tv.conteudo,
+        });
+      }
+    } catch (err) {
+      console.warn('[VEGA Tools] Falha na busca vetorial:', err);
+    }
   }
 
   const vistos = new Set<string>();
@@ -3572,9 +3723,29 @@ export async function toolBuscarDocumentos(
     return true;
   });
 
+  let orientacaoResposta: string | undefined;
+  let mensagemRetorno: string | undefined;
+
+  if (ehPessoaNaoCadastrada) {
+    if (filtrados.length > 0) {
+      const primeiroDoc = filtrados[0];
+      const nomeExibicao = titularNome || titularNorm;
+      orientacaoResposta =
+        `ATENÇÃO: A pessoa "${nomeExibicao}" NÃO consta cadastrada como titular oficial na tabela de titulares, mas foi localizada no documento "${primeiroDoc.nome_documento}" (${primeiroDoc.doc_id}), que está arquivado sob o titular "${primeiroDoc.titular}". ` +
+        `Responda com o dado solicitado citando expressamente este documento (ex: "Na CNH da ${nomeExibicao}, arquivada junto aos documentos da ${primeiroDoc.titular}, o CPF é...") ` +
+        `e sugira ao usuário cadastrá-la oficialmente como titular no sistema.`;
+      mensagemRetorno = orientacaoResposta;
+    } else {
+      mensagemRetorno = `Não encontrei informações ou documentos de "${titularNome || titularNorm}" no Cofre.`;
+    }
+  } else if (filtrados.length === 0) {
+    mensagemRetorno = 'Nenhum documento encontrado no Cofre para a consulta informada.';
+  }
+
   return {
-    documentos: filtrados.slice(0, 6),
-    mensagem: filtrados.length === 0 ? 'Nenhum documento encontrado no Cofre para a consulta informada.' : undefined,
+    documentos: filtrados.slice(0, 8),
+    orientacao_resposta: orientacaoResposta,
+    mensagem: mensagemRetorno,
   };
 }
 
@@ -3819,6 +3990,98 @@ async function toolConfirmarVersaoDado(params: {
 }
 
 /**
+ * Tool 2.5: listar_documentos_cofre(filtro_tipo?)
+ * Retorna o panorama geral do Cofre agrupado por titular com contagem e tipos principais.
+ */
+export async function toolListarDocumentosCofre(
+  filtroTipo?: string,
+  todosDocs: DocumentoRegistro[] = []
+): Promise<{
+  total_documentos: number;
+  total_titulares: number;
+  filtro_aplicado?: string | null;
+  grupos: Array<{
+    titular: string;
+    total: number;
+    tipos: string[];
+    resumo_tipos: string;
+    exemplos_documentos: string[];
+  }>;
+  instrucao_apresentacao: string;
+}> {
+  let docs = todosDocs && todosDocs.length > 0 ? todosDocs : await obterTodosDocumentos();
+
+  // Filtro opcional por tipo
+  if (filtroTipo && filtroTipo.trim()) {
+    const filtroNorm = filtroTipo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    docs = docs.filter((d) => {
+      const tipoNorm = (d.tipo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const titNorm = (d.titulo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return tipoNorm.includes(filtroNorm) || titNorm.includes(filtroNorm);
+    });
+  }
+
+  // Agrupamento por titular
+  const mapaTitulares = new Map<string, DocumentoRegistro[]>();
+
+  for (const d of docs) {
+    let chaveTitular = (d.titular || '').trim();
+    if (!chaveTitular || chaveTitular.toLowerCase() === 'delta plan' || chaveTitular.toLowerCase().includes('delta') || d.metadata?.corporativo) {
+      chaveTitular = 'Documentos da Empresa (Delta Plan)';
+    }
+    const lista = mapaTitulares.get(chaveTitular) || [];
+    lista.push(d);
+    mapaTitulares.set(chaveTitular, lista);
+  }
+
+  const grupos: Array<{
+    titular: string;
+    total: number;
+    tipos: string[];
+    resumo_tipos: string;
+    exemplos_documentos: string[];
+  }> = [];
+
+  for (const [titular, listaDocs] of mapaTitulares.entries()) {
+    const tiposMap = new Map<string, number>();
+    for (const d of listaDocs) {
+      const tipoReal = (d.tipo || 'Outros').trim();
+      tiposMap.set(tipoReal, (tiposMap.get(tipoReal) || 0) + 1);
+    }
+    const tipos = Array.from(tiposMap.keys());
+    const resumoTipos = Array.from(tiposMap.entries())
+      .map(([tipo, qtd]) => (qtd > 1 ? `${tipo} (${qtd})` : tipo))
+      .join(', ');
+
+    const exemplosDocumentos = listaDocs.slice(0, 3).map((d) => d.titulo);
+
+    grupos.push({
+      titular,
+      total: listaDocs.length,
+      tipos,
+      resumo_tipos: resumoTipos,
+      exemplos_documentos: exemplosDocumentos,
+    });
+  }
+
+  // Ordenar: Documentos da Empresa primeiro, depois os titulares por maior volume
+  grupos.sort((a, b) => {
+    if (a.titular.includes('Empresa')) return -1;
+    if (b.titular.includes('Empresa')) return 1;
+    return b.total - a.total;
+  });
+
+  return {
+    total_documentos: docs.length,
+    total_titulares: grupos.length,
+    filtro_aplicado: filtroTipo || null,
+    grupos,
+    instrucao_apresentacao:
+      'Apresente um resumo curto e elegante por titular, indicando a contagem de documentos e os principais tipos. Ao final, ofereça para detalhar qualquer titular que o usuário escolher. NUNCA despeje a lista completa de todos os arquivos no WhatsApp.',
+  };
+}
+
+/**
  * Tool 3: listar_documentos_titular(titular)
  */
 async function toolListarDocumentosTitular(
@@ -3993,6 +4256,116 @@ async function toolBuscarConhecimento(
 }
 
 /**
+ * Tool 7: ler_documento_completo(doc_id?, termo_documento?, titular?)
+ * Retorna todos os trechos do documento em ordem sequencial para perguntas
+ * que exigem varredura completa de itens (contas, bens, dependentes, etc.)
+ */
+export async function toolLerDocumentoCompleto(params: {
+  docId?: string;
+  termoDocumento?: string;
+  titular?: string;
+  todosDocs: DocumentoRegistro[];
+}): Promise<{
+  sucesso: boolean;
+  doc_id?: string;
+  titulo?: string;
+  titular?: string;
+  total_trechos?: number;
+  conteudo_completo?: string;
+  aviso?: string;
+  erro?: string;
+}> {
+  const { docId, termoDocumento, titular: titularNome, todosDocs } = params;
+  let docs = todosDocs && todosDocs.length > 0 ? todosDocs : await obterTodosDocumentos();
+
+  let doc: DocumentoRegistro | undefined;
+
+  // 1. Busca por ID direto
+  if (docId) {
+    const idLimpo = docId.trim();
+    doc = docs.find((d) => d.id === idLimpo || d.metadata?.id_legado === idLimpo);
+  }
+
+  // 2. Busca por termo ou nome do documento
+  if (!doc && (termoDocumento || titularNome)) {
+    const termo = (termoDocumento || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const tit = (titularNome || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+    // Filtra por titular se informado
+    let candidatos = docs;
+    if (tit) {
+      candidatos = docs.filter((d) => titularCorresponde(d.titular, tit));
+    }
+
+    if (termo) {
+      doc = candidatos.find((d) => {
+        const titDoc = d.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const tipoDoc = (d.tipo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const arqDoc = (d.arquivo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        return titDoc.includes(termo) || tipoDoc.includes(termo) || arqDoc.includes(termo) || termo.includes(titDoc);
+      });
+    }
+
+    if (!doc && candidatos.length === 1) {
+      doc = candidatos[0];
+    }
+  }
+
+  if (!doc) {
+    return {
+      sucesso: false,
+      erro: `Documento "${termoDocumento || docId}" não foi encontrado no Cofre. Tente primeiro buscar_documentos ou listar_documentos_titular.`,
+    };
+  }
+
+  // 3. Busca todos os trechos do documento no Supabase ordenados por página
+  const supabase = getSupabaseClient();
+  const { data: trechos, error } = await supabase
+    .from('trechos')
+    .select('id, pagina, conteudo')
+    .eq('documento_id', doc.id)
+    .order('pagina', { ascending: true });
+
+  if (error) {
+    console.error('[VEGA Tools] Erro ao buscar trechos completos do documento:', error.message);
+    return {
+      sucesso: false,
+      doc_id: doc.id,
+      titulo: doc.titulo,
+      titular: doc.titular,
+      erro: `Erro ao consultar o banco de dados: ${error.message}`,
+    };
+  }
+
+  const listaTrechos = trechos || [];
+  if (listaTrechos.length === 0) {
+    const conteudoDesc = doc.descricao || `Documento ${doc.titulo} arquivado no Cofre, sem texto indexado em trechos.`;
+    return {
+      sucesso: true,
+      doc_id: doc.id,
+      titulo: doc.titulo,
+      titular: doc.titular,
+      total_trechos: 0,
+      conteudo_completo: conteudoDesc,
+      aviso: 'O documento não possui trechos fragmentados indexados. Exibindo descrição arquivada.',
+    };
+  }
+
+  const conteudoUnificado = listaTrechos
+    .map((t, idx) => `[Página ${t.pagina || 1} | Trecho ${idx + 1}]\n${t.conteudo}`)
+    .join('\n\n');
+
+  return {
+    sucesso: true,
+    doc_id: doc.id,
+    titulo: doc.titulo,
+    titular: doc.titular,
+    total_trechos: listaTrechos.length,
+    conteudo_completo: conteudoUnificado,
+  };
+}
+
+/**
  * Extrai as opções da última lista numerada de opções enviada pelo assistente no histórico.
  * Suporta leitura estruturada de m.opcoes e fallback por regex em m.texto.
  */
@@ -4124,7 +4497,8 @@ export async function executarOrquestradorIaCentral(dados: {
   documentoIdDireto?: string;
 }): Promise<ResultadoChatOrquestrador> {
   const inicioTotal = Date.now();
-  const { mensagemUsuario, historicoRecente, documentoIdDireto } = dados;
+  const mensagemUsuario = dados.mensagemUsuario || (dados as any).mensagem || '';
+  const { historicoRecente, documentoIdDireto } = dados;
   const contato = dados.contato || { id: 'anonimo', nome: '', telefone: '', canal: 'whatsapp' as const };
   const primeiroNome = extrairPrimeiroNome(contato?.nome || '');
   const vocativo = primeiroNome ? `, ${primeiroNome}` : '';
@@ -4253,6 +4627,11 @@ Cargo: ${contato.cargo || 'Colaborador'}
 Setor: ${contato.setor || 'Geral'}
 Nível de Acesso: ${contato.nivelAcesso || 'geral'}
 </contato_atual>
+
+DIRETRIZ MANDATÓRIA SOBRE O CONTATO:
+- O contato acima é a pessoa com quem você está interagindo no WhatsApp.
+- NUNCA assuma que o remetente é o titular em pedidos gerais de listagem do acervo (ex.: "liste todos os documentos", "o que tem no cofre?", "quais documentos você tem acesso?", "o que você tem arquivado?"). Para pedidos gerais, use OBRIGATORIAMENTE a ferramenta listar_documentos_cofre.
+- Use o nome do contato como titular em listar_documentos_titular SOMENTE se ele disser expressamente "meus documentos", "documentos em meu nome", "o que você tem sobre mim".
 
 <status_saudacao>
 ${statusSaudacao}
@@ -4455,6 +4834,22 @@ ${statusSaudacao}
               });
             }
           }
+        } else if (nomeTool === 'listar_documentos_cofre') {
+          resultadoTool = await toolListarDocumentosCofre(args.filtro_tipo, todosDocs);
+          dadosRetornadosTools.push(
+            `Resumo Geral do Cofre: ${resultadoTool.total_documentos} documentos em ${resultadoTool.total_titulares} grupos de titulares.`
+          );
+          if (resultadoTool.grupos) {
+            for (const g of resultadoTool.grupos) {
+              dadosRetornadosTools.push(`- ${g.titular}: ${g.total} documentos (${g.resumo_tipos})`);
+              fontesRetornadasRastro.push({
+                id: `titular_${g.titular}`,
+                titulo: `${g.titular} (${g.total} documentos)`,
+                similaridade: 100,
+                usadoNaResposta: true,
+              });
+            }
+          }
         } else if (nomeTool === 'listar_documentos_titular') {
           const titularEfetivo = args.titular || ultimoTitularFoco;
           resultadoTool = await toolListarDocumentosTitular(titularEfetivo, todosDocs);
@@ -4496,6 +4891,25 @@ ${statusSaudacao}
           if (resultadoTool.itens) {
             for (const it of resultadoTool.itens) {
               dadosRetornadosTools.push(`${it.titulo}: ${it.conteudo}`);
+            }
+          }
+        } else if (nomeTool === 'ler_documento_completo') {
+          const titularEfetivo = args.titular || ultimoTitularFoco;
+          resultadoTool = await toolLerDocumentoCompleto({
+            docId: args.doc_id,
+            termoDocumento: args.termo_documento,
+            titular: titularEfetivo,
+            todosDocs,
+          });
+          if (resultadoTool.conteudo_completo) {
+            dadosRetornadosTools.push(resultadoTool.conteudo_completo);
+            if (resultadoTool.doc_id) {
+              fontesRetornadasRastro.push({
+                id: resultadoTool.doc_id,
+                titulo: resultadoTool.titulo || 'Documento Completo',
+                similaridade: 100,
+                usadoNaResposta: true,
+              });
             }
           }
         } else {

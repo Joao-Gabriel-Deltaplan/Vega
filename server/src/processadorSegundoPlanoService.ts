@@ -21,6 +21,7 @@ import {
   obterTodosTitulares,
   resolverTitularCadastrado,
 } from './storage.js';
+import { titularCorresponde } from './busca/motor.js';
 import { Mensagem } from './types.js';
 import { marcarDocumentoFaltanteComoProvidenciado } from './documentosFaltantesService.js';
 import { eventosPainel } from './eventos/eventosService.js';
@@ -31,6 +32,22 @@ import { registrarAviso } from './avisos/avisosFalhaService.js';
 
 export const MENSAGEM_PDF_PROTEGIDO_SENHA =
   'Esse PDF está protegido por senha, então não consegui ler o conteúdo. O arquivo continua salvo no Cofre e pode ser aberto e enviado normalmente, mas não vou conseguir responder perguntas sobre o que está escrito nele.';
+
+export const REGEX_DOCUMENTO_PESSOAL =
+  /\b(cnh|carteira\s+nacional\s+de\s+habilita[cç][aã]o|habilita[cç][aã]o|rg|carteira\s+de\s+identidade|identidade|cpf|ctps|carteira\s+de\s+trabalho|carteira\s+digital|certid[aã]o\s+de\s+nascimento|certid[aã]o\s+de\s+casamento|certid[aã]o\s+de\s+[oó]bito|imposto\s+de\s+renda|irpf|dirpf|declara[cç][aã]o\s+de\s+ajuste\s+anual|t[ií]tulo\s+de\s+eleitor|t[ií]tulo\s+eleitoral|reservista|dispensa\s+militar|passaporte)\b/i;
+
+export const REGEX_TITULAR_EMPRESA =
+  /\b(delta\s*plan|deltaplan|delta|reng|engenharia|construtora|ltda|me|epp|eireli|s\/?a|ss|pj|cnpj)\b/i;
+
+export function verificarSeEhDocumentoPessoal(tipo?: string | null, titulo?: string | null, arquivo?: string | null): boolean {
+  const texto = `${tipo || ''} ${titulo || ''} ${arquivo || ''}`.trim();
+  return REGEX_DOCUMENTO_PESSOAL.test(texto);
+}
+
+export function verificarSeEhTitularEmpresa(titular?: string | null): boolean {
+  if (!titular) return false;
+  return REGEX_TITULAR_EMPRESA.test(titular.trim());
+}
 
 interface ItemFila {
   docId: string;
@@ -132,35 +149,72 @@ async function processarProximoDaFila(): Promise<void> {
     });
 
     const titularIdentificado = (analise.titularSugerido || '').trim();
-    const tipoIdentificado = (analise.tipoSugerido || '').trim();
+    let tipoIdentificado = (analise.tipoSugerido || '').trim();
     const tituloFinal = analise.tituloSugerido || doc.titulo || doc.arquivo;
     const descricaoFinal = analise.descricaoSugerida || doc.descricao || '';
     const apelidosFinais = analise.apelidosSugeridos || doc.apelidos || [];
     const validadeFinal = analise.dataValidadeSugerida || doc.data_validade || null;
     const origemValidadeFinal = validadeFinal ? 'extraído automaticamente' : null;
 
+    // Correção preventiva de classificação: se o arquivo ou título indicar CTPS e o tipo for "CNPJ" ou vazio
+    if (/\b(ctps|carteira\s+de\s+trabalho|carteira\s+digital)\b/i.test(`${tituloFinal} ${doc.arquivo}`)) {
+      if (!tipoIdentificado || tipoIdentificado.toLowerCase() === 'cnpj' || tipoIdentificado.toLowerCase() === 'outros') {
+        tipoIdentificado = 'Carteira de Trabalho (CTPS)';
+      }
+    }
+
+    const todosTitulares = await obterTodosTitulares();
+    const donoExtraido = (analise.nomeNoDocumento || titularIdentificado || '').trim();
+    const ehDocPessoal = verificarSeEhDocumentoPessoal(tipoIdentificado, tituloFinal, doc.arquivo);
+
+    const titularVinculado = resolverTitularCadastrado(titularIdentificado || donoExtraido, todosTitulares);
+    const titularVinculadoEhEmpresa = titularVinculado ? verificarSeEhTitularEmpresa(titularVinculado.nome) : false;
+
+    // REGRA MANDATÓRIA: Documentos pessoais NUNCA devem ir para "Documentos da Empresa" nem para titular empresa
+    const ehCorporativo = ehDocPessoal ? false : (titularIdentificado.toLowerCase().includes('delta') || !titularIdentificado);
+
+    let alertaTitular: 'titular_a_revisar' | undefined = undefined;
+    let titularFinalGravado: string;
+    let pessoaId: string | null = null;
+
+    if (ehDocPessoal) {
+      if (titularVinculado && !titularVinculadoEhEmpresa) {
+        titularFinalGravado = titularVinculado.nome;
+        pessoaId = titularVinculado.id;
+        // Se o dono extraído do documento divergir do titular vinculado
+        if (donoExtraido && !titularCorresponde(titularVinculado.nome, donoExtraido)) {
+          alertaTitular = 'titular_a_revisar';
+        }
+      } else {
+        // Documento pessoal sem titular pessoa física válido (ou associado a empresa)
+        alertaTitular = 'titular_a_revisar';
+        titularFinalGravado = donoExtraido || 'Titular a revisar';
+        pessoaId = null;
+      }
+    } else {
+      pessoaId = titularVinculado ? titularVinculado.id : null;
+      titularFinalGravado = titularVinculado ? titularVinculado.nome : (ehCorporativo ? 'Delta Plan' : titularIdentificado);
+    }
+
     const precisaPerguntar =
       !titularIdentificado ||
       !tipoIdentificado ||
       tipoIdentificado.toLowerCase() === 'outros' ||
-      !!analise.novoTitularSugerido;
+      !!analise.novoTitularSugerido ||
+      alertaTitular === 'titular_a_revisar';
 
     const metadataAtualizado = {
       ...(doc.metadata || {}),
       nomeNoDocumento: analise.nomeNoDocumento || null,
       novoTitularSugerido: !!analise.novoTitularSugerido,
       precisaPerguntar,
+      alertaTitular: alertaTitular || doc.metadata?.alertaTitular || null,
+      donoProvavel: donoExtraido || analise.donoProvavel || doc.metadata?.donoProvavel || null,
       camposFaltantes: [
-        ...(!titularIdentificado ? ['titular'] : []),
+        ...(!titularIdentificado || alertaTitular === 'titular_a_revisar' ? ['titular'] : []),
         ...(!tipoIdentificado || tipoIdentificado.toLowerCase() === 'outros' ? ['tipo'] : []),
       ],
     };
-
-    const todosTitulares = await obterTodosTitulares();
-    const titularVinculado = resolverTitularCadastrado(titularIdentificado, todosTitulares);
-    const ehCorporativo = titularIdentificado.toLowerCase().includes('delta') || !titularIdentificado;
-    const pessoaId = titularVinculado ? titularVinculado.id : (ehCorporativo ? null : null);
-    const titularFinalGravado = titularVinculado ? titularVinculado.nome : (ehCorporativo ? 'Delta Plan' : titularIdentificado);
 
     // Atualiza metadados no Supabase
     await supabase
@@ -170,6 +224,7 @@ async function processarProximoDaFila(): Promise<void> {
         tipo: tipoIdentificado,
         titular: titularFinalGravado,
         pessoa_id: pessoaId,
+        corporativo: ehCorporativo,
         descricao: descricaoFinal,
         apelidos: apelidosFinais,
         data_validade: validadeFinal,

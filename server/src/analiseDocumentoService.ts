@@ -195,21 +195,25 @@ ${listaTitularesCadastrados.length > 0 ? listaTitularesCadastrados.map((t) => `-
 REGRAS DE CLASSIFICAÇÃO:
 1. TIPO DE DOCUMENTO (tipoDocumento):
    - NÃO é uma lista fixa. Nomeie pelo que o documento realmente é em linguagem natural em português.
-   - Exemplos: "Passaporte", "CNH", "RG", "Título de Eleitor", "Certidão de Nascimento", "Certidão de Casamento", "Certificado de Reservista", "Alvará de Funcionamento", "Contrato Social", "Contrato de Prestação de Serviços", "Procuração", "Nota Fiscal", "Anotação de Responsabilidade Técnica (ART)", "Certidão de Registro Técnico (CRT)", "Comprovante de Endereço", "Cartão CNPJ", "DRE", etc.
+   - Exemplos: "Passaporte", "CNH", "RG", "Carteira de Trabalho (CTPS)", "Título de Eleitor", "Certidão de Nascimento", "Certidão de Casamento", "Certificado de Reservista", "Declaração de Imposto de Renda (IRPF)", "Alvará de Funcionamento", "Contrato Social", "Contrato de Prestação de Serviços", "Procuração", "Nota Fiscal", "Anotação de Responsabilidade Técnica (ART)", "Certidão de Registro Técnico (CRT)", "Comprovante de Endereço", "Cartão CNPJ", "DRE", etc.
+   - NUNCA classifique Carteira de Trabalho / CTPS como "CNPJ" ou "Outros". Use sempre "Carteira de Trabalho (CTPS)" ou "CTPS Digital".
    - NUNCA retorne "Outros" se for possível classificar. Se não for possível identificar com segurança, retorne null.
 
-2. NOME NO DOCUMENTO (nomeNoDocumento):
-   - Extraia o nome completo da pessoa física ou a razão social da empresa que consta expressamente no documento como titular, outorgante, requerente ou titular do documento.
-   - Se for documento de identificação pessoal (Passaporte, RG, CNH, Certidões), extraia o nome completo impresso no documento.
+2. NOME NO DOCUMENTO (nomeNoDocumento) E DONO:
+   - Extraia o nome completo da pessoa física ou a razão social da empresa que é a dona/titular do documento.
+   - Se for documento de identificação pessoal (Passaporte, RG, CNH, CTPS, Certidões, Imposto de Renda), extraia o nome completo impresso da pessoa física.
+   - Se for documento empresarial (Contrato Social, Alvará, Cartão CNPJ), extraia a razão social da empresa.
    - Se não constar nenhum nome de pessoa ou empresa, retorne null.
 
-3. RECONHECIMENTO DE TITULAR (titularIdentificado):
+3. RECONHECIMENTO DE TITULAR (titularIdentificado) E TIPO DE DONO:
+   - Documentos pessoais (CNH, RG, CPF, CTPS, certidões, IR) NUNCA devem ter titular de empresa (como "Delta Plan" ou qualquer CNPJ). Eles pertencem a uma pessoa física.
    - Se o "nomeNoDocumento" pertencer claramente a um titular cadastrado (ex: "FULANO DA SILVA" corresponde ao titular cadastrado "Fulano da Silva"), retorne exatamente o nome do titular cadastrado.
    - Se o documento for comprovadamente da própria empresa (ex: Contrato Social da Delta Plan, Alvará da Delta Plan), retorne "Delta Plan".
    - Se o documento for pessoal ou de outra empresa e o nome NÃO bater com nenhum titular cadastrado, retorne null e marque "novoTitularSugerido": true.
    - NUNCA assuma "Delta Plan" como padrão para documentos de pessoas físicas ou quando o titular for desconhecido! Campo não identificado deve ser null.
 
 4. DADOS COMPLEMENTARES:
+   - "donoTipo": "pessoa" para pessoas físicas (CNH, RG, CPF, CTPS, etc.) ou "empresa" para pessoas jurídicas.
    - "titulo": Título limpo e claro (ex: "Passaporte Fulano da Silva", "CNH Fulano", "Contrato Social Delta Plan").
    - "descricao": Resumo informativo factual em 1 frase.
    - "visibilidade": "diretoria" para documentos pessoais, societários ou financeiros; "geral" para normas ou regimentos.
@@ -221,6 +225,7 @@ RETORNE ESTRITAMENTE UM JSON no formato:
 {
   "tipoDocumento": string | null,
   "nomeNoDocumento": string | null,
+  "donoTipo": "pessoa" | "empresa",
   "titularIdentificado": string | null,
   "novoTitularSugerido": boolean,
   "titulo": string,
@@ -289,6 +294,8 @@ RETORNE ESTRITAMENTE UM JSON no formato:
           camposSugeridosTitular,
           dataValidadeSugerida: parsed.dataValidade || null,
           protegidoPorSenha,
+          donoTipo: parsed.donoTipo || (nomeNoDoc ? 'pessoa' : undefined),
+          donoProvavel: nomeNoDoc || titularFinal || null,
         };
       }
     } catch (errIa) {

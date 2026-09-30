@@ -62,6 +62,22 @@ const REGRAS_DIRETAS_WHISPER: RegraFoneticaDireta[] = [
     substituicao: 'título de eleitor',
     motivo: 'Termo sinônimo formal: "título eleitoral" -> "título de eleitor"',
   },
+  // Aglutinações e variações fonéticas de nomes comuns de pessoas em documentos (ex: "Danil Ceia" -> "da Nilceia")
+  {
+    regex: /\bdanil\s*ceia\b/gi,
+    substituicao: 'da Nilceia',
+    motivo: 'Aglutinação fonética: "Danil Ceia" -> "da Nilceia"',
+  },
+  {
+    regex: /\bdanilceia\b/gi,
+    substituicao: 'da Nilceia',
+    motivo: 'Aglutinação fonética: "Danilceia" -> "da Nilceia"',
+  },
+  {
+    regex: /\bnil\s+ceia\b/gi,
+    substituicao: 'Nilceia',
+    motivo: 'Separação fonética: "nil ceia" -> "Nilceia"',
+  },
   // PIS fonético ("piz", "piss")
   {
     regex: /\bpiz\b/gi,
@@ -182,10 +198,43 @@ export async function corrigirTranscricaoFonetica(
     // Monta catálogo dinâmico de expressões do domínio
     const expressoesDominio: string[] = [...CAMPOS_CANONICOS_DOMINIO];
 
-    // Adiciona tipos de documentos do Cofre
+    // Adiciona titulares cadastrados
+    for (const t of titulares) {
+      if (t.nome && !expressoesDominio.includes(t.nome.trim())) {
+        expressoesDominio.push(t.nome.trim());
+      }
+      if (t.apelidos && Array.isArray(t.apelidos)) {
+        for (const ap of t.apelidos) {
+          if (ap && !expressoesDominio.includes(ap.trim())) {
+            expressoesDominio.push(ap.trim());
+          }
+        }
+      }
+    }
+
+    // Adiciona tipos de documentos do Cofre e nomes de pessoas que aparecem nos documentos
     for (const d of docs) {
       if (d.tipo && d.tipo !== 'Outros' && !expressoesDominio.includes(d.tipo)) {
         expressoesDominio.push(d.tipo);
+      }
+      // Nomes de pessoas registradas em metadados dos documentos
+      const nomePessoaDoc =
+        d.metadata?.nomeNoDocumento ||
+        d.metadata?.donoProvavel ||
+        d.metadata?.donoDocumento;
+      if (nomePessoaDoc && typeof nomePessoaDoc === 'string' && nomePessoaDoc.trim().length >= 3) {
+        const nomeTrim = nomePessoaDoc.trim();
+        if (!expressoesDominio.includes(nomeTrim)) {
+          expressoesDominio.push(nomeTrim);
+        }
+      }
+      // Nomes no título (ex: "CNH da Nilceia" -> "Nilceia")
+      const matchNomeTitulo = /(?:cnh|rg|cpf|certid[aã]o|ctps)\s+(?:d[oa]\s+)?([A-Za-zÀ-ÖØ-öø-ÿ]{3,}(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ]{3,})*)/i.exec(d.titulo || '');
+      if (matchNomeTitulo && matchNomeTitulo[1]) {
+        const nomeTitulo = matchNomeTitulo[1].trim();
+        if (nomeTitulo.length >= 3 && !expressoesDominio.includes(nomeTitulo)) {
+          expressoesDominio.push(nomeTitulo);
+        }
       }
     }
 

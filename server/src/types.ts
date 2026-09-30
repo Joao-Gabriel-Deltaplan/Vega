@@ -244,6 +244,8 @@ export interface AnaliseDocumentoResponse {
   camposSugeridosTitular?: Partial<Record<CampoTitularId, string>>;
   dataValidadeSugerida?: string | null;
   protegidoPorSenha?: boolean;
+  donoTipo?: 'pessoa' | 'empresa';
+  donoProvavel?: string | null;
 }
 
 export interface BuscaSemResultadoRegistro {

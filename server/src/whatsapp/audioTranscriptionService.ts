@@ -337,7 +337,30 @@ export async function montarPromptContextualTranscricao(): Promise<string> {
       }
     }
 
-    // 2. Tipos e títulos únicos de documentos existentes no Cofre
+    // 2. Nomes de pessoas que aparecem nos documentos (mesmo sem titular oficial)
+    const nomesPessoasEmDocumentos: string[] = [];
+    for (const d of docs) {
+      const nomePessoaDoc =
+        d.metadata?.nomeNoDocumento ||
+        d.metadata?.donoProvavel ||
+        d.metadata?.donoDocumento;
+      if (nomePessoaDoc && typeof nomePessoaDoc === 'string' && nomePessoaDoc.trim().length >= 3) {
+        const nomeTrim = nomePessoaDoc.trim();
+        if (!nomesEApelidosTitulares.includes(nomeTrim) && !nomesPessoasEmDocumentos.includes(nomeTrim)) {
+          nomesPessoasEmDocumentos.push(nomeTrim);
+        }
+      }
+      // Nomes em títulos de documentos pessoais (ex: "CNH Nilceia", "Certidão de Casamento...")
+      const matchNome = /(?:cnh|rg|cpf|certid[aã]o|ctps)\s+(?:d[oa]\s+)?([A-Za-zÀ-ÖØ-öø-ÿ]{3,}(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ]{3,})*)/i.exec(d.titulo || '');
+      if (matchNome && matchNome[1]) {
+        const n = matchNome[1].trim();
+        if (!nomesEApelidosTitulares.includes(n) && !nomesPessoasEmDocumentos.includes(n)) {
+          nomesPessoasEmDocumentos.push(n);
+        }
+      }
+    }
+
+    // 3. Tipos e títulos únicos de documentos existentes no Cofre
     const tiposEDocs: string[] = [];
     for (const d of docs) {
       if (d.tipo && d.tipo !== 'Outros' && !tiposEDocs.includes(d.tipo.trim())) {
@@ -348,7 +371,7 @@ export async function montarPromptContextualTranscricao(): Promise<string> {
       }
     }
 
-    // 3. Títulos dos itens da Base de Conhecimento (Chaves PIX, links de sistemas, contatos)
+    // 4. Títulos dos itens da Base de Conhecimento (Chaves PIX, links de sistemas, contatos)
     const titulosConhecimento: string[] = [];
     for (const c of conhecimentos) {
       if (c.titulo && !titulosConhecimento.includes(c.titulo.trim())) {
@@ -356,7 +379,7 @@ export async function montarPromptContextualTranscricao(): Promise<string> {
       }
     }
 
-    // 4. Montagem do prompt respeitando ordem de prioridade
+    // 5. Montagem do prompt respeitando ordem de prioridade
     const partes: string[] = [
       `${NOMES_INSTITUCIONAIS}. Termos e siglas: ${SIGLAS_FIXAS_DOMINIO}.`,
       `Campos: ${CAMPOS_CONSULTAVEIS_DOMINIO}.`,
@@ -370,8 +393,12 @@ export async function montarPromptContextualTranscricao(): Promise<string> {
       partes.push(`Titulares: ${nomesEApelidosTitulares.slice(0, 10).join(', ')}.`);
     }
 
+    if (nomesPessoasEmDocumentos.length > 0) {
+      partes.push(`Pessoas: ${nomesPessoasEmDocumentos.slice(0, 5).join(', ')}.`);
+    }
+
     if (tiposEDocs.length > 0) {
-      partes.push(`Documentos: ${tiposEDocs.slice(0, 12).join(', ')}.`);
+      partes.push(`Documentos: ${tiposEDocs.slice(0, 10).join(', ')}.`);
     }
 
     let promptFinal = partes.join(' ');

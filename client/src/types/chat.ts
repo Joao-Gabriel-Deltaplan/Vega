@@ -111,6 +111,7 @@ export interface DocumentoRegistro {
   historicoValidade?: HistoricoCorrecaoCampo;
   silenciarAlertas?: boolean;
   trechoValidade?: string | null;
+  metadata?: Record<string, any>;
 }
 
 export type StatusAlertaVencimento = 'a_vencer' | 'vence_hoje' | 'vencido';

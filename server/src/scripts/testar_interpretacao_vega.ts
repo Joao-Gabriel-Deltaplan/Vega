@@ -359,6 +359,62 @@ export async function executarBateriaInterpretacao(modeloNome: string) {
       },
       observacao: 'Fechamento cordial: encerra de forma curta e natural sem tools desnecessárias',
     },
+    // 21. LISTAS INCOMPLETAS (ler_documento_completo)
+    {
+      id: 21,
+      mensagem: 'quais contas bancárias aparecem no IR do Thomaz?',
+      esperado: {
+        deveEnviarAnexo: false,
+        toolEsperada: 'ler_documento_completo',
+        proibirTools: ['enviar_documento'],
+      },
+      observacao: 'Varredura completa em IR: deve obrigatoriamente chamar ler_documento_completo',
+    },
+    // 22. PESSOA SEM CADASTRO DE TITULAR (Danil Ceia / Nilceia sob Delta Plan)
+    {
+      id: 22,
+      mensagem: 'me entrega o CPF da Danil Ceia',
+      esperado: {
+        deveEnviarAnexo: false,
+        toolEsperada: 'buscar_documentos',
+        proibirTools: ['enviar_documento'],
+        trechoEsperadoNoTexto: ['CPF'],
+      },
+      observacao: 'Pessoa sem cadastro com erro de áudio Danil Ceia: busca na CNH arquivada sob Delta Plan',
+    },
+    // 23. LISTAGEM GERAL DO COFRE (liste todos os documentos)
+    {
+      id: 23,
+      mensagem: 'liste todos os documentos',
+      esperado: {
+        deveEnviarAnexo: false,
+        toolEsperada: 'listar_documentos_cofre',
+        proibirTools: ['enviar_documento', 'listar_documentos_titular'],
+      },
+      observacao: 'Pedido geral sobre o acervo: deve chamar listar_documentos_cofre e nunca assumir o remetente',
+    },
+    // 24. LISTAGEM GERAL DO COFRE (o que você tem no cofre?)
+    {
+      id: 24,
+      mensagem: 'o que você tem no cofre?',
+      esperado: {
+        deveEnviarAnexo: false,
+        toolEsperada: 'listar_documentos_cofre',
+        proibirTools: ['enviar_documento', 'listar_documentos_titular'],
+      },
+      observacao: 'Pedido geral sobre o acervo: deve chamar listar_documentos_cofre com resumo por titular',
+    },
+    // 25. PEDIDO EM PRIMEIRA PESSOA ("meus documentos" do remetente)
+    {
+      id: 25,
+      mensagem: 'quais são os meus documentos?',
+      esperado: {
+        deveEnviarAnexo: false,
+        toolEsperada: 'listar_documentos_titular',
+        proibirTools: ['enviar_documento', 'listar_documentos_cofre'],
+      },
+      observacao: 'Pedido em primeira pessoa: deve buscar especificamente os documentos do remetente',
+    },
   ];
 
   let totalAcertos = 0;

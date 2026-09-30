@@ -945,6 +945,20 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
             </button>
           )}
 
+          {doc.metadata?.alertaTitular === 'titular_a_revisar' && (
+            <span
+              className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-orange-500/20 text-orange-300 border border-orange-500/40 flex items-center gap-1 cursor-help"
+              title={
+                doc.metadata?.donoProvavel
+                  ? `Titular a revisar: o conteúdo deste documento aponta como dono "${doc.metadata.donoProvavel}".`
+                  : 'Titular a revisar: documento pessoal vinculado a empresa ou titular divergente.'
+              }
+            >
+              <AlertTriangle className="w-3 h-3 text-orange-400" />
+              <span>Titular a revisar</span>
+            </span>
+          )}
+
           {renderSeloValidade(doc.dataValidade)}
 
           <div className="flex items-center gap-1">

@@ -24,6 +24,7 @@ import { DocumentoRegistro, ItemConhecimento } from '../types.js';
 import { atualizarValidadeDocumento } from '../vencimentos/alertaVencimentoService.js';
 import { obterBufferArquivo } from '../utils/storageUtils.js';
 import { PdfProtegidoPorSenhaError } from '../pdfService.js';
+import { verificarSeEhDocumentoPessoal } from '../processadorSegundoPlanoService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -124,7 +125,8 @@ export async function indexarDocumentoBackground(doc: DocumentoRegistro): Promis
       const embeddings = await gerarEmbeddingsEmLote(textosParaEmbedding, openai);
 
       // 5. Atualiza o documento no Supabase com hash e vincula trechos ao doc.id existente
-      const ehCorporativo = doc.titular?.toLowerCase().includes('delta') || !doc.titular;
+      const ehDocPessoal = verificarSeEhDocumentoPessoal(doc.tipo, doc.titulo, doc.arquivo);
+      const ehCorporativo = ehDocPessoal ? false : (doc.titular?.toLowerCase().includes('delta') || !doc.titular);
       let pessoaId = (doc as any).pessoa_id || doc.pessoaId || null;
       if (!pessoaId && !ehCorporativo && doc.titular) {
         const todosTitulares = await obterTodosTitulares();
