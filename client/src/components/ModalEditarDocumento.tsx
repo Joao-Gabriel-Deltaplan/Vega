@@ -10,6 +10,8 @@ import {
   Check,
   Search,
   Trash2,
+  Building2,
+  User,
 } from 'lucide-react';
 import { DocumentoRegistro, FichaTitular } from '../types/chat.js';
 import { ModalEditarTitular } from './ModalEditarTitular.js';
@@ -100,6 +102,7 @@ export const ModalEditarDocumento: React.FC<ModalEditarDocumentoProps> = ({
 
   // Formulário inline para "+ Criar novo titular"
   const [criandoNovoTitular, setCriandoNovoTitular] = useState(false);
+  const [novoTipoTitular, setNovoTipoTitular] = useState<'pessoa' | 'empresa'>('pessoa');
   const [novoNomeTitular, setNovoNomeTitular] = useState('');
   const [novosApelidosTitular, setNovosApelidosTitular] = useState('');
   const [salvandoNovoTitular, setSalvandoNovoTitular] = useState(false);
@@ -208,6 +211,7 @@ export const ModalEditarDocumento: React.FC<ModalEditarDocumentoProps> = ({
         body: JSON.stringify({
           nome: novoNomeTitular.trim(),
           apelidos: apelidosArray,
+          campos: { tipoTitular: novoTipoTitular },
         }),
       });
 
@@ -406,7 +410,7 @@ export const ModalEditarDocumento: React.FC<ModalEditarDocumentoProps> = ({
               )}
             </div>
 
-            {/* FORMULÁRIO INLINE PARA CRIAR NOVO TITULAR */}
+            {/* FORMULÁRIO INLINE PARA CRIAR NOVO TITULAR (PESSOA FÍSICA OU EMPRESA/PJ) */}
             {criandoNovoTitular && (
               <div className="p-3 bg-[#18202b] border border-emerald-500/30 rounded-xl space-y-2.5 animate-in fade-in duration-100">
                 <div className="flex items-center justify-between">
@@ -430,26 +434,62 @@ export const ModalEditarDocumento: React.FC<ModalEditarDocumentoProps> = ({
                   <p className="text-[11px] text-rose-400">{erroNovoTitular}</p>
                 )}
 
+                {/* Alternador de Tipo de Titular (Pessoa Física vs Empresa/PJ) */}
+                <div className="flex items-center gap-1.5 p-1 bg-[#121820] rounded-lg border border-[#202937]">
+                  <button
+                    type="button"
+                    onClick={() => setNovoTipoTitular('pessoa')}
+                    className={`flex-1 py-1 rounded text-[11px] font-medium flex items-center justify-center gap-1 transition-all cursor-pointer ${
+                      novoTipoTitular === 'pessoa'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-semibold'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <User className="w-3 h-3" />
+                    <span>Pessoa Física</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNovoTipoTitular('empresa')}
+                    className={`flex-1 py-1 rounded text-[11px] font-medium flex items-center justify-center gap-1 transition-all cursor-pointer ${
+                      novoTipoTitular === 'empresa'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-semibold'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <Building2 className="w-3 h-3" />
+                    <span>Empresa / Pessoa Jurídica</span>
+                  </button>
+                </div>
+
                 <div className="space-y-2">
                   <input
                     type="text"
                     value={novoNomeTitular}
                     onChange={(e) => setNovoNomeTitular(e.target.value)}
-                    placeholder="Nome completo (ex.: Nilceia Batista Ramos Fabre)"
+                    placeholder={
+                      novoTipoTitular === 'empresa'
+                        ? 'Razão Social ou Nome Fantasia (ex.: ENGCOM, Delta Plan)'
+                        : 'Nome completo (ex.: Nilceia Batista Ramos Fabre)'
+                    }
                     className="w-full px-3 py-1.5 bg-[#121820] border border-[#202937] rounded-lg text-xs text-slate-100 placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none"
                   />
                   <input
                     type="text"
                     value={novosApelidosTitular}
                     onChange={(e) => setNovosApelidosTitular(e.target.value)}
-                    placeholder="Apelidos ou grafias conhecidas (ex.: Nil, Nilceia)"
+                    placeholder={
+                      novoTipoTitular === 'empresa'
+                        ? 'Siglas ou variações conhecidas (ex.: ENGCOM, Engcom Serviços)'
+                        : 'Apelidos ou grafias conhecidas (ex.: Nil, Nilceia)'
+                    }
                     className="w-full px-3 py-1.5 bg-[#121820] border border-[#202937] rounded-lg text-xs text-slate-100 placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none"
                   />
                   <button
                     type="button"
                     onClick={handleCadastrarNovoTitular}
                     disabled={salvandoNovoTitular}
-                    className="w-full py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-xs font-semibold text-white flex items-center justify-center gap-1.5 transition-colors"
+                    className="w-full py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-xs font-semibold text-white flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                   >
                     {salvandoNovoTitular ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -487,12 +527,59 @@ export const ModalEditarDocumento: React.FC<ModalEditarDocumentoProps> = ({
                 <option value="empresa" className="bg-[#18202b] text-slate-200 py-1 font-semibold">
                   🏢 Documentos da Empresa (Delta Plan)
                 </option>
-                {titularesFiltrados.map((tit) => (
-                  <option key={tit.id} value={tit.id} className="bg-[#18202b] text-slate-200 py-1">
-                    👤 {tit.nome} {tit.apelidos && tit.apelidos.length > 0 ? `(${tit.apelidos.join(', ')})` : ''}
-                  </option>
-                ))}
+                {titularesFiltrados.map((tit) => {
+                  const isPj =
+                    (tit.campos as any)?.tipoTitular === 'empresa' ||
+                    (tit.campos as any)?.tipoTitular === 'pj' ||
+                    /\b(ltda|eireli|s\/?a|me|epp|servicos|engenharia|construcoes|comercio|engcom)\b/i.test(
+                      tit.nome
+                    );
+                  return (
+                    <option key={tit.id} value={tit.id} className="bg-[#18202b] text-slate-200 py-1">
+                      {isPj ? '🏢' : '👤'} {tit.nome}{' '}
+                      {tit.apelidos && tit.apelidos.length > 0 ? `(${tit.apelidos.join(', ')})` : ''}
+                    </option>
+                  );
+                })}
               </select>
+
+              {/* Ações quando o titular selecionado for a Empresa Padrão (Delta Plan) */}
+              {titularSelecionado === 'empresa' && (
+                <div className="flex items-center justify-between p-2.5 rounded-lg bg-[#141b24] border border-[#202937] text-xs">
+                  <div className="flex items-center gap-2 text-slate-300 truncate min-w-0">
+                    <Building2 className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                    <span className="text-[11px] text-slate-400 flex-shrink-0">Titular selecionado:</span>
+                    <span className="font-semibold text-emerald-400 truncate">Documentos da Empresa (Delta Plan)</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setTitularSelecionado('sem_titular')}
+                      className="px-2 py-1 rounded bg-[#18202b] hover:bg-[#202937] text-slate-300 hover:text-amber-400 border border-[#263345] text-[11px] font-medium transition-colors cursor-pointer"
+                      title="Desvincular titular deste documento"
+                    >
+                      Desvincular
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCriandoNovoTitular(true);
+                        setNovoTipoTitular('empresa');
+                        const nomeSugerido = doc.titulo.replace(/^cnpj\s*/i, '').trim();
+                        if (nomeSugerido && nomeSugerido !== doc.titulo) {
+                          setNovoNomeTitular(nomeSugerido);
+                          setNovosApelidosTitular(nomeSugerido);
+                        }
+                      }}
+                      className="px-2 py-1 rounded bg-[#18202b] hover:bg-[#202937] text-slate-300 hover:text-emerald-400 border border-[#263345] text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                      title="Cadastrar a empresa deste documento como titular própria"
+                    >
+                      <Building2 className="w-3 h-3 text-emerald-400" />
+                      <span>+ Criar Empresa PJ</span>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Ações do titular selecionado (Editar ou Excluir titular cadastrado) */}
               {titularSelecionadoObj && (

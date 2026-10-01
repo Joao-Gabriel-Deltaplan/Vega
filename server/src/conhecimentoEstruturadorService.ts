@@ -53,9 +53,9 @@ Classifique cada informação em um destes 5 tipos:
    - categoria: "Financeiro"
    - conteudo: texto legível formatado (ex: "Chave PIX: 12.345.678/0001-90 (CNPJ) | Banco: Santander | Titular: Delta Plan")
 
-2. "link": Links de sistemas, ferramentas, portais ou dashboards corporativos.
+2. "link": Links de sistemas, ferramentas, portais, dashboards ou sites corporativos.
    - dadosEstruturados: { "nomeSistema": string, "link": string, "finalidade"?: string }
-   - titulo sugerido: "Sistema [Nome]" ou "[Nome do Sistema]"
+   - titulo sugerido: Apenas o nome limpo do sistema, portal ou site (ex: "Sienge", "Portal Delta", "Jira", "Receita Federal", "DocuSign"). NUNCA prefixe com a palavra "Sistema" ou "Link".
    - categoria: "Sistemas"
    - conteudo: texto legível formatado
 
@@ -165,6 +165,33 @@ REGRAS IMPORTANTES:
         if (dLocal.linkMaps) partes.push(`Google Maps: ${dLocal.linkMaps}`);
         if (dLocal.linkWaze) partes.push(`Waze: ${dLocal.linkWaze}`);
         conteudo = partes.join(' | ');
+      }
+
+      if (tipo === 'link') {
+        const dLink = dadosEstruturados as DadosLink;
+        let nomeLimpo = (dLink.nomeSistema || titulo || '').trim();
+        // Remove prefixos redundantes como "Sistema ", "Sistema: ", "Link ", "Link: "
+        nomeLimpo = nomeLimpo.replace(/^(sistema|link)(\s*:\s*|\s+)/i, '').trim();
+        dLink.nomeSistema = nomeLimpo || 'Sistema';
+
+        let tituloLimpo = titulo.replace(/^(sistema|link)(\s*:\s*|\s+)/i, '').trim();
+        if (!tituloLimpo || tituloLimpo.toLowerCase() === 'sistema') {
+          tituloLimpo = dLink.nomeSistema;
+        }
+
+        const partes: string[] = [];
+        if (dLink.nomeSistema) partes.push(`Sistema: ${dLink.nomeSistema}`);
+        if (dLink.link) partes.push(`Link: ${dLink.link}`);
+        if (dLink.finalidade) partes.push(`Finalidade: ${dLink.finalidade}`);
+        conteudo = partes.join(' | ');
+
+        return {
+          tipo,
+          titulo: tituloLimpo,
+          categoria: categoria || 'Sistemas',
+          conteudo,
+          dadosEstruturados: dLink,
+        };
       }
 
       return {

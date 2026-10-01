@@ -148,6 +148,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   const [erroEstruturacao, setErroEstruturacao] = useState('');
   const [itensSugeridosIA, setItensSugeridosIA] = useState<ItemConhecimento[]>([]);
   const [salvandoItensSugeridos, setSalvandoItensSugeridos] = useState(false);
+  const [exibirExplicacaoRegras, setExibirExplicacaoRegras] = useState(false);
 
   // Edição em linha na lista
   const [idEditandoEmLinha, setIdEditandoEmLinha] = useState<string | null>(null);
@@ -1719,6 +1720,12 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                   const paleta = obterPaletaAvatar(tit.nome);
                   const iniciais = obterIniciais(tit.nome);
                   const isDropAlvo = dropTargetId === tit.id;
+                  const isTitularPj =
+                    (tit.campos as any)?.tipoTitular === 'empresa' ||
+                    (tit.campos as any)?.tipoTitular === 'pj' ||
+                    /\b(ltda|eireli|s\/?a|me|epp|servicos|engenharia|construcoes|comercio|engcom)\b/i.test(
+                      tit.nome
+                    );
 
                   return (
                     <div
@@ -1756,13 +1763,18 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                               border: `1px solid ${paleta.border}`,
                             }}
                           >
-                            {iniciais}
+                            {isTitularPj ? <Building2 className="w-4 h-4 text-emerald-400" /> : iniciais}
                           </div>
 
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
                               <h3 className="font-semibold text-xs sm:text-sm text-slate-100 truncate flex items-center gap-2">
                                 <span>{tit.nome}</span>
+                                {isTitularPj && (
+                                  <span className="text-[10px] font-semibold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 rounded flex items-center gap-1">
+                                    <Building2 className="w-3 h-3 text-emerald-400" /> PJ
+                                  </span>
+                                )}
                                 {isDropAlvo && (
                                   <span className="text-[10px] font-medium text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-full animate-pulse flex items-center gap-1">
                                     <MoveRight className="w-3 h-3" /> Solte para mover aqui
@@ -1875,6 +1887,18 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                   type="button"
                   onClick={() =>
                     setTextoEntradaUnica(
+                      'Sistema: Sienge\nLink: https://deltaplan.sienge.com.br\nFinalidade: Gestão integrada de obras, compras e financeiro'
+                    )
+                  }
+                  className="px-2.5 py-1 rounded-lg bg-[#18202b] hover:bg-[#202937] text-sky-300 text-[11px] border border-sky-500/30 flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <Globe className="w-3 h-3 text-sky-400" />
+                  <span>+ Modelo Link / Sistema</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setTextoEntradaUnica(
                       'Local: Escritório Central Delta Plan\nEndereço: Rua Principal, 100, Centro - Piracicaba/SP\nComo chegar / Ponto de referência: Em frente à praça central, ao lado do banco Santander\nLink Maps: https://maps.app.goo.gl/...'
                     )
                   }
@@ -1907,12 +1931,32 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                   <Phone className="w-3 h-3 text-purple-400" />
                   <span>+ Modelo Contato</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setTextoEntradaUnica(
+                      'Regra: Política de Compras de Materiais\nProcedimento: Pedidos de compra acima de R$ 5.000 exigem cotação com 3 fornecedores homologados e aprovação prévia da diretoria.\nPrazos: Enviar solicitação com antecedência mínima de 5 dias úteis.'
+                    )
+                  }
+                  className="px-2.5 py-1 rounded-lg bg-[#18202b] hover:bg-[#202937] text-slate-300 text-[11px] border border-[#202937] flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <BookOpen className="w-3 h-3 text-slate-400" />
+                  <span>+ Modelo Regra</span>
+                </button>
               </div>
 
-              <div className="flex items-center justify-between pt-1">
-                <span className="text-[11px] text-slate-400">
-                  A IA identifica o tipo (PIX, Link, Contato, Localização ou Regra) e sugere os campos em linha.
-                </span>
+              <div className="flex items-center justify-between pt-1 flex-wrap gap-2">
+                <div className="flex items-center gap-2 text-[11px] text-slate-400 flex-wrap">
+                  <span>A IA identifica o tipo (PIX, Link, Contato, Localização ou Regra).</span>
+                  <button
+                    type="button"
+                    onClick={() => setExibirExplicacaoRegras(!exibirExplicacaoRegras)}
+                    className="text-emerald-400 hover:text-emerald-300 underline font-medium cursor-pointer flex items-center gap-1"
+                  >
+                    <BookOpen className="w-3 h-3" />
+                    <span>{exibirExplicacaoRegras ? 'Ocultar o que são Regras' : 'O que são Regras?'}</span>
+                  </button>
+                </div>
 
                 <button
                   type="button"
@@ -1928,6 +1972,31 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                   <span>{estruturandoComIA ? 'Estruturando com IA...' : 'Estruturar com IA'}</span>
                 </button>
               </div>
+
+              {exibirExplicacaoRegras && (
+                <div className="p-3.5 bg-[#0b0f14] border border-emerald-500/30 rounded-xl text-xs space-y-2 animate-fadeIn">
+                  <div className="flex items-center gap-2 font-semibold text-emerald-300">
+                    <BookOpen className="w-4 h-4 text-emerald-400" />
+                    <span>O que são "Regras" na Base da VEGA?</span>
+                  </div>
+                  <p className="text-slate-300 leading-relaxed text-[11px]">
+                    As <strong>Regras</strong> são procedimentos operacionais padrão (POPs), políticas internas corporativas, regras de negócio e orientações gerais da Delta Plan.
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-slate-400 pt-0.5">
+                    <div className="bg-[#121820] p-2 rounded-lg border border-[#202937]">
+                      <strong className="text-slate-200 block mb-0.5">Exemplo 1 (Compras & Fornecedores):</strong>
+                      "Pedidos de compra acima de R$ 5.000 exigem cotação com 3 fornecedores homologados e aprovação prévia da diretoria."
+                    </div>
+                    <div className="bg-[#121820] p-2 rounded-lg border border-[#202937]">
+                      <strong className="text-slate-200 block mb-0.5">Exemplo 2 (Horários & Expediente):</strong>
+                      "O expediente do escritório central é de segunda a sexta, das 07h30 às 17h30 com 1h de almoço."
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-400 pt-0.5">
+                    💡 Sempre que colaboradores ou diretores perguntarem no chat ou WhatsApp sobre normas, procedimentos, autorizações ou prazos, a VEGA consultará essas regras para responder com precisão.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* PRÉVIA DOS ITENS ESTRUTURADOS PELA IA (PARA CONFERÊNCIA EM LINHA) */}
@@ -1996,9 +2065,19 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                               ? 'Localização'
                               : 'Regra'}
                           </span>
-                          <span className="text-xs font-semibold text-slate-100">
-                            {item.titulo}
-                          </span>
+                          <input
+                            type="text"
+                            value={item.titulo}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setItensSugeridosIA((prev) =>
+                                prev.map((i, ix) => (ix === idx ? { ...i, titulo: val } : i))
+                              );
+                            }}
+                            className="text-xs font-semibold text-slate-100 bg-[#121820] border border-[#202937] hover:border-[#2d3a4f] focus:border-emerald-500 rounded px-2 py-0.5 focus:outline-none min-w-[160px] max-w-[280px]"
+                            placeholder="Título..."
+                            title="Clique para editar o título"
+                          />
                         </div>
 
                         <div className="flex items-center gap-2">
@@ -2120,24 +2199,27 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
                           <div>
                             <label className="text-[10px] text-slate-400 block mb-0.5">
-                              Nome do Sistema:
+                              Nome do Sistema / Site:
                             </label>
                             <input
                               type="text"
                               value={(item.dadosEstruturados as DadosLink)?.nomeSistema || ''}
                               onChange={(e) => {
-                                const val = e.target.value;
+                                let val = e.target.value;
+                                if (val.toLowerCase().startsWith('sistema: ')) val = val.substring(9).trim();
+                                else if (val.toLowerCase().startsWith('sistema ')) val = val.substring(8).trim();
                                 setItensSugeridosIA((prev) =>
-                                  prev.map((i, ix) =>
-                                    ix === idx
-                                      ? {
-                                          ...i,
-                                          dadosEstruturados: { ...i.dadosEstruturados, nomeSistema: val },
-                                        }
-                                      : i
-                                  )
+                                  prev.map((i, ix) => {
+                                    if (ix !== idx) return i;
+                                    return {
+                                      ...i,
+                                      titulo: val || i.titulo,
+                                      dadosEstruturados: { ...i.dadosEstruturados, nomeSistema: val },
+                                    };
+                                  })
                                 );
                               }}
+                              placeholder="Ex.: Sienge, Portal Delta, Jira"
                               className="w-full px-2 py-1 bg-[#121820] border border-[#202937] rounded text-slate-100 focus:outline-none"
                             />
                           </div>
@@ -2704,7 +2786,32 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                           )}
 
                           {draftEdicaoLinha.tipo === 'link' && (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs pt-1">
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs pt-1">
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5">
+                                  Nome do Sistema / Site:
+                                </label>
+                                <input
+                                  type="text"
+                                  value={(draftEdicaoLinha.dadosEstruturados as DadosLink)?.nomeSistema || ''}
+                                  onChange={(e) => {
+                                    let val = e.target.value;
+                                    if (val.toLowerCase().startsWith('sistema: ')) val = val.substring(9).trim();
+                                    else if (val.toLowerCase().startsWith('sistema ')) val = val.substring(8).trim();
+                                    setDraftEdicaoLinha({
+                                      ...draftEdicaoLinha,
+                                      titulo: val || draftEdicaoLinha.titulo,
+                                      dadosEstruturados: {
+                                        ...draftEdicaoLinha.dadosEstruturados,
+                                        nomeSistema: val,
+                                      },
+                                    });
+                                  }}
+                                  placeholder="Ex.: Sienge, Portal Delta, Jira"
+                                  className="w-full px-2 py-1 bg-[#0b0f14] border border-[#202937] rounded text-slate-100 focus:outline-none"
+                                />
+                              </div>
+
                               <div>
                                 <label className="text-[10px] text-slate-400 block mb-0.5">
                                   URL / Link:

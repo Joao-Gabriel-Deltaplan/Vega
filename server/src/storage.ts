@@ -1114,9 +1114,17 @@ export async function adicionarConhecimento(
       ? dados.conteudo.trim()
       : formatarConteudoEstruturado(tipoEfetivo, dadosEstruturados, '');
 
+  let tituloFinal = dados.titulo.trim();
+  if (tipoEfetivo === 'link') {
+    tituloFinal = tituloFinal.replace(/^(sistema|link)(\s*:\s*|\s+)/i, '').trim();
+    if (!tituloFinal && dadosEstruturados && (dadosEstruturados as any).nomeSistema) {
+      tituloFinal = (dadosEstruturados as any).nomeSistema;
+    }
+  }
+
   const novoItem: ItemConhecimento = {
     id: `k-${Date.now()}`,
-    titulo: dados.titulo.trim(),
+    titulo: tituloFinal || 'Item de Conhecimento',
     categoria: dados.categoria?.trim() || (tipoEfetivo === 'pix' ? 'Financeiro' : tipoEfetivo === 'link' ? 'Sistemas' : tipoEfetivo === 'contato' ? 'Contatos' : tipoEfetivo === 'local' ? 'Localização' : 'Geral'),
     conteudo: conteudoFinal,
     tipo: tipoEfetivo,
@@ -1162,7 +1170,13 @@ export async function atualizarConhecimento(
     const payload: any = {
       data_atualizacao: new Date().toLocaleDateString('pt-BR'),
     };
-    if (dados.titulo !== undefined) payload.titulo = dados.titulo.trim();
+    if (dados.titulo !== undefined) {
+      let t = dados.titulo.trim();
+      if (dados.tipo === 'link') {
+        t = t.replace(/^(sistema|link)(\s*:\s*|\s+)/i, '').trim();
+      }
+      payload.titulo = t;
+    }
     if (dados.categoria !== undefined) payload.categoria = dados.categoria.trim();
     if (dados.tipo !== undefined) payload.tipo = dados.tipo;
     if (dados.dadosEstruturados !== undefined) {
