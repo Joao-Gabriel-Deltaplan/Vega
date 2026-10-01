@@ -228,7 +228,18 @@ export function nomesSaoEquivalentesComTolerancia(nomeA: string, nomeB: string):
     if (palavrasA.length > 1 && palavrasB.length > 1) {
       const restoA = palavrasA.slice(1).join(' ');
       const restoB = palavrasB.slice(1).join(' ');
-      if (restoA !== restoB && !restoA.includes(restoB) && !restoB.includes(restoA)) {
+      const sobrenomesA = palavrasA.slice(1);
+      const sobrenomesB = palavrasB.slice(1);
+      const bateuSobrenome =
+        restoA === restoB ||
+        restoA.includes(restoB) ||
+        restoB.includes(restoA) ||
+        sobrenomesA.some((sA) =>
+          sobrenomesB.some(
+            (sB) => sA === sB || (Math.min(sA.length, sB.length) >= 4 && calcularDistanciaLevenshtein(sA, sB) <= 1)
+          )
+        );
+      if (!bateuSobrenome) {
         return false;
       }
     }

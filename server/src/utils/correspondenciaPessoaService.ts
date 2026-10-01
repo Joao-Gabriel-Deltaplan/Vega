@@ -198,21 +198,13 @@ export function verificarCorrespondenciaNomePessoa(
         pessoaExata: p,
       };
     }
-    // c) Apelido oficial cadastrado exato
-    // (Apenas se for apelido autêntico como "Berna" ou "Zé", NUNCA se for variação ortográfica do primeiro nome como Thomas/Thomaz)
+    // c) Apelido oficial cadastrado exato (sempre conta como correspondência EXATA, pois é confirmação do usuário)
     if (p.apelidosNorm && p.apelidosNorm.includes(nomeNorm)) {
-      const ehVariacaoOrtograficaDoPrimeiroNome =
-        p.primeiroNomeNorm &&
-        (calcularDistanciaLevenshtein(nomeNorm, p.primeiroNomeNorm) <= 2 ||
-          normalizarFoneticaNome(nomeNorm) === normalizarFoneticaNome(p.primeiroNomeNorm));
-
-      if (!ehVariacaoOrtograficaDoPrimeiroNome) {
-        return {
-          tipo: 'exata',
-          nomeEntendido: nomeExibicao,
-          pessoaExata: p,
-        };
-      }
+      return {
+        tipo: 'exata',
+        nomeEntendido: nomeExibicao,
+        pessoaExata: p,
+      };
     }
     // d) Se informou primeiro nome e sobrenome que coincidem exatamente com o início ou partes do nome oficial
     if (nomeNorm.includes(' ') && p.nomeNorm.startsWith(nomeNorm)) {

@@ -11,8 +11,8 @@ interface CasoTeste {
 async function main() {
   console.log('================================================================');
   console.log('🧪 TESTE OFICIAL DE CORRESPONDÊNCIA DE NOMES DE PESSOAS');
-  console.log('1. Correspondência Exata: responde direto');
-  console.log('2. Correspondência Aproximada: NÃO revela nomes, NÃO entrega dados, pede confirmação');
+  console.log('1. Correspondência Exata por Nome Oficial ou Apelido Cadastrado: responde direto');
+  console.log('2. Correspondência Aproximada (sem apelido correspondente): NÃO revela nomes, NÃO entrega dados, pede confirmação');
   console.log('3. Mais de uma pessoa aproximada: não lista opções, pede confirmação');
   console.log('4. Nenhuma correspondência: responde que não encontrou repetindo o nome');
   console.log('================================================================\n');
@@ -66,22 +66,20 @@ async function main() {
       },
     },
 
-    // 3. CORRESPONDÊNCIA APROXIMADA: "Thomas" (com S) quando só há "Thomaz" cadastrado
+    // 3. CORRESPONDÊNCIA EXATA POR APELIDO CADASTRADO: "Thomas" (com S) está nos apelidos oficiais de Thomaz
     {
       id: 3,
-      descricao: 'Correspondência Aproximada ("Thomas" com S): deve pedir confirmação SEM vazar dados',
+      descricao: 'Correspondência Exata por Apelido Cadastrado ("Thomas" com S): responde direto',
       mensagem: 'qual o CPF do Thomas?',
       validar: (resp) => {
-        const respLower = resp.toLowerCase();
-        // NÃO pode entregar o CPF do Thomaz
-        if (resp.includes('333.599.518-08')) {
-          return { passou: false, motivo: 'Entregou CPF em correspondência aproximada ("Thomas")!' };
+        // DEVE entregar o CPF correto de Thomaz (pois "Thomas" é apelido cadastrado)
+        if (!resp.includes('333.599.518-08')) {
+          return { passou: false, motivo: 'Não entregou o CPF de Thomaz para apelido cadastrado "Thomas"!' };
         }
-        // DEVE pedir confirmação
-        const pedeConfirmacao = resp.includes("Não encontrei 'Thomas'") || resp.includes('Thomas');
-        const sugereDigitar = respLower.includes('confirmar o nome') || respLower.includes('digite');
-        if (!pedeConfirmacao || !sugereDigitar) {
-          return { passou: false, motivo: `Não pediu confirmação de "Thomas". Resposta: "${resp}"` };
+        // NÃO deve pedir confirmação do nome
+        const respLower = resp.toLowerCase();
+        if (respLower.includes('confirmar o nome') && respLower.includes('digite para')) {
+          return { passou: false, motivo: 'Pediu confirmação indevida para apelido cadastrado!' };
         }
         return { passou: true };
       },
@@ -106,9 +104,30 @@ async function main() {
       },
     },
 
-    // 5. NENHUMA CORRESPONDÊNCIA: "Roberto da Silva" (inexistente)
+    // 5. CORRESPONDÊNCIA APROXIMADA: "Tomás Lustre" (grafia não cadastrada nos apelidos)
     {
       id: 5,
+      descricao: 'Correspondência Aproximada ("Tomás Lustre" - grafia não cadastrada nos apelidos): deve pedir confirmação SEM vazar dados',
+      mensagem: 'qual o CPF do Tomás Lustre?',
+      validar: (resp) => {
+        const respLower = resp.toLowerCase();
+        // NÃO pode entregar o CPF do Thomaz
+        if (resp.includes('333.599.518-08')) {
+          return { passou: false, motivo: 'Entregou CPF em correspondência aproximada ("Tomás Lustre")!' };
+        }
+        // DEVE pedir confirmação
+        const pedeConfirmacao = resp.includes("Não encontrei 'Tomás Lustre'") || resp.includes('Tomás Lustre') || resp.includes('Tomas Lustre');
+        const sugereDigitar = respLower.includes('confirmar o nome') || respLower.includes('digite');
+        if (!pedeConfirmacao || !sugereDigitar) {
+          return { passou: false, motivo: `Não pediu confirmação de "Tomás Lustre". Resposta: "${resp}"` };
+        }
+        return { passou: true };
+      },
+    },
+
+    // 6. NENHUMA CORRESPONDÊNCIA: "Roberto da Silva" (inexistente)
+    {
+      id: 6,
       descricao: 'Nenhuma Correspondência ("Roberto da Silva"): responde que não encontrou repetindo o nome',
       mensagem: 'me entrega o CPF do Roberto da Silva',
       validar: (resp) => {

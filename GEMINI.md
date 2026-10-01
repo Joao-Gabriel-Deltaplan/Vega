@@ -188,8 +188,15 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
 ---
 
 ## 23. Correspondência de Nomes de Pessoas (Exata vs. Aproximada vs. Inexistente)
-- **Correspondência Exata:** Se o nome pedido corresponder exatamente a uma pessoa (titular cadastrado ou pessoa física identificada em documentos do Cofre, ignorando acentos e maiúsculas), responder direto. Correspondência exata sempre tem prioridade absoluta sobre aproximações.
-- **Correspondência Aproximada (Erro de Transcrição ou Digitação):** Se só houver correspondência aproximada (erro fonético do Whisper, aglutinação de fala como "Danil Ceia" para Nilceia, ou erro de digitação como "Thomas" com S para Thomaz), é TERMINANTEMENTE PROIBIDO revelar qualquer nome existente no Cofre e é TERMINANTEMENTE PROIBIDO entregar dados ou arquivos. Apenas pedir confirmação do nome entendido, sugerindo digitar: `"Não encontrei '[Nome Entendido]'. Pode confirmar o nome? Se possível, digite para eu não entender errado."`.
+- **Correspondência Exata:** Se o nome pedido corresponder exatamente a uma pessoa (titular cadastrado, apelido oficial cadastrado na tabela `titulares`, ou pessoa física identificada em documentos do Cofre, ignorando acentos e maiúsculas), responder direto. Apelidos cadastrados são variações confirmadas pelo usuário e SEMPRE contam como correspondência exata com prioridade absoluta.
+- **Correspondência Aproximada (Erro de Transcrição ou Digitação):** Aplica-se estritamente quando o nome informado NÃO corresponder a nenhum nome nem apelido cadastrado, mas houver semelhança fonética ou ortográfica (ex.: *"Danil Ceia"*, *"Tomás Lustre"*). Nesses casos, é TERMINANTEMENTE PROIBIDO revelar qualquer nome existente no Cofre e é TERMINANTEMENTE PROIBIDO entregar dados ou arquivos. Apenas pedir confirmação do nome entendido, sugerindo digitar: `"Não encontrei '[Nome Entendido]'. Pode confirmar o nome? Se possível, digite para eu não entender errado."`.
 - **Múltiplas Pessoas Aproximadas:** Quando houver mais de uma pessoa aproximada, NUNCA listar opções nem revelar nomes existentes; manter estritamente o pedido de confirmação do nome entendido, sugerindo digitar.
 - **Nenhuma Correspondência (Inexistente):** Se não houver nenhuma correspondência no Cofre, responder que não encontrou informações sobre a pessoa no Cofre, repetindo o nome como foi entendido (ex.: `"Não encontrei informações sobre '[Nome Entendido]' no Cofre."`).
+
+---
+
+## 24. Proteção Rígida de Dados no Supabase (Aprovação Prévia Obrigatória)
+- **Regra Permanente e Inviolável:** NUNCA alterar, apagar, atualizar ou limpar dados no Supabase (em qualquer tabela: `titulares`, `documentos`, `trechos`, `usuarios`, `conhecimentos`, etc.) sem antes mostrar ao usuário a lista exata do que será modificado (valores atuais vs. valores propostos) e receber aprovação prévia e explícita do usuário.
+- **Validade Irrestrita:** Aplica-se a scripts de correção, testes, migrações, comandos temporários, rotinas de depuração ou manutenção. Nenhuma mutação de banco de dados pode ser executada sem essa validação humana prévia.
+
 
