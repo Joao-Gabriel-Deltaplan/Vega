@@ -40,6 +40,8 @@ import {
   ShieldCheck,
   MapPin,
   Navigation,
+  Pencil,
+  MoveRight,
 } from 'lucide-react';
 import { ASSISTENTE } from '../config/assistente.js';
 import { gerarLinksNavegacao } from '../utils/geoLinks.js';
@@ -55,9 +57,12 @@ import {
 import { obterPaletaAvatar, obterIniciais } from '../utils/avatarUtils.js';
 import { DocumentosFaltantesView } from './DocumentosFaltantesView.js';
 import { SugestoesDocumentosView } from './SugestoesDocumentosView.js';
+import { ModalEditarDocumento } from './ModalEditarDocumento.js';
+import { ModalConfirmarMoverDocumento } from './ModalConfirmarMoverDocumento.js';
 
 interface KnowledgeBaseViewProps {
   subAbaInicial?: 'conhecimento' | 'documentos' | 'faltantes' | 'sugestoes';
+  nomeUsuarioLogado?: string;
 }
 
 const FUSO_HORARIO_PADRAO = 'America/Sao_Paulo';
@@ -108,6 +113,7 @@ function obterSituacaoValidade(
 
 export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   subAbaInicial = 'documentos',
+  nomeUsuarioLogado = 'Usuário do Painel',
 }) => {
   const [subAba, setSubAba] = useState<'conhecimento' | 'documentos' | 'faltantes' | 'sugestoes'>(subAbaInicial);
   const [totalFaltantesPendentes, setTotalFaltantesPendentes] = useState<number>(0);
@@ -182,6 +188,21 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   // Titulares cadastrados no cofre
   const [titulares, setTitulares] = useState<FichaTitular[]>([]);
   const [titularesExpandidos, setTitularesExpandidos] = useState<Record<string, boolean>>({});
+
+  // Edição completa de documento (Modal simples com lápis)
+  const [docParaEditar, setDocParaEditar] = useState<DocumentoRegistro | null>(null);
+
+  // Mover rápido (Drag & Drop de documentos entre titulares)
+  const [arrastandoDocId, setArrastandoDocId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [moverAlvo, setMoverAlvo] = useState<{
+    doc: DocumentoRegistro;
+    novoTitularId: string;
+    novoTitularNome: string;
+  } | null>(null);
+
+  // Filtro de revisão
+  const [filtroSomenteRevisar, setFiltroSomenteRevisar] = useState(false);
 
   // Destravamento de PDF protegido por senha
   const [docParaDestravar, setDocParaDestravar] = useState<DocumentoRegistro | null>(null);
@@ -736,8 +757,43 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
     return Array.from(tipos);
   }, [documentos]);
 
+  const totalARevisar = useMemo(() => {
+    return documentos.filter((d) => d.metadata?.alertaTitular === 'titular_a_revisar').length;
+  }, [documentos]);
+
+  const handleDropDocumento = (destinoId: string, destinoNome: string) => {
+    if (!arrastandoDocId) return;
+    const docArrastado = documentos.find((d) => d.id === arrastandoDocId);
+    setArrastandoDocId(null);
+    setDropTargetId(null);
+
+    if (!docArrastado) return;
+
+    // Se já pertence ao destino, ignora
+    if (destinoId === 'empresa' && isDocumentoEmpresa(docArrastado)) {
+      return;
+    }
+    if (destinoId !== 'empresa') {
+      const titDestino = titulares.find((t) => t.id === destinoId);
+      if (titDestino && docPertenceAoTitular(docArrastado, titDestino)) {
+        return;
+      }
+    }
+
+    setMoverAlvo({
+      doc: docArrastado,
+      novoTitularId: destinoId,
+      novoTitularNome: destinoNome,
+    });
+  };
+
   const documentosFiltrados = useMemo(() => {
     return documentos.filter((doc) => {
+      // Filtro de revisão
+      if (filtroSomenteRevisar && doc.metadata?.alertaTitular !== 'titular_a_revisar') {
+        return false;
+      }
+
       const termo = buscaDocumentos.toLowerCase().trim();
       const matchBusca =
         !termo ||
@@ -768,7 +824,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
 
       return matchBusca && matchTitular && matchTipo && matchValidade;
     });
-  }, [documentos, buscaDocumentos, filtroTitularDoc, filtroTipoDoc, filtroValidadeDoc, titulares]);
+  }, [documentos, buscaDocumentos, filtroTitularDoc, filtroTipoDoc, filtroValidadeDoc, filtroSomenteRevisar, titulares]);
 
   const titularesFiltrados = useMemo(() => {
     if (filtroTitularDoc === 'empresa') return [];
@@ -776,11 +832,16 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
       .filter((tit) => {
         if (filtroTitularDoc !== 'todos' && tit.id !== filtroTitularDoc) return false;
         const termo = buscaDocumentos.toLowerCase().trim();
+        const temDocs = documentosFiltrados.some((d) => docPertenceAoTitular(d, tit));
+        
+        // Se estiver filtrando "somente a revisar", esconde titulares sem documentos a revisar
+        if (filtroSomenteRevisar && !temDocs) return false;
+
         if (!termo) return true;
-        return tit.nome.toLowerCase().includes(termo) || documentosFiltrados.some((d) => docPertenceAoTitular(d, tit));
+        return tit.nome.toLowerCase().includes(termo) || temDocs;
       })
       .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR', { sensitivity: 'base' }));
-  }, [titulares, filtroTitularDoc, buscaDocumentos, documentosFiltrados]);
+  }, [titulares, filtroTitularDoc, buscaDocumentos, documentosFiltrados, filtroSomenteRevisar]);
 
   const documentosEmpresaFiltrados = useMemo(() => {
     if (filtroTitularDoc !== 'todos' && filtroTitularDoc !== 'empresa') return [];
@@ -844,10 +905,23 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
     const isImg = /\.(png|jpe?g|webp)$/i.test(doc.arquivo);
     const dataFormatada = formatarDataBrasilia(doc.dataCadastro);
 
+    const isArrastandoEste = arrastandoDocId === doc.id;
+
     return (
       <div
         key={doc.id}
-        className="group p-3 bg-[#121820] hover:bg-[#161e29] border border-[#202937] hover:border-[#2d3a4f] rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all"
+        draggable={true}
+        onDragStart={(e) => {
+          e.dataTransfer.setData('text/plain', doc.id);
+          setArrastandoDocId(doc.id);
+        }}
+        onDragEnd={() => {
+          setArrastandoDocId(null);
+          setDropTargetId(null);
+        }}
+        className={`group p-3 bg-[#121820] hover:bg-[#161e29] border border-[#202937] hover:border-[#2d3a4f] rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all cursor-grab active:cursor-grabbing ${
+          isArrastandoEste ? 'opacity-35 scale-[0.98] border-dashed border-emerald-500/70 shadow-lg' : ''
+        }`}
       >
         <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
           <div className="flex-shrink-0">
@@ -981,6 +1055,14 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
             >
               <ExternalLink className="w-3.5 h-3.5" />
             </a>
+
+            <button
+              onClick={() => setDocParaEditar(doc)}
+              className="p-1.5 rounded-lg bg-[#18202b] hover:bg-emerald-500/20 text-slate-300 hover:text-emerald-400 border border-[#202937] hover:border-emerald-500/30 transition-colors cursor-pointer"
+              title="Editar documento (título, tipo, titular, validade)"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
 
             <button
               onClick={() => handleExcluirDoc(doc.id, doc.titulo)}
@@ -1435,6 +1517,31 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                     </option>
                   </select>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={() => setFiltroSomenteRevisar((prev) => !prev)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer ${
+                    filtroSomenteRevisar
+                      ? 'bg-orange-500/20 text-orange-300 border-orange-500/50 shadow-sm shadow-orange-950/40 ring-1 ring-orange-500/30'
+                      : 'bg-[#121820] text-slate-400 hover:text-slate-200 border-[#202937] hover:border-[#2d3a4f]'
+                  }`}
+                  title="Filtrar apenas documentos com selo 'Titular a revisar'"
+                >
+                  <AlertTriangle className={`w-3.5 h-3.5 ${filtroSomenteRevisar ? 'text-orange-400' : 'text-slate-400'}`} />
+                  <span>Somente a revisar</span>
+                  {totalARevisar > 0 && (
+                    <span
+                      className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                        filtroSomenteRevisar
+                          ? 'bg-orange-500/40 text-orange-200'
+                          : 'bg-[#18202b] text-orange-400 border border-orange-500/30'
+                      }`}
+                    >
+                      {totalARevisar}
+                    </span>
+                  )}
+                </button>
               </div>
             </div>
 
@@ -1454,16 +1561,41 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
               </div>
             ) : (
               <div className="space-y-6">
-                {documentosEmpresaFiltrados.length > 0 && (
-                  <div className="bg-[#121820] border border-[#202937] rounded-xl p-4 sm:p-5 space-y-3.5 shadow-sm">
+                {(documentosEmpresaFiltrados.length > 0 || (arrastandoDocId && (filtroTitularDoc === 'todos' || filtroTitularDoc === 'empresa'))) && (
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      if (arrastandoDocId && dropTargetId !== 'empresa') {
+                        setDropTargetId('empresa');
+                      }
+                    }}
+                    onDragLeave={(e) => {
+                      if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                      if (dropTargetId === 'empresa') setDropTargetId(null);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      handleDropDocumento('empresa', 'Documentos da Empresa (Delta Plan)');
+                    }}
+                    className={`bg-[#121820] border rounded-xl p-4 sm:p-5 space-y-3.5 shadow-sm transition-all ${
+                      dropTargetId === 'empresa'
+                        ? 'border-emerald-500/80 bg-emerald-950/20 ring-2 ring-emerald-500/40 shadow-lg shadow-emerald-950/40'
+                        : 'border-[#202937]'
+                    }`}
+                  >
                     <div className="flex items-center justify-between border-b border-[#202937] pb-3">
                       <div className="flex items-center gap-2.5">
                         <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
                           <Building2 className="w-4 h-4" />
                         </div>
                         <div>
-                          <h3 className="font-semibold text-xs sm:text-sm text-slate-100">
-                            Documentos da Empresa (Delta Plan)
+                          <h3 className="font-semibold text-xs sm:text-sm text-slate-100 flex items-center gap-2">
+                            <span>Documentos da Empresa (Delta Plan)</span>
+                            {dropTargetId === 'empresa' && (
+                              <span className="text-[10px] font-medium text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-full animate-pulse flex items-center gap-1">
+                                <MoveRight className="w-3 h-3" /> Solte para mover aqui
+                              </span>
+                            )}
                           </h3>
                           <p className="text-[11px] text-slate-400">
                             Contratos corporativos, normas e arquivos institucionais
@@ -1476,7 +1608,13 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                     </div>
 
                     <div className="space-y-2">
-                      {documentosEmpresaFiltrados.map((doc) => renderItemDocumentoCompacto(doc))}
+                      {documentosEmpresaFiltrados.length === 0 ? (
+                        <div className="p-4 text-center text-xs text-slate-500 border border-dashed border-[#202937] rounded-lg">
+                          Nenhum documento corporativo arquivado.
+                        </div>
+                      ) : (
+                        documentosEmpresaFiltrados.map((doc) => renderItemDocumentoCompacto(doc))
+                      )}
                     </div>
                   </div>
                 )}
@@ -1486,11 +1624,30 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                   const aberto = isTitularAberto(tit.id);
                   const paleta = obterPaletaAvatar(tit.nome);
                   const iniciais = obterIniciais(tit.nome);
+                  const isDropAlvo = dropTargetId === tit.id;
 
                   return (
                     <div
                       key={tit.id}
-                      className="bg-[#121820] border border-[#202937] rounded-xl overflow-hidden shadow-sm transition-all"
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (arrastandoDocId && dropTargetId !== tit.id) {
+                          setDropTargetId(tit.id);
+                        }
+                      }}
+                      onDragLeave={(e) => {
+                        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                        if (dropTargetId === tit.id) setDropTargetId(null);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        handleDropDocumento(tit.id, tit.nome);
+                      }}
+                      className={`bg-[#121820] border rounded-xl overflow-hidden shadow-sm transition-all ${
+                        isDropAlvo
+                          ? 'border-emerald-500/80 bg-emerald-950/20 ring-2 ring-emerald-500/40 shadow-lg shadow-emerald-950/40'
+                          : 'border-[#202937]'
+                      }`}
                     >
                       <div
                         onClick={() => toggleTitularExpandido(tit.id)}
@@ -1510,8 +1667,13 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
 
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
-                              <h3 className="font-semibold text-xs sm:text-sm text-slate-100 truncate">
-                                {tit.nome}
+                              <h3 className="font-semibold text-xs sm:text-sm text-slate-100 truncate flex items-center gap-2">
+                                <span>{tit.nome}</span>
+                                {isDropAlvo && (
+                                  <span className="text-[10px] font-medium text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-full animate-pulse flex items-center gap-1">
+                                    <MoveRight className="w-3 h-3" /> Solte para mover aqui
+                                  </span>
+                                )}
                               </h3>
                               <span className="text-[10px] text-slate-400 px-2 py-0.5 rounded-full bg-[#18202b] border border-[#202937]">
                                 {docsDoTitular.length} documento(s)
@@ -3047,6 +3209,42 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Modal de Edição Completa de Documento */}
+      <ModalEditarDocumento
+        aberto={!!docParaEditar}
+        doc={docParaEditar}
+        titulares={titulares}
+        tiposDisponiveis={tiposDocumentosDisponiveis}
+        nomeUsuarioLogado={nomeUsuarioLogado}
+        onFechar={() => setDocParaEditar(null)}
+        onSalvo={(docAtualizado) => {
+          setDocParaEditar(null);
+          setDocumentos((prev) => prev.map((d) => (d.id === docAtualizado.id ? docAtualizado : d)));
+          carregarDocumentos(true);
+          carregarTitulares();
+        }}
+        onTitularCriado={(novoTitular) => {
+          setTitulares((prev) => [...prev, novoTitular]);
+        }}
+      />
+
+      {/* Modal de Confirmação de Mover Rápido (Drag & Drop) */}
+      <ModalConfirmarMoverDocumento
+        aberto={!!moverAlvo}
+        doc={moverAlvo?.doc || null}
+        novoTitularId={moverAlvo?.novoTitularId || ''}
+        novoTitularNome={moverAlvo?.novoTitularNome || ''}
+        titulares={titulares}
+        nomeUsuarioLogado={nomeUsuarioLogado}
+        onFechar={() => setMoverAlvo(null)}
+        onConfirmado={(docAtualizado) => {
+          setMoverAlvo(null);
+          setDocumentos((prev) => prev.map((d) => (d.id === docAtualizado.id ? docAtualizado : d)));
+          carregarDocumentos(true);
+          carregarTitulares();
+        }}
+      />
     </div>
   );
 };

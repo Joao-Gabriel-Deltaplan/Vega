@@ -601,7 +601,10 @@ export function App() {
 
       {/* Aba 4: Base da VEGA (Conhecimento & Documentos) */}
       {abaAtiva === 'conhecimento' && (
-        <KnowledgeBaseView subAbaInicial={subAbaBaseVega} />
+        <KnowledgeBaseView
+          subAbaInicial={subAbaBaseVega}
+          nomeUsuarioLogado={usuarioLogado?.nome}
+        />
       )}
 
       {/* Aba 5: Painel Admin */}

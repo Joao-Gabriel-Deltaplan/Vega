@@ -643,17 +643,23 @@ export async function atualizarDocumento(
     if (dados.erroIndexacao !== undefined) payload.erro_indexacao = dados.erroIndexacao || null;
 
     if (dados.dataEmissao !== undefined || dados.metadata !== undefined) {
-      const { data: docExistente } = await supabase
-        .from('documentos')
-        .select('metadata')
-        .eq('id', id)
-        .maybeSingle();
-      const metaExistente = docExistente?.metadata || {};
-      payload.metadata = {
-        ...metaExistente,
-        ...(dados.metadata || {}),
-        ...(dados.dataEmissao !== undefined ? { data_emissao: dados.dataEmissao } : {}),
-      };
+      if (dados.metadata !== undefined) {
+        payload.metadata = {
+          ...dados.metadata,
+          ...(dados.dataEmissao !== undefined ? { data_emissao: dados.dataEmissao } : {}),
+        };
+      } else {
+        const { data: docExistente } = await supabase
+          .from('documentos')
+          .select('metadata')
+          .eq('id', id)
+          .maybeSingle();
+        const metaExistente = docExistente?.metadata || {};
+        payload.metadata = {
+          ...metaExistente,
+          ...(dados.dataEmissao !== undefined ? { data_emissao: dados.dataEmissao } : {}),
+        };
+      }
     }
 
     // Busca se é UUID ou id_legado

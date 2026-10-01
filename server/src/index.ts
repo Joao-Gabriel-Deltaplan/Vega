@@ -129,6 +129,10 @@ import { analisarDocumentoParaCofre } from './analiseDocumentoService.js';
 import { estruturarConhecimentoComIA } from './conhecimentoEstruturadorService.js';
 import { calcularSimilaridade } from './utils/textoUtils.js';
 import {
+  obterCamposAlimentadosPorDocumento,
+  atualizarDocumentoConsistente,
+} from './documentos/edicaoDocumentoService.js';
+import {
   validarTokenWebhook,
   extrairDadosEvento,
   processarEventoEvolution,
@@ -848,44 +852,41 @@ app.delete('/api/titulares/:id', async (req, res) => {
   }
 });
 
-// PATCH /api/documentos/:id (Editar metadados: título, tipo, titular, descrição, visibilidade, apelidos, validade, silenciarAlertas)
+// GET /api/documentos/:id/campos-ficha (Consulta se o documento alimentou campos cadastrais de algum titular)
+app.get('/api/documentos/:id/campos-ficha', async (req, res) => {
+  try {
+    const info = await obterCamposAlimentadosPorDocumento(req.params.id);
+    res.json(info);
+  } catch (erro) {
+    console.error('Erro ao consultar campos de ficha do documento:', erro);
+    res.status(500).json({ erro: 'Erro ao consultar campos da ficha.' });
+  }
+});
+
+// PATCH /api/documentos/:id (Editar metadados com consistência total: trechos, ficha e histórico)
 app.patch('/api/documentos/:id', async (req, res) => {
   try {
-    const { titulo, tipo, titular, descricao, visibilidade, apelidos, dataValidade, silenciarAlertas, arquivo } = req.body;
-    const apelidosArray =
-      apelidos !== undefined
-        ? Array.isArray(apelidos)
-          ? apelidos
-          : typeof apelidos === 'string'
-          ? apelidos.split(',').map((a: string) => a.trim()).filter(Boolean)
-          : []
-        : undefined;
-
-    const camposParaAtualizar: Partial<DocumentoRegistro> = {
+    const {
       titulo,
       tipo,
       titular,
-      descricao,
-      visibilidade,
-      apelidos: apelidosArray,
-    };
+      pessoaId,
+      dataValidade,
+      silenciarAlertas,
+      usuarioAlteracao,
+      acaoCamposFicha,
+    } = req.body;
 
-    if (arquivo !== undefined) {
-      camposParaAtualizar.arquivo = arquivo;
-      // Se o documento for substituído, os alertas voltam a funcionar
-      camposParaAtualizar.silenciarAlertas = false;
-    }
-
-    if (silenciarAlertas !== undefined) {
-      camposParaAtualizar.silenciarAlertas = Boolean(silenciarAlertas);
-    }
-
-    if (dataValidade !== undefined) {
-      camposParaAtualizar.dataValidade = dataValidade ? String(dataValidade).trim() : null;
-      camposParaAtualizar.origemValidade = 'manual';
-    }
-
-    const docAtualizado = await atualizarDocumento(req.params.id, camposParaAtualizar);
+    const docAtualizado = await atualizarDocumentoConsistente(req.params.id, {
+      titulo,
+      tipo,
+      titular,
+      pessoaId,
+      dataValidade,
+      silenciarAlertas,
+      usuarioAlteracao: usuarioAlteracao || (req as any).user?.nome || 'Painel do Cofre',
+      acaoCamposFicha,
+    });
 
     if (!docAtualizado) {
       return res.status(404).json({ erro: 'Documento não encontrado.' });
@@ -894,9 +895,6 @@ app.patch('/api/documentos/:id', async (req, res) => {
     if (dataValidade !== undefined || silenciarAlertas === true) {
       await zerarAlertasDocumento(req.params.id);
     }
-
-    // Dispara reindexação em background para atualizar metadados no Supabase
-    indexarDocumentoBackground(docAtualizado);
 
     res.json(docAtualizado);
   } catch (erro) {
