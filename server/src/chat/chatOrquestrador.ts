@@ -2764,7 +2764,7 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'atualizar_conhecimento',
-      description: 'Atualiza um item existente na Base de Conhecimento (altera telefone, chave PIX, link ou conteúdo). Requer confirmação prévia do usuário ("Vou atualizar: [Título]... Confirma?").',
+      description: 'Atualiza um item existente na Base de Conhecimento (altera o título/nome, telefone, chave PIX, link ou conteúdo). Requer confirmação prévia do usuário ("Vou atualizar: [Título]... Confirma?"). Use também quando o usuário disser que salvou errado ou informar o nome correto de um item.',
       parameters: {
         type: 'object',
         properties: {
@@ -2774,11 +2774,11 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
           },
           titulo_atual: {
             type: 'string',
-            description: 'Título ou nome atual do item a ser atualizado (ex: "Contato João do Pix")',
+            description: 'Título ou nome atual do item a ser atualizado (ex: "Contato Novo Item", "Contato João do Pix")',
           },
           novo_titulo: {
             type: 'string',
-            description: 'Novo título se for alterado (opcional)',
+            description: 'Novo título ou nome do contato se for alterado (ex: "Contato João do Pix")',
           },
           categoria: {
             type: 'string',
@@ -2786,7 +2786,7 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
           },
           novo_conteudo: {
             type: 'string',
-            description: 'Novo conteúdo com os dados atualizados (ex: "Telefone: (14) 98888-7777")',
+            description: 'Novo conteúdo com os dados atualizados (ex: "Telefone: (14) 98888-7777") (opcional se alterando apenas o título)',
           },
           apelidos: {
             type: 'array',
@@ -2798,7 +2798,6 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
             description: 'True se o usuário já disse "sim" para a atualização',
           },
         },
-        required: ['novo_conteudo'],
       },
     },
   },
@@ -4456,7 +4455,11 @@ export interface AcaoConhecimentoPendente {
   dataCriacao: number;
   duplicadoId?: string;
   duplicadoTitulo?: string;
-  status: 'aguardando_confirmacao' | 'aguardando_decisao_duplicado';
+  status: 'aguardando_confirmacao' | 'aguardando_decisao_duplicado' | 'aguardando_dado_faltante';
+  campoFaltante?: 'telefone' | 'chave_pix' | 'url' | 'nome' | string;
+  nomePessoa?: string;
+  novoTitulo?: string;
+  apelidos?: string[];
 }
 
 const acoesConhecimentoPendentes = new Map<string, AcaoConhecimentoPendente>();
@@ -4477,6 +4480,40 @@ export function obterAcaoConhecimentoPendente(contatoId: string): AcaoConhecimen
 
 export function limparAcaoConhecimentoPendente(contatoId: string) {
   acoesConhecimentoPendentes.delete(contatoId);
+}
+
+/**
+ * Validação rigorosa contra títulos genéricos (PROIBIDO: "Novo Item", "Contato", vazio, etc.)
+ */
+export function ehTituloGenerico(titulo?: string | null): boolean {
+  if (!titulo) return true;
+  const t = titulo.trim().toLowerCase();
+  if (!t) return true;
+  if (/^(?:contato|chave\s*pix|pix|link|sistema|item|regra)\s*$/i.test(t)) return true;
+  if (/^(?:contato\s*)?(?:novo\s*item|item\s*novo|novo|item|sem\s*nome|desconhecido)$/i.test(t)) return true;
+  if (/^(?:link|sistema)\s*(?:novo\s*item|item\s*novo|novo|item)$/i.test(t)) return true;
+  if (/^(?:chave\s*pix\s*(?:d[oa]\s*)?)(?:novo\s*item|novo|item)$/i.test(t)) return true;
+
+  const semPrefixo = t
+    .replace(/^(?:contato\s*(?:d[oa]\s*)?|chave\s*pix\s*(?:d[oa]\s*)?|link\s*(?:d[oa]\s*)?|sistema\s*(?:d[oa]\s*)?)/i, '')
+    .trim();
+  if (!semPrefixo || /^(?:novo\s*item|item\s*novo|novo|item|sem\s*nome|desconhecido)$/i.test(semPrefixo)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Formata o título de contato garantindo prefixo "Contato" e Capitalização correta
+ */
+export function formatarTituloContato(nomePessoa: string): string {
+  const limpo = (nomePessoa || '').replace(/^(?:contato\s*(?:d[oa]\s*)?)/i, '').trim();
+  const minusculas = new Set(['de', 'do', 'da', 'dos', 'das', 'e']);
+  const nomeFormatado = limpo
+    .split(/\s+/)
+    .map((p, idx) => (minusculas.has(p.toLowerCase()) && idx > 0 ? p.toLowerCase() : p.charAt(0).toUpperCase() + p.slice(1)))
+    .join(' ');
+  return `Contato ${nomeFormatado}`;
 }
 
 /**
@@ -4526,7 +4563,24 @@ export async function toolSalvarConhecimento(
     };
   }
 
-  const tituloLimpo = (args.titulo || '').trim();
+  let tituloLimpo = (args.titulo || '').trim();
+  const pendenciaAtual = obterAcaoConhecimentoPendente(contato.id);
+
+  // Se o título informado for genérico, tenta recuperar de pendência anterior ou recusa
+  if (ehTituloGenerico(tituloLimpo)) {
+    if (pendenciaAtual && pendenciaAtual.titulo && !ehTituloGenerico(pendenciaAtual.titulo)) {
+      tituloLimpo = pendenciaAtual.titulo;
+    } else {
+      return {
+        sucesso: false,
+        status: 'dado_faltante',
+        campo_faltante: 'nome',
+        mensagem: 'Título ou nome genérico não é permitido. É obrigatório informar o nome da pessoa ou sistema.',
+        instrucao_resposta: 'Não é permitido salvar contatos ou itens com títulos genéricos como "Novo Item" ou apenas "Contato". Pergunte ao usuário de quem é esse contato ou qual é o nome do item a ser salvo.',
+      };
+    }
+  }
+
   const tituloNorm = normalizarParaComparacao(tituloLimpo);
   const catNorm = (args.categoria || '').toLowerCase().trim();
   const tipoNorm = (args.tipo || '').toLowerCase().trim();
@@ -4535,12 +4589,41 @@ export async function toolSalvarConhecimento(
   const ehPix = catNorm.includes('financeiro') || tipoNorm === 'pix' || /\bpix\b/i.test(tituloLimpo);
   const ehLink = catNorm.includes('sistema') || tipoNorm === 'link' || /\blink|url\b/i.test(tituloLimpo);
 
-  // 2. RECUSAR GRAVAR SE FALTAR DADO PRINCIPAL
+  // 2. RECUSAR GRAVAR SE FALTAR DADO PRINCIPAL E SALVAR PENDÊNCIA PARCIAL
   if (ehContato) {
-    const matchTel = (args.conteudo || '').match(/(?:\+?55\s*)?(?:\(?([1-9]{2})\)?\s*)?(9\s*\d{4}[-\s]?\d{4}|\d{4}[-\s]?\d{4})\b/);
+    const matchTel =
+      (args.conteudo || '').match(/(?:\+?55\s*)?(?:\(?([1-9]{2})\)?\s*)?(9\s*\d{4}[-\s]?\d{4}|\d{4}[-\s]?\d{4})\b/) ||
+      mensagemUsuarioAtual.match(/(?:\+?55\s*)?(?:\(?([1-9]{2})\)?\s*)?(9\s*\d{4}[-\s]?\d{4}|\d{4}[-\s]?\d{4})\b/);
     const telefone = args.dados_estruturados?.telefone || (matchTel ? matchTel[0].trim() : null);
+
     if (!telefone) {
-      const nomePessoa = tituloLimpo.replace(/^(?:contato\s*(?:d[oa]\s*)?)/i, '').trim() || 'contato';
+      const nomePessoa = tituloLimpo.replace(/^(?:contato\s*(?:d[oa]\s*)?)/i, '').trim();
+      if (ehTituloGenerico(nomePessoa)) {
+        return {
+          sucesso: false,
+          status: 'dado_faltante',
+          campo_faltante: 'nome',
+          mensagem: 'Não é possível salvar contato sem o nome da pessoa. Peça o nome ao usuário.',
+          instrucao_resposta: 'Falta o nome da pessoa para este contato. Pergunte ao usuário de quem é esse contato.',
+        };
+      }
+
+      const tituloContato = formatarTituloContato(nomePessoa);
+      registrarAcaoConhecimentoPendente(contato.id, {
+        tipoAcao: 'salvar',
+        categoria: 'Contatos',
+        titulo: tituloContato,
+        conteudo: '',
+        tipoConhecimento: 'contato',
+        dadosEstruturados: { nome: nomePessoa },
+        nomePessoa,
+        usuarioNome: contato.nome,
+        usuarioId: contato.id,
+        dataCriacao: Date.now(),
+        status: 'aguardando_dado_faltante',
+        campoFaltante: 'telefone',
+      });
+
       return {
         sucesso: false,
         status: 'dado_faltante',
@@ -4554,6 +4637,23 @@ export async function toolSalvarConhecimento(
   if (ehPix) {
     const chave = args.dados_estruturados?.chavePix || (args.conteudo && args.conteudo.length >= 4 && !/^(pix|chave)$/i.test(args.conteudo.trim()) ? args.conteudo.trim() : null);
     if (!chave || chave.toLowerCase().includes('joão do pix')) {
+      const beneficiario = tituloLimpo.replace(/^(?:chave\s*pix\s*(?:d[oa]\s*)?)/i, '').trim();
+      if (!ehTituloGenerico(beneficiario)) {
+        registrarAcaoConhecimentoPendente(contato.id, {
+          tipoAcao: 'salvar',
+          categoria: 'Financeiro',
+          titulo: `Chave PIX do ${beneficiario}`,
+          conteudo: '',
+          tipoConhecimento: 'pix',
+          dadosEstruturados: { beneficiario },
+          nomePessoa: beneficiario,
+          usuarioNome: contato.nome,
+          usuarioId: contato.id,
+          dataCriacao: Date.now(),
+          status: 'aguardando_dado_faltante',
+          campoFaltante: 'chave_pix',
+        });
+      }
       return {
         sucesso: false,
         status: 'dado_faltante',
@@ -4567,6 +4667,23 @@ export async function toolSalvarConhecimento(
   if (ehLink) {
     const temUrl = /https?:\/\/[^\s]+/i.test(args.conteudo || '') || /https?:\/\/[^\s]+/i.test(args.dados_estruturados?.url || '');
     if (!temUrl) {
+      const nomeSistema = tituloLimpo.replace(/^(?:link\s*(?:d[oa]\s*)?|sistema\s*(?:d[oa]\s*)?)/i, '').trim();
+      if (!ehTituloGenerico(nomeSistema)) {
+        registrarAcaoConhecimentoPendente(contato.id, {
+          tipoAcao: 'salvar',
+          categoria: 'Sistemas',
+          titulo: `Link ${nomeSistema}`,
+          conteudo: '',
+          tipoConhecimento: 'link',
+          dadosEstruturados: { nomeSistema },
+          nomePessoa: nomeSistema,
+          usuarioNome: contato.nome,
+          usuarioId: contato.id,
+          dataCriacao: Date.now(),
+          status: 'aguardando_dado_faltante',
+          campoFaltante: 'url',
+        });
+      }
       return {
         sucesso: false,
         status: 'dado_faltante',
@@ -4672,7 +4789,7 @@ export async function toolAtualizarConhecimento(
     titulo_atual?: string;
     novo_titulo?: string;
     categoria?: string;
-    novo_conteudo: string;
+    novo_conteudo?: string;
     apelidos?: string[];
     confirmado?: boolean;
   },
@@ -4713,27 +4830,79 @@ export async function toolAtualizarConhecimento(
       todosK.find(
         (k) =>
           normalizarParaComparacao(k.titulo) === titNorm ||
-          normalizarParaComparacao(k.titulo).includes(titNorm)
+          normalizarParaComparacao(k.titulo).includes(titNorm) ||
+          titNorm.includes(normalizarParaComparacao(k.titulo))
       ) || null;
+  }
+
+  // Fallback inteligente: se o usuário diz "você salvou errado", "o nome certo é...", "salvou como..."
+  if (!item) {
+    const msgNorm = normalizarParaComparacao(mensagemUsuarioAtual);
+    const querCorrigirRecente =
+      /\b(salvou\s*errado|nome\s*errado|nome\s*certo\s*e|nome\s*correto|salvou\s*como|altera\s*o\s*nome|muda\s*o\s*nome|muda\s*o\s*titulo)\b/i.test(
+        msgNorm
+      );
+
+    if (querCorrigirRecente && todosK.length > 0) {
+      // Prioriza item com título genérico ou o item mais recente cadastrado
+      const itemGenerico = todosK.find((k) => ehTituloGenerico(k.titulo));
+      item = itemGenerico || todosK[todosK.length - 1];
+    }
   }
 
   if (!item) {
     return {
       sucesso: false,
       status: 'nao_encontrado',
-      mensagem: `Não encontrei o item '${args.titulo_atual || args.id}' na Base de Conhecimento para atualizar.`,
+      mensagem: `Não encontrei o item '${args.titulo_atual || args.id || 'solicitado'}' na Base de Conhecimento para atualizar.`,
+      instrucao_resposta: `Não encontrei o item na Base de Conhecimento. Pergunte ao usuário qual item ele deseja atualizar.`,
     };
   }
 
-  const fraseConfirmacao = `Vou atualizar o item '${item.titulo}' para: ${args.novo_conteudo}. Confirma?`;
+  // Determina o novo título e novo conteúdo
+  let novoTituloFinal = item.titulo;
+  if (args.novo_titulo && !ehTituloGenerico(args.novo_titulo)) {
+    novoTituloFinal = item.tipo === 'contato' ? formatarTituloContato(args.novo_titulo) : args.novo_titulo.trim();
+  } else {
+    // Tenta extrair de "o nome certo é X"
+    const matchNome = mensagemUsuarioAtual.match(/(?:o\s+nome\s+(?:certo|correto)\s*(?:é|e)\s*|mudar?\s+(?:o\s+nome\s+)?para\s*|alterar?\s+(?:o\s+nome\s+)?para\s*)([^\.,;\n]+)/i);
+    if (matchNome && !ehTituloGenerico(matchNome[1])) {
+      novoTituloFinal = item.tipo === 'contato' ? formatarTituloContato(matchNome[1]) : matchNome[1].trim();
+    }
+  }
+
+  let novoConteudoFinal = item.conteudo;
+  if (args.novo_conteudo && args.novo_conteudo.trim()) {
+    novoConteudoFinal = args.novo_conteudo.trim();
+  }
+
+  // Monta frase de confirmação clara
+  let fraseConfirmacao: string;
+  const mudouTitulo = normalizarParaComparacao(novoTituloFinal) !== normalizarParaComparacao(item.titulo);
+  const mudouConteudo = normalizarParaComparacao(novoConteudoFinal) !== normalizarParaComparacao(item.conteudo);
+
+  if (mudouTitulo && !mudouConteudo) {
+    fraseConfirmacao = `Vou atualizar o nome do item de '${item.titulo}' para '${novoTituloFinal}'. Confirma?`;
+  } else if (!mudouTitulo && mudouConteudo) {
+    fraseConfirmacao = `Vou atualizar o item '${item.titulo}' para: ${novoConteudoFinal}. Confirma?`;
+  } else {
+    fraseConfirmacao = `Vou atualizar o item de '${item.titulo}' para '${novoTituloFinal}' com o dado ${novoConteudoFinal}. Confirma?`;
+  }
 
   registrarAcaoConhecimentoPendente(contato.id, {
     tipoAcao: 'atualizar',
     categoria: args.categoria || item.categoria,
-    titulo: args.novo_titulo || item.titulo,
-    conteudo: args.novo_conteudo,
+    titulo: novoTituloFinal,
+    conteudo: novoConteudoFinal,
     tipoConhecimento: item.tipo,
     idExistente: item.id,
+    novoTitulo: novoTituloFinal,
+    apelidos: args.apelidos || (item.dadosEstruturados as any)?.apelidos,
+    dadosEstruturados: {
+      ...(item.dadosEstruturados || {}),
+      ...(item.tipo === 'contato' ? { nome: novoTituloFinal.replace(/^contato\s*/i, '').trim() } : {}),
+      ...(args.apelidos ? { apelidos: args.apelidos } : {}),
+    },
     usuarioNome: contato.nome,
     usuarioId: contato.id,
     dataCriacao: Date.now(),
@@ -4744,7 +4913,7 @@ export async function toolAtualizarConhecimento(
     sucesso: false,
     status: 'precisa_confirmacao',
     mensagem: fraseConfirmacao,
-    instrucao_resposta: `ATENÇÃO: NÃO grave ainda no banco de dados. Peça confirmação antes de gravar: "${fraseConfirmacao}".`,
+    instrucao_resposta: `ATENÇÃO: NÃO grave ainda no banco de dados. Peça confirmação antes de gravar: "${fraseConfirmacao}". A gravação ocorrerá na mensagem seguinte do usuário confirmando.`,
   };
 }
 
@@ -5107,14 +5276,187 @@ export function detectarAcaoSemFerramenta(mensagemUsuario: string): string | nul
 /**
  * DETECÇÃO DE CONTINUAÇÃO DE CADASTRO NA BASE DE CONHECIMENTO (Fluxo em várias mensagens)
  * Quando o usuário anunciou anteriormente que ia passar uma informação ("vou te passar o telefone")
- * e agora enviou o dado (número de telefone, chave PIX, link), intercepta para evitar buscas espúrias no Cofre
- * e formula a confirmação em uma frase: "Vou salvar: Contato João do Pix, telefone (14) 9xxxx-xxxx. Confirma?".
+ * ou quando faltava um dado (telefone, chave PIX, URL, nome) e agora enviou o dado,
+ * intercepta para evitar buscas espúrias no Cofre, aproveita a pendência parcial
+ * e formula a confirmação em uma frase clara.
  */
 export async function detectarContinuacaoCadastroConhecimento(
   historicoRecente: Mensagem[],
   mensagemUsuarioAtual: string,
   contato: Contato
 ): Promise<ResultadoChatOrquestrador | null> {
+  const pendenciaMemoria = obterAcaoConhecimentoPendente(contato.id);
+
+  // 1. RESOLUÇÃO VIA PENDÊNCIA PARCIAL REGISTRADA EM MEMÓRIA
+  if (pendenciaMemoria && pendenciaMemoria.status === 'aguardando_dado_faltante') {
+    // 1.1. Aguardando Telefone
+    if (pendenciaMemoria.campoFaltante === 'telefone') {
+      const matchTelefone = mensagemUsuarioAtual.match(
+        /(?:\+?55\s*)?(?:\(?([1-9]{2})\)?\s*)?(9\s*\d{4}[-\s]?\d{4}|\d{4}[-\s]?\d{4})\b/
+      );
+      if (matchTelefone) {
+        const telefoneEncontrado = matchTelefone[0].trim();
+        const titulo = pendenciaMemoria.titulo;
+        const nomePessoa = pendenciaMemoria.nomePessoa || titulo.replace(/^contato\s*/i, '').trim();
+
+        if (ehTituloGenerico(titulo)) {
+          return {
+            textoResposta: `Recebi o número ${telefoneEncontrado}, mas de quem é esse contato? Me diga o nome da pessoa para eu salvar.`,
+            origem: 'motor',
+            intencaoDetectada: 'cadastrar_conhecimento',
+            perguntaReescrita: `Pedir nome para contato com telefone ${telefoneEncontrado}`,
+          };
+        }
+
+        // Checagem de duplicidade
+        const todosK = await obterTodosConhecimentos();
+        const tituloNorm = normalizarParaComparacao(titulo);
+        const itemExistente = todosK.find((k) => {
+          const kTitNorm = normalizarParaComparacao(k.titulo);
+          if (kTitNorm === tituloNorm) return true;
+          if (tituloNorm.length >= 4 && (kTitNorm.includes(tituloNorm) || tituloNorm.includes(kTitNorm))) return true;
+          if ((k.dadosEstruturados as any)?.telefone && (k.dadosEstruturados as any).telefone === telefoneEncontrado) return true;
+          return false;
+        });
+
+        if (itemExistente) {
+          registrarAcaoConhecimentoPendente(contato.id, {
+            ...pendenciaMemoria,
+            conteudo: telefoneEncontrado,
+            dadosEstruturados: {
+              ...(pendenciaMemoria.dadosEstruturados || {}),
+              telefone: telefoneEncontrado,
+              nome: nomePessoa,
+            },
+            duplicadoId: itemExistente.id,
+            duplicadoTitulo: itemExistente.titulo,
+            status: 'aguardando_decisao_duplicado',
+          });
+
+          return {
+            textoResposta: `Já existe um item cadastrado como '${itemExistente.titulo}'. Deseja atualizar o item existente ou criar um novo?`,
+            origem: 'motor',
+            intencaoDetectada: 'cadastrar_conhecimento',
+            perguntaReescrita: `Verificação de duplicidade: ${titulo}`,
+          };
+        }
+
+        const fraseConfirmacao = `Vou salvar: ${titulo}, telefone ${telefoneEncontrado}. Confirma?`;
+
+        registrarAcaoConhecimentoPendente(contato.id, {
+          ...pendenciaMemoria,
+          conteudo: telefoneEncontrado,
+          dadosEstruturados: {
+            ...(pendenciaMemoria.dadosEstruturados || {}),
+            telefone: telefoneEncontrado,
+            nome: nomePessoa,
+          },
+          status: 'aguardando_confirmacao',
+          campoFaltante: undefined,
+          dataCriacao: Date.now(),
+        });
+
+        return {
+          textoResposta: fraseConfirmacao,
+          origem: 'motor',
+          intencaoDetectada: 'cadastrar_conhecimento',
+          perguntaReescrita: `Salvar ${titulo}: ${telefoneEncontrado}`,
+        };
+      }
+    }
+
+    // 1.2. Aguardando Nome da pessoa
+    if (pendenciaMemoria.campoFaltante === 'nome') {
+      let nomeInformado = mensagemUsuarioAtual.replace(/^(?:[ée]\s*(?:o|a|do|da|de)?\s*)/i, '').trim();
+      nomeInformado = nomeInformado.replace(/\s+(?:pra mim|para mim|por favor|por gentileza|ai|aí)$/i, '').trim();
+
+      if (!ehTituloGenerico(nomeInformado)) {
+        const tituloContato = formatarTituloContato(nomeInformado);
+        const telefone = pendenciaMemoria.conteudo;
+        const fraseConfirmacao = `Vou salvar: ${tituloContato}, telefone ${telefone}. Confirma?`;
+
+        registrarAcaoConhecimentoPendente(contato.id, {
+          tipoAcao: 'salvar',
+          categoria: 'Contatos',
+          titulo: tituloContato,
+          conteudo: telefone,
+          tipoConhecimento: 'contato',
+          dadosEstruturados: { telefone, nome: nomeInformado },
+          nomePessoa: nomeInformado,
+          usuarioNome: contato.nome,
+          usuarioId: contato.id,
+          dataCriacao: Date.now(),
+          status: 'aguardando_confirmacao',
+        });
+
+        return {
+          textoResposta: fraseConfirmacao,
+          origem: 'motor',
+          intencaoDetectada: 'cadastrar_conhecimento',
+          perguntaReescrita: `Salvar ${tituloContato}: ${telefone}`,
+        };
+      }
+    }
+
+    // 1.3. Aguardando Chave PIX
+    if (pendenciaMemoria.campoFaltante === 'chave_pix') {
+      const chave = mensagemUsuarioAtual.trim();
+      if (chave.length >= 4 && !/^(pix|chave)$/i.test(chave)) {
+        const titulo = pendenciaMemoria.titulo;
+        const fraseConfirmacao = `Vou salvar: ${titulo}, chave ${chave}. Confirma?`;
+
+        registrarAcaoConhecimentoPendente(contato.id, {
+          ...pendenciaMemoria,
+          conteudo: chave,
+          dadosEstruturados: {
+            ...(pendenciaMemoria.dadosEstruturados || {}),
+            chavePix: chave,
+          },
+          status: 'aguardando_confirmacao',
+          campoFaltante: undefined,
+          dataCriacao: Date.now(),
+        });
+
+        return {
+          textoResposta: fraseConfirmacao,
+          origem: 'motor',
+          intencaoDetectada: 'cadastrar_conhecimento',
+          perguntaReescrita: `Salvar ${titulo}: ${chave}`,
+        };
+      }
+    }
+
+    // 1.4. Aguardando URL / Link
+    if (pendenciaMemoria.campoFaltante === 'url') {
+      const matchUrl = mensagemUsuarioAtual.match(/https?:\/\/[^\s]+/i);
+      if (matchUrl) {
+        const url = matchUrl[0].trim();
+        const titulo = pendenciaMemoria.titulo;
+        const fraseConfirmacao = `Vou salvar: ${titulo}, url ${url}. Confirma?`;
+
+        registrarAcaoConhecimentoPendente(contato.id, {
+          ...pendenciaMemoria,
+          conteudo: url,
+          dadosEstruturados: {
+            ...(pendenciaMemoria.dadosEstruturados || {}),
+            url,
+          },
+          status: 'aguardando_confirmacao',
+          campoFaltante: undefined,
+          dataCriacao: Date.now(),
+        });
+
+        return {
+          textoResposta: fraseConfirmacao,
+          origem: 'motor',
+          intencaoDetectada: 'cadastrar_conhecimento',
+          perguntaReescrita: `Salvar ${titulo}: ${url}`,
+        };
+      }
+    }
+  }
+
+  // 2. DETECÇÃO BASEADA NO HISTÓRICO DE MENSAGENS (Convite da VEGA ou anúncio prévio)
   if (!historicoRecente || historicoRecente.length === 0) return null;
 
   const ultimaMsgAssistente = [...historicoRecente].reverse().find((m) => m.remetente === 'assistente');
@@ -5126,7 +5468,6 @@ export async function detectarContinuacaoCadastroConhecimento(
   const txtAssistente = (ultimaMsgAssistente.texto || '').toLowerCase();
   const txtUserAnterior = (msgAnteriorUsuario.texto || '').toLowerCase();
 
-  // Verifica se houve convite da VEGA ou anúncio prévio do usuário
   const assistenteConvidouEnvio =
     /\b(pode mandar|pode passar|pode enviar|manda|envia|qual e|qual [eé]|me passa)\s+(o\s+telefone|o\s+numero|o\s+n[úu]mero|o\s+contato|a\s+chave|o\s+link|o\s+pix|os\s+dados)\b/i.test(
       txtAssistente
@@ -5157,25 +5498,40 @@ export async function detectarContinuacaoCadastroConhecimento(
     }
   }
 
-  // Limpa termos conversacionais de encerramento do nome
   nomePessoa = nomePessoa.replace(/\s+(?:pra mim|para mim|por favor|por gentileza|ai|aí|no cofre|na base)$/i, '').trim();
 
-  // Capitaliza o nome da pessoa preservando preposições em minúsculas
-  const minusculas = new Set(['de', 'do', 'da', 'dos', 'das', 'e']);
-  const nomeFormatado = nomePessoa
-    ? nomePessoa
-        .split(/\s+/)
-        .map((p, idx) => (minusculas.has(p.toLowerCase()) && idx > 0 ? p.toLowerCase() : p.charAt(0).toUpperCase() + p.slice(1)))
-        .join(' ')
-    : 'Novo Item';
-
-  // 1. Caso: Telefone
+  // 2.1. Telefone enviado
   const matchTelefone = mensagemUsuarioAtual.match(
     /(?:\+?55\s*)?(?:\(?([1-9]{2})\)?\s*)?(9\s*\d{4}[-\s]?\d{4}|\d{4}[-\s]?\d{4})\b/
   );
   if (matchTelefone && (txtUserAnterior.includes('telefone') || txtUserAnterior.includes('contato') || assistenteConvidouEnvio)) {
     const telefoneEncontrado = matchTelefone[0].trim();
-    const titulo = nomeFormatado.toLowerCase().startsWith('contato') ? nomeFormatado : `Contato ${nomeFormatado}`;
+
+    // PROIBIÇÃO ABSOLUTA DE TÍTULOS GENÉRICOS ("Novo Item", "Contato")
+    if (!nomePessoa || ehTituloGenerico(nomePessoa)) {
+      registrarAcaoConhecimentoPendente(contato.id, {
+        tipoAcao: 'salvar',
+        categoria: 'Contatos',
+        titulo: '',
+        conteudo: telefoneEncontrado,
+        tipoConhecimento: 'contato',
+        dadosEstruturados: { telefone: telefoneEncontrado },
+        usuarioNome: contato.nome,
+        usuarioId: contato.id,
+        dataCriacao: Date.now(),
+        status: 'aguardando_dado_faltante',
+        campoFaltante: 'nome',
+      });
+
+      return {
+        textoResposta: `Recebi o número ${telefoneEncontrado}, mas de quem é esse contato? Me diga o nome da pessoa para eu salvar.`,
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: `Pedir nome para contato com telefone ${telefoneEncontrado}`,
+      };
+    }
+
+    const titulo = formatarTituloContato(nomePessoa);
 
     // CHECAGEM DE DUPLICIDADE ANTES DE PEDIR CONFIRMAÇÃO
     const todosK = await obterTodosConhecimentos();
@@ -5195,7 +5551,7 @@ export async function detectarContinuacaoCadastroConhecimento(
         titulo,
         conteudo: telefoneEncontrado,
         tipoConhecimento: 'contato',
-        dadosEstruturados: { telefone: telefoneEncontrado, nome: nomeFormatado },
+        dadosEstruturados: { telefone: telefoneEncontrado, nome: nomePessoa },
         usuarioNome: contato.nome,
         usuarioId: contato.id,
         dataCriacao: Date.now(),
@@ -5220,7 +5576,7 @@ export async function detectarContinuacaoCadastroConhecimento(
       titulo,
       conteudo: telefoneEncontrado,
       tipoConhecimento: 'contato',
-      dadosEstruturados: { telefone: telefoneEncontrado, nome: nomeFormatado },
+      dadosEstruturados: { telefone: telefoneEncontrado, nome: nomePessoa },
       usuarioNome: contato.nome,
       usuarioId: contato.id,
       dataCriacao: Date.now(),
@@ -5235,11 +5591,20 @@ export async function detectarContinuacaoCadastroConhecimento(
     };
   }
 
-  // 2. Caso: Chave PIX
+  // 2.2. Caso: Chave PIX
   if (txtUserAnterior.includes('pix') || txtAssistente.includes('pix') || txtAssistente.includes('chave')) {
     const chave = mensagemUsuarioAtual.trim();
     if (chave.length >= 4 && !/^(pix|chave)$/i.test(chave)) {
-      const titulo = `Chave PIX do ${nomeFormatado}`;
+      if (!nomePessoa || ehTituloGenerico(nomePessoa)) {
+        return {
+          textoResposta: `Recebi a chave PIX, mas de quem é esse PIX? Me diga o nome do beneficiário para eu salvar.`,
+          origem: 'motor',
+          intencaoDetectada: 'cadastrar_conhecimento',
+          perguntaReescrita: `Pedir nome para chave PIX`,
+        };
+      }
+
+      const titulo = `Chave PIX do ${nomePessoa}`;
 
       const todosK = await obterTodosConhecimentos();
       const tituloNorm = normalizarParaComparacao(titulo);
@@ -5258,7 +5623,7 @@ export async function detectarContinuacaoCadastroConhecimento(
           titulo,
           conteudo: chave,
           tipoConhecimento: 'pix',
-          dadosEstruturados: { chavePix: chave, beneficiario: nomeFormatado },
+          dadosEstruturados: { chavePix: chave, beneficiario: nomePessoa },
           usuarioNome: contato.nome,
           usuarioId: contato.id,
           dataCriacao: Date.now(),
@@ -5283,7 +5648,7 @@ export async function detectarContinuacaoCadastroConhecimento(
         titulo,
         conteudo: chave,
         tipoConhecimento: 'pix',
-        dadosEstruturados: { chavePix: chave, beneficiario: nomeFormatado },
+        dadosEstruturados: { chavePix: chave, beneficiario: nomePessoa },
         usuarioNome: contato.nome,
         usuarioId: contato.id,
         dataCriacao: Date.now(),
@@ -5299,11 +5664,20 @@ export async function detectarContinuacaoCadastroConhecimento(
     }
   }
 
-  // 3. Caso: Link / URL
+  // 2.3. Caso: Link / URL
   const matchUrl = mensagemUsuarioAtual.match(/https?:\/\/[^\s]+/i);
   if (matchUrl) {
     const url = matchUrl[0].trim();
-    const titulo = `Link ${nomeFormatado}`;
+    if (!nomePessoa || ehTituloGenerico(nomePessoa)) {
+      return {
+        textoResposta: `Recebi o link, mas a qual sistema ele se refere? Me diga o nome do sistema para eu salvar.`,
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: `Pedir nome para o link`,
+      };
+    }
+
+    const titulo = `Link ${nomePessoa}`;
 
     const todosK = await obterTodosConhecimentos();
     const tituloNorm = normalizarParaComparacao(titulo);
@@ -5322,7 +5696,7 @@ export async function detectarContinuacaoCadastroConhecimento(
         titulo,
         conteudo: url,
         tipoConhecimento: 'link',
-        dadosEstruturados: { url, nomeSistema: nomeFormatado },
+        dadosEstruturados: { url, nomeSistema: nomePessoa },
         usuarioNome: contato.nome,
         usuarioId: contato.id,
         dataCriacao: Date.now(),
@@ -5347,7 +5721,7 @@ export async function detectarContinuacaoCadastroConhecimento(
       titulo,
       conteudo: url,
       tipoConhecimento: 'link',
-      dadosEstruturados: { url, nomeSistema: nomeFormatado },
+      dadosEstruturados: { url, nomeSistema: nomePessoa },
       usuarioNome: contato.nome,
       usuarioId: contato.id,
       dataCriacao: Date.now(),
@@ -5381,17 +5755,18 @@ export async function detectarConfirmacaoSalvarConhecimento(
   const txtAssistente = (ultimaMsgAssistente?.texto || '').trim();
   const matchSalvar = txtAssistente.match(/Vou salvar:\s*([^,]+),\s*(.+?)\.\s*Confirma\?/i);
   const matchAtualizar = txtAssistente.match(/Vou atualizar o item '([^']+)' para:\s*(.+?)\.\s*Confirma\?/i);
+  const matchAtualizarNome = txtAssistente.match(/Vou atualizar o nome do item de '([^']+)' para '([^']+)'.\s*Confirma\?/i);
+  const matchAtualizarAmbos = txtAssistente.match(/Vou atualizar o item de '([^']+)' para '([^']+)' com o dado (.+?)\.\s*Confirma\?/i);
   const matchDuplicado = txtAssistente.match(/Já existe um item cadastrado como '([^']+)'. Deseja atualizar o item existente ou criar um novo\?/i);
   const matchRemover = txtAssistente.match(/Você confirma a exclusão do item '([^']+)' da Base de Conhecimento\?/i);
 
-  if (!pendenciaMemoria && !matchSalvar && !matchAtualizar && !matchDuplicado && !matchRemover) {
+  if (!pendenciaMemoria && !matchSalvar && !matchAtualizar && !matchAtualizarNome && !matchAtualizarAmbos && !matchDuplicado && !matchRemover) {
     return null;
   }
 
   const msgNorm = normalizarParaComparacao(mensagemUsuarioAtual);
 
   // MUDANÇA DE ASSUNTO NO MEIO ("deixa pra lá, qual o CPF do Thomaz?")
-  // Se contiver interrogação ou termos de consulta e não for afirmação simples:
   const ehPerguntaOuNovaConsulta =
     /[?]/i.test(mensagemUsuarioAtual) ||
     /\b(qual|quais|quem|onde|quando|quanto|como|por que|porque|cade|cadê|mostra|me fala|me diga|cpf|rg|contrato|documento|certid[aã]o|deixa pra l[aá]|esquece isso)\b/i.test(msgNorm);
@@ -5404,7 +5779,6 @@ export async function detectarConfirmacaoSalvarConhecimento(
     /^(n[aã]o|n|cancela|cancelar|deixa|esquece|nao quero|nao precisa)\b/i.test(msgNorm);
 
   if (ehPerguntaOuNovaConsulta && !ehAfirmativo) {
-    // Descarta a ação pendente e deixa o motor central atender a nova pergunta
     limparAcaoConhecimentoPendente(contato.id);
     return null;
   }
@@ -5517,6 +5891,17 @@ export async function detectarConfirmacaoSalvarConhecimento(
         }
       }
 
+      // Proibição estrita de títulos genéricos no salvamento
+      if (ehTituloGenerico(titulo)) {
+        limparAcaoConhecimentoPendente(contato.id);
+        return {
+          textoResposta: 'Não posso salvar um contato com nome genérico ("Novo Item"). Por favor, me diga o nome da pessoa para salvar.',
+          origem: 'motor',
+          intencaoDetectada: 'cadastrar_conhecimento',
+          perguntaReescrita: 'Recusa de salvamento com título genérico',
+        };
+      }
+
       if (titulo && conteudo) {
         const novoItem = await adicionarConhecimento({
           categoria,
@@ -5543,27 +5928,65 @@ export async function detectarConfirmacaoSalvarConhecimento(
     }
   }
 
-  // 3. Confirmação de Atualização: "Vou atualizar o item '[Título]' para: ... Confirma?"
-  if (matchAtualizar || pendenciaMemoria?.tipoAcao === 'atualizar') {
+  // 3. Confirmação de Atualização: "Vou atualizar o item '[Título]' para: ... Confirma?" ou "Vou atualizar o nome do item de '...' para '...'. Confirma?"
+  if (matchAtualizar || matchAtualizarNome || matchAtualizarAmbos || pendenciaMemoria?.tipoAcao === 'atualizar') {
     if (ehAfirmativo) {
       const idAlvo = pendenciaMemoria?.idExistente;
-      const tituloAlvo = pendenciaMemoria?.titulo || (matchAtualizar ? matchAtualizar[1].trim() : '');
+      const tituloAlvo =
+        pendenciaMemoria?.duplicadoTitulo ||
+        (matchAtualizarNome ? matchAtualizarNome[1].trim() : matchAtualizarAmbos ? matchAtualizarAmbos[1].trim() : matchAtualizar ? matchAtualizar[1].trim() : '');
+
       const todosK = await obterTodosConhecimentos();
-      const itemExistente = idAlvo
+      let itemExistente = idAlvo
         ? todosK.find((k) => k.id === idAlvo)
-        : todosK.find((k) => normalizarParaComparacao(k.titulo) === normalizarParaComparacao(tituloAlvo));
+        : todosK.find((k) => tituloAlvo && normalizarParaComparacao(k.titulo) === normalizarParaComparacao(tituloAlvo));
+
+      // Se ainda não encontrou, busca item genérico recente ou o mais recente da base
+      if (!itemExistente && todosK.length > 0) {
+        itemExistente = todosK.find((k) => ehTituloGenerico(k.titulo)) || todosK[todosK.length - 1];
+      }
 
       if (itemExistente) {
-        const novoConteudo = pendenciaMemoria?.conteudo || (matchAtualizar ? matchAtualizar[2].trim() : itemExistente.conteudo);
+        let novoTitulo = pendenciaMemoria?.novoTitulo || pendenciaMemoria?.titulo;
+        if (!novoTitulo && matchAtualizarNome) {
+          novoTitulo = matchAtualizarNome[2].trim();
+        } else if (!novoTitulo && matchAtualizarAmbos) {
+          novoTitulo = matchAtualizarAmbos[2].trim();
+        }
+
+        if (!novoTitulo || ehTituloGenerico(novoTitulo)) {
+          novoTitulo = itemExistente.titulo;
+        }
+
+        let novoConteudo = pendenciaMemoria?.conteudo;
+        if (!novoConteudo && matchAtualizarAmbos) {
+          novoConteudo = matchAtualizarAmbos[3].trim();
+        } else if (!novoConteudo && matchAtualizar) {
+          novoConteudo = matchAtualizar[2].trim();
+        } else if (!novoConteudo) {
+          novoConteudo = itemExistente.conteudo;
+        }
+
+        const novosApelidos = pendenciaMemoria?.apelidos || (itemExistente.dadosEstruturados as any)?.apelidos;
+
+        const novosDadosEstruturados = {
+          ...(itemExistente.dadosEstruturados || {}),
+          ...(pendenciaMemoria?.dadosEstruturados || {}),
+          ...(novosApelidos ? { apelidos: novosApelidos } : {}),
+          atualizadoPor: contato.nome,
+          dataAtualizacaoIso: new Date().toISOString(),
+        };
+
+        if (itemExistente.tipo === 'contato' && novoTitulo) {
+          novosDadosEstruturados.nome = novoTitulo.replace(/^contato\s*/i, '').trim();
+        }
+
         const atualizado = await atualizarConhecimento(itemExistente.id, {
-          titulo: itemExistente.titulo,
-          categoria: itemExistente.categoria,
+          titulo: novoTitulo, // <--- APLICA O NOVO TÍTULO!
+          categoria: pendenciaMemoria?.categoria || itemExistente.categoria,
           conteudo: novoConteudo,
-          dadosEstruturados: {
-            ...(itemExistente.dadosEstruturados || {}),
-            atualizadoPor: contato.nome,
-            dataAtualizacaoIso: new Date().toISOString(),
-          },
+          tipo: itemExistente.tipo,
+          dadosEstruturados: novosDadosEstruturados,
         });
 
         if (atualizado) {
@@ -5571,11 +5994,12 @@ export async function detectarConfirmacaoSalvarConhecimento(
         }
         limparAcaoConhecimentoPendente(contato.id);
 
+        const tituloExibicao = atualizado?.titulo || novoTitulo;
         return {
-          textoResposta: `${itemExistente.titulo} atualizado com sucesso na Base de Conhecimento!`,
+          textoResposta: `${tituloExibicao} atualizado com sucesso na Base de Conhecimento!`,
           origem: 'motor',
           intencaoDetectada: 'cadastrar_conhecimento',
-          perguntaReescrita: `Atualizar ${itemExistente.titulo}`,
+          perguntaReescrita: `Atualizar ${tituloExibicao}`,
         };
       }
     }
