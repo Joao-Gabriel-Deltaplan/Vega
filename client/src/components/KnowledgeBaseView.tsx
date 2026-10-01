@@ -44,6 +44,7 @@ import {
   MoveRight,
   UserX,
   Plus,
+  GripVertical,
 } from 'lucide-react';
 import { ASSISTENTE } from '../config/assistente.js';
 import { gerarLinksNavegacao } from '../utils/geoLinks.js';
@@ -788,11 +789,17 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
     return documentos.filter((d) => d.metadata?.alertaTitular === 'titular_a_revisar').length;
   }, [documentos]);
 
-  const handleDropDocumento = (destinoId: string, destinoNome: string) => {
-    if (!arrastandoDocId) return;
-    const docArrastado = documentos.find((d) => d.id === arrastandoDocId);
+  const handleDropDocumento = (
+    destinoId: string,
+    destinoNome: string,
+    docIdInformado?: string | null
+  ) => {
+    const idParaMover = docIdInformado || arrastandoDocId;
     setArrastandoDocId(null);
     setDropTargetId(null);
+
+    if (!idParaMover) return;
+    const docArrastado = documentos.find((d) => d.id === idParaMover);
 
     if (!docArrastado) return;
 
@@ -949,6 +956,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
         key={doc.id}
         draggable={true}
         onDragStart={(e) => {
+          e.dataTransfer.effectAllowed = 'move';
           e.dataTransfer.setData('text/plain', doc.id);
           setArrastandoDocId(doc.id);
         }}
@@ -956,11 +964,19 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
           setArrastandoDocId(null);
           setDropTargetId(null);
         }}
-        className={`group p-3 bg-[#121820] hover:bg-[#161e29] border border-[#202937] hover:border-[#2d3a4f] rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all cursor-grab active:cursor-grabbing ${
-          isArrastandoEste ? 'opacity-35 scale-[0.98] border-dashed border-emerald-500/70 shadow-lg' : ''
+        className={`group p-3 bg-[#121820] hover:bg-[#161e29] border border-[#202937] hover:border-[#2d3a4f] rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all cursor-grab active:cursor-grabbing select-none ${
+          isArrastandoEste ? 'opacity-35 scale-[0.98] border-dashed border-emerald-500/70 shadow-lg ring-2 ring-emerald-500/40' : ''
         }`}
       >
-        <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
+        <div className="flex items-start sm:items-center gap-2.5 min-w-0 flex-1">
+          {/* Alça visual de arrastar */}
+          <div
+            className="text-slate-600 group-hover:text-slate-400 p-0.5 rounded cursor-grab active:cursor-grabbing flex-shrink-0 transition-colors"
+            title="Clique e arraste este documento para outro titular"
+          >
+            <GripVertical className="w-4 h-4" />
+          </div>
+
           <div className="flex-shrink-0">
             {isPdf ? (
               <div className="w-9 h-9 rounded-lg bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 shadow-sm">
@@ -1628,13 +1644,49 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
               </div>
             ) : (
               <div className="space-y-6">
+                {/* AVISO VISUAL QUANDO ESTIVER ARRASTANDO DOCUMENTO */}
+                {arrastandoDocId && (
+                  <div className="p-3.5 bg-emerald-500/15 border-2 border-dashed border-emerald-500/60 rounded-xl text-xs text-emerald-300 flex items-center justify-between gap-3 animate-pulse shadow-lg">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center flex-shrink-0">
+                        <MoveRight className="w-4 h-4 animate-bounce" />
+                      </div>
+                      <div>
+                        <span className="font-semibold text-slate-100">
+                          Transferência por Arraste Ativa:
+                        </span>{' '}
+                        <span>
+                          Solte o documento sobre qualquer titular abaixo para transferi-lo.
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setArrastandoDocId(null);
+                        setDropTargetId(null);
+                      }}
+                      className="px-2.5 py-1 text-slate-300 hover:text-white bg-[#18202b] hover:bg-[#202937] border border-[#202937] rounded-lg text-xs transition-colors cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                )}
+
                 {(documentosEmpresaFiltrados.length > 0 || (arrastandoDocId && (filtroTitularDoc === 'todos' || filtroTitularDoc === 'empresa'))) && (
                   <div
                     onDragOver={(e) => {
                       e.preventDefault();
-                      if (arrastandoDocId && dropTargetId !== 'empresa') {
+                      e.stopPropagation();
+                      e.dataTransfer.dropEffect = 'move';
+                      if (dropTargetId !== 'empresa') {
                         setDropTargetId('empresa');
                       }
+                    }}
+                    onDragEnter={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setDropTargetId('empresa');
                     }}
                     onDragLeave={(e) => {
                       if (e.currentTarget.contains(e.relatedTarget as Node)) return;
@@ -1642,7 +1694,9 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                     }}
                     onDrop={(e) => {
                       e.preventDefault();
-                      handleDropDocumento('empresa', 'Documentos da Empresa (Delta Plan)');
+                      e.stopPropagation();
+                      const id = e.dataTransfer.getData('text/plain') || arrastandoDocId;
+                      handleDropDocumento('empresa', 'Documentos da Empresa (Delta Plan)', id);
                     }}
                     className={`bg-[#121820] border rounded-xl p-4 sm:p-5 space-y-3.5 shadow-sm transition-all ${
                       dropTargetId === 'empresa'
@@ -1659,7 +1713,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                           <h3 className="font-semibold text-xs sm:text-sm text-slate-100 flex items-center gap-2">
                             <span>Documentos da Empresa (Delta Plan)</span>
                             {dropTargetId === 'empresa' && (
-                              <span className="text-[10px] font-medium text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-full animate-pulse flex items-center gap-1">
+                              <span className="text-[10px] font-medium text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-full animate-pulse flex items-center gap-1 border border-emerald-500/30">
                                 <MoveRight className="w-3 h-3" /> Solte para mover aqui
                               </span>
                             )}
@@ -1691,9 +1745,16 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                   <div
                     onDragOver={(e) => {
                       e.preventDefault();
-                      if (arrastandoDocId && dropTargetId !== 'sem_titular') {
+                      e.stopPropagation();
+                      e.dataTransfer.dropEffect = 'move';
+                      if (dropTargetId !== 'sem_titular') {
                         setDropTargetId('sem_titular');
                       }
+                    }}
+                    onDragEnter={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setDropTargetId('sem_titular');
                     }}
                     onDragLeave={(e) => {
                       if (e.currentTarget.contains(e.relatedTarget as Node)) return;
@@ -1701,7 +1762,9 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                     }}
                     onDrop={(e) => {
                       e.preventDefault();
-                      handleDropDocumento('sem_titular', 'Sem titular');
+                      e.stopPropagation();
+                      const id = e.dataTransfer.getData('text/plain') || arrastandoDocId;
+                      handleDropDocumento('sem_titular', 'Sem titular', id);
                     }}
                     className={`bg-[#121820] border rounded-xl p-4 sm:p-5 space-y-3.5 shadow-sm transition-all ${
                       dropTargetId === 'sem_titular'
@@ -1718,7 +1781,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                           <h3 className="font-semibold text-xs sm:text-sm text-slate-100 flex items-center gap-2">
                             <span>Documentos sem Titular</span>
                             {dropTargetId === 'sem_titular' && (
-                              <span className="text-[10px] font-medium text-amber-400 bg-amber-500/20 px-2 py-0.5 rounded-full animate-pulse flex items-center gap-1">
+                              <span className="text-[10px] font-medium text-amber-400 bg-amber-500/20 px-2 py-0.5 rounded-full animate-pulse flex items-center gap-1 border border-amber-500/30">
                                 <MoveRight className="w-3 h-3" /> Solte para desvincular titular
                               </span>
                             )}
@@ -1763,9 +1826,16 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                       key={tit.id}
                       onDragOver={(e) => {
                         e.preventDefault();
-                        if (arrastandoDocId && dropTargetId !== tit.id) {
+                        e.stopPropagation();
+                        e.dataTransfer.dropEffect = 'move';
+                        if (dropTargetId !== tit.id) {
                           setDropTargetId(tit.id);
                         }
+                      }}
+                      onDragEnter={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setDropTargetId(tit.id);
                       }}
                       onDragLeave={(e) => {
                         if (e.currentTarget.contains(e.relatedTarget as Node)) return;
@@ -1773,7 +1843,9 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                       }}
                       onDrop={(e) => {
                         e.preventDefault();
-                        handleDropDocumento(tit.id, tit.nome);
+                        e.stopPropagation();
+                        const id = e.dataTransfer.getData('text/plain') || arrastandoDocId;
+                        handleDropDocumento(tit.id, tit.nome, id);
                       }}
                       className={`bg-[#121820] border rounded-xl overflow-hidden shadow-sm transition-all ${
                         isDropAlvo
