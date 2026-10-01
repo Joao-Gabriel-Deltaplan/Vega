@@ -99,6 +99,7 @@ export interface DocumentoRegistro {
   titular?: string;
   pessoaId?: string | null;
   pessoa_id?: string | null;
+  corporativo?: boolean;
   descricao?: string;
   apelidos?: string[];
   visibilidade: VisibilidadeDoc;

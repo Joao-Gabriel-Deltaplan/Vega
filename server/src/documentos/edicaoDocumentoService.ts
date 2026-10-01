@@ -145,15 +145,25 @@ export async function atualizarDocumentoConsistente(
   let novoPessoaId = pessoaIdAnterior;
   let ehCorporativo = docExistente.corporativo ?? false;
 
-  if (params.titular !== undefined) {
-    const tNome = params.titular.trim();
-    const isEmpresa =
-      !tNome ||
-      tNome.toLowerCase().includes('delta') ||
-      tNome.toLowerCase().includes('empresa') ||
-      tNome.toLowerCase() === 'corporativo';
+  if (params.titular !== undefined || params.pessoaId !== undefined) {
+    const tNome = (params.titular || '').trim();
+    const ehSemTitular =
+      tNome.toLowerCase() === 'sem_titular' ||
+      tNome.toLowerCase() === 'sem titular' ||
+      tNome.toLowerCase() === 'nenhum' ||
+      params.pessoaId === 'sem_titular';
 
-    if (isEmpresa) {
+    const isEmpresa =
+      !ehSemTitular &&
+      (tNome.toLowerCase().includes('delta') ||
+        tNome.toLowerCase().includes('empresa') ||
+        tNome.toLowerCase() === 'corporativo');
+
+    if (ehSemTitular) {
+      novoTitular = 'Sem titular';
+      novoPessoaId = null;
+      ehCorporativo = false;
+    } else if (isEmpresa) {
       novoTitular = 'Delta Plan';
       novoPessoaId = null;
       ehCorporativo = true;
@@ -167,14 +177,18 @@ export async function atualizarDocumentoConsistente(
         novoPessoaId = titResolvido.id;
         ehCorporativo = false;
       } else {
-        novoTitular = tNome;
+        novoTitular = tNome || 'Sem titular';
         novoPessoaId = params.pessoaId || null;
         ehCorporativo = false;
       }
     }
 
     if (novoTitular !== titularAnterior) {
-      alteracoesHistorico.push(`Titular alterado de "${titularAnterior}" para "${novoTitular}"`);
+      if (novoTitular === 'Sem titular') {
+        alteracoesHistorico.push(`Titular removido do documento (anterior: "${titularAnterior}")`);
+      } else {
+        alteracoesHistorico.push(`Titular alterado de "${titularAnterior}" para "${novoTitular}"`);
+      }
     }
   }
 
@@ -286,7 +300,7 @@ export async function atualizarDocumentoConsistente(
     titulo: params.titulo !== undefined ? params.titulo.trim() : docExistente.titulo,
     tipo: params.tipo !== undefined ? params.tipo.trim() : docExistente.tipo,
     titular: novoTitular,
-    pessoaId: novoPessoaId || undefined,
+    pessoaId: novoPessoaId,
     corporativo: ehCorporativo,
     metadata: metaAtual,
   };

@@ -9,8 +9,11 @@ import {
   Loader2,
   Check,
   Search,
+  Trash2,
 } from 'lucide-react';
 import { DocumentoRegistro, FichaTitular } from '../types/chat.js';
+import { ModalEditarTitular } from './ModalEditarTitular.js';
+import { ModalExcluirTitular } from './ModalExcluirTitular.js';
 
 interface CampoFichaAlimentado {
   chave: string;
@@ -40,6 +43,8 @@ interface ModalEditarDocumentoProps {
   onFechar: () => void;
   onSalvo: (docAtualizado: DocumentoRegistro) => void;
   onTitularCriado?: (novoTitular: FichaTitular) => void;
+  onTitularAtualizado?: (titularAtualizado: FichaTitular) => void;
+  onTitularExcluido?: (titularId: string) => void;
 }
 
 export const ModalEditarDocumento: React.FC<ModalEditarDocumentoProps> = ({
@@ -51,6 +56,8 @@ export const ModalEditarDocumento: React.FC<ModalEditarDocumentoProps> = ({
   onFechar,
   onSalvo,
   onTitularCriado,
+  onTitularAtualizado,
+  onTitularExcluido,
 }) => {
   if (!aberto || !doc) return null;
 
@@ -60,21 +67,36 @@ export const ModalEditarDocumento: React.FC<ModalEditarDocumentoProps> = ({
   const [outroTipo, setOutroTipo] = useState('');
   const [isOutroTipo, setIsOutroTipo] = useState(false);
 
-  // Titular: ID do titular cadastrado ou 'empresa'
+  // Titular: ID do titular cadastrado, 'empresa' ou 'sem_titular'
   const titularInicial = useMemo(() => {
     const pId = doc.pessoaId || doc.pessoa_id;
-    if (pId) return pId;
-    if (!doc.titular) return 'empresa';
-    const tLower = doc.titular.toLowerCase();
+    if (pId) {
+      const achadoPorId = titulares.find((t) => t.id === pId);
+      if (achadoPorId) return pId;
+    }
+    if (!doc.titular) return 'sem_titular';
+    const tLower = doc.titular.toLowerCase().trim();
+    if (tLower === 'sem titular' || tLower === 'sem_titular' || tLower === 'nenhum') {
+      return 'sem_titular';
+    }
     if (tLower.includes('delta') || tLower.includes('empresa') || tLower === 'corporativo') {
       return 'empresa';
     }
-    const achado = titulares.find((t) => t.nome.toLowerCase() === doc.titular?.toLowerCase());
-    return achado ? achado.id : 'empresa';
+    const achadoPorNome = titulares.find((t) => t.nome.toLowerCase() === doc.titular?.toLowerCase());
+    return achadoPorNome ? achadoPorNome.id : 'sem_titular';
   }, [doc, titulares]);
 
   const [titularSelecionado, setTitularSelecionado] = useState<string>(titularInicial);
   const [buscaTitular, setBuscaTitular] = useState('');
+
+  // Modais de edição e exclusão de titular acionados a partir do documento
+  const [titularParaEditarModal, setTitularParaEditarModal] = useState<FichaTitular | null>(null);
+  const [titularParaExcluirModal, setTitularParaExcluirModal] = useState<FichaTitular | null>(null);
+
+  const titularSelecionadoObj = useMemo(() => {
+    if (titularSelecionado === 'empresa' || titularSelecionado === 'sem_titular') return null;
+    return titulares.find((t) => t.id === titularSelecionado) || null;
+  }, [titularSelecionado, titulares]);
 
   // Formulário inline para "+ Criar novo titular"
   const [criandoNovoTitular, setCriandoNovoTitular] = useState(false);
@@ -224,7 +246,10 @@ export const ModalEditarDocumento: React.FC<ModalEditarDocumentoProps> = ({
       let novoTitularNome = 'Delta Plan';
       let novoPessoaId: string | null = null;
 
-      if (titularSelecionado !== 'empresa') {
+      if (titularSelecionado === 'sem_titular') {
+        novoTitularNome = 'Sem titular';
+        novoPessoaId = null;
+      } else if (titularSelecionado !== 'empresa') {
         const titObj = titulares.find((t) => t.id === titularSelecionado);
         if (titObj) {
           novoTitularNome = titObj.nome;
@@ -454,8 +479,11 @@ export const ModalEditarDocumento: React.FC<ModalEditarDocumentoProps> = ({
                 value={titularSelecionado}
                 onChange={(e) => setTitularSelecionado(e.target.value)}
                 className="w-full px-3 py-2 bg-[#18202b] border border-[#263345] rounded-lg text-xs text-slate-100 focus:border-emerald-500 focus:outline-none cursor-pointer"
-                size={Math.min(6, titularesFiltrados.length + 1)}
+                size={Math.min(6, titularesFiltrados.length + 2)}
               >
+                <option value="sem_titular" className="bg-[#18202b] text-amber-300 py-1 font-semibold">
+                  🚫 Sem titular (Desvincular titular)
+                </option>
                 <option value="empresa" className="bg-[#18202b] text-slate-200 py-1 font-semibold">
                   🏢 Documentos da Empresa (Delta Plan)
                 </option>
@@ -465,6 +493,36 @@ export const ModalEditarDocumento: React.FC<ModalEditarDocumentoProps> = ({
                   </option>
                 ))}
               </select>
+
+              {/* Ações do titular selecionado (Editar ou Excluir titular cadastrado) */}
+              {titularSelecionadoObj && (
+                <div className="flex items-center justify-between p-2.5 rounded-lg bg-[#141b24] border border-[#202937] text-xs">
+                  <div className="flex items-center gap-2 text-slate-300 truncate min-w-0">
+                    <span className="text-[11px] text-slate-400 flex-shrink-0">Titular selecionado:</span>
+                    <span className="font-semibold text-emerald-400 truncate">{titularSelecionadoObj.nome}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setTitularParaEditarModal(titularSelecionadoObj)}
+                      className="px-2 py-1 rounded bg-[#18202b] hover:bg-[#202937] text-slate-300 hover:text-emerald-400 border border-[#263345] text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                      title="Editar nome e apelidos deste titular"
+                    >
+                      <Pencil className="w-3 h-3 text-emerald-400" />
+                      <span>Editar titular</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTitularParaExcluirModal(titularSelecionadoObj)}
+                      className="px-2 py-1 rounded bg-[#18202b] hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 border border-[#263345] hover:border-rose-500/30 text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                      title="Excluir o cadastro deste titular"
+                    >
+                      <Trash2 className="w-3 h-3 text-rose-400" />
+                      <span>Excluir titular</span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -590,6 +648,30 @@ export const ModalEditarDocumento: React.FC<ModalEditarDocumentoProps> = ({
           </div>
         </form>
       </div>
+
+      {/* Modal para Editar Titular inline */}
+      <ModalEditarTitular
+        aberto={!!titularParaEditarModal}
+        titular={titularParaEditarModal}
+        onFechar={() => setTitularParaEditarModal(null)}
+        onSalvo={(titAtualizado) => {
+          setTitularParaEditarModal(null);
+          onTitularAtualizado?.(titAtualizado);
+        }}
+      />
+
+      {/* Modal para Excluir Titular inline */}
+      <ModalExcluirTitular
+        aberto={!!titularParaExcluirModal}
+        titular={titularParaExcluirModal}
+        totalDocumentos={1}
+        onFechar={() => setTitularParaExcluirModal(null)}
+        onExcluido={(titId) => {
+          setTitularParaExcluirModal(null);
+          setTitularSelecionado('sem_titular');
+          onTitularExcluido?.(titId);
+        }}
+      />
     </div>
   );
 };

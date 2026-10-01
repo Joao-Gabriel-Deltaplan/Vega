@@ -628,6 +628,7 @@ export async function atualizarDocumento(
     if (dados.pessoaId !== undefined || (dados as any).pessoa_id !== undefined) {
       payload.pessoa_id = dados.pessoaId !== undefined ? dados.pessoaId : (dados as any).pessoa_id;
     }
+    if (dados.corporativo !== undefined) payload.corporativo = dados.corporativo;
     if (dados.descricao !== undefined) payload.descricao = dados.descricao.trim();
     if (dados.visibilidade !== undefined) payload.visibilidade = dados.visibilidade;
     if (dados.apelidos !== undefined) payload.apelidos = dados.apelidos;
@@ -1303,11 +1304,79 @@ export async function salvarOuAtualizarTitular(titular: FichaTitular): Promise<F
   return titular;
 }
 
-export async function removerTitular(id: string): Promise<boolean> {
+export async function removerTitular(
+  id: string,
+  destinoDocumentos: 'desvincular' | 'empresa' = 'desvincular'
+): Promise<boolean> {
   try {
     const supabase = getSupabaseClient();
+
+    // 1. Busca os dados do titular antes de remover
+    const { data: titularExistente } = await supabase
+      .from('titulares')
+      .select('nome')
+      .eq('id', id)
+      .maybeSingle();
+
+    // 2. Busca documentos vinculados a este titular
+    const { data: docsVinculados } = await supabase
+      .from('documentos')
+      .select('id')
+      .or(`pessoa_id.eq.${id}${titularExistente?.nome ? `,titular.eq.${titularExistente.nome}` : ''}`);
+
+    const docIds = (docsVinculados || []).map((d) => d.id);
+
+    if (docIds.length > 0) {
+      if (destinoDocumentos === 'empresa') {
+        await supabase
+          .from('documentos')
+          .update({
+            titular: 'Delta Plan',
+            pessoa_id: null,
+            corporativo: true,
+          })
+          .in('id', docIds);
+
+        await supabase
+          .from('trechos')
+          .update({
+            pessoa_id: null,
+            corporativo: true,
+          })
+          .in('documento_id', docIds);
+      } else {
+        await supabase
+          .from('documentos')
+          .update({
+            titular: 'Sem titular',
+            pessoa_id: null,
+            corporativo: false,
+          })
+          .in('id', docIds);
+
+        await supabase
+          .from('trechos')
+          .update({
+            pessoa_id: null,
+            corporativo: false,
+          })
+          .in('documento_id', docIds);
+      }
+    }
+
+    // 3. Remove o titular
     const { error } = await supabase.from('titulares').delete().eq('id', id);
-    return !error;
+    if (error) {
+      console.error('[Storage Supabase ⚠️] Erro ao remover titular:', error);
+      return false;
+    }
+
+    if (titularExistente?.nome) {
+      cacheNomesTitulares = cacheNomesTitulares.filter(
+        (n) => n.toLowerCase() !== titularExistente.nome.toLowerCase()
+      );
+    }
+    return true;
   } catch (err) {
     console.error('[Storage Supabase ⚠️] Erro ao remover titular:', err);
     return false;

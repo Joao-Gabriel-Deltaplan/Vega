@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { getSupabaseClient } from './db/supabaseClient.js';
 import {
   obterTodasConversas,
   obterConversaPorId,
@@ -785,6 +786,9 @@ app.patch('/api/titulares/:id', async (req, res) => {
     }
 
     const { nome, campos, apelidos } = req.body;
+    const nomeAnterior = fichaExistente.nome;
+    const nomeMudou = Boolean(nome && nome.trim() !== nomeAnterior);
+
     if (nome) fichaExistente.nome = nome.trim();
     if (apelidos !== undefined) {
       fichaExistente.apelidos = Array.isArray(apelidos)
@@ -831,6 +835,20 @@ app.patch('/api/titulares/:id', async (req, res) => {
     fichaExistente.atualizadoEm = new Date().toLocaleDateString('pt-BR');
 
     await salvarOuAtualizarTitular(fichaExistente);
+
+    // Se o nome foi alterado, sincroniza nos documentos vinculados
+    if (nomeMudou) {
+      try {
+        const supabase = getSupabaseClient();
+        await supabase
+          .from('documentos')
+          .update({ titular: fichaExistente.nome })
+          .or(`pessoa_id.eq.${req.params.id},titular.eq.${nomeAnterior}`);
+      } catch (errSync) {
+        console.warn('[Titulares] Aviso ao sincronizar nome nos documentos:', errSync);
+      }
+    }
+
     res.json(fichaExistente);
   } catch (erro) {
     console.error('Erro ao atualizar titular:', erro);
@@ -841,7 +859,8 @@ app.patch('/api/titulares/:id', async (req, res) => {
 // DELETE /api/titulares/:id (Remove ficha do titular)
 app.delete('/api/titulares/:id', async (req, res) => {
   try {
-    const sucesso = await removerTitular(req.params.id);
+    const destino = (req.query.destinoDocumentos || req.body?.destinoDocumentos || 'desvincular') as 'desvincular' | 'empresa';
+    const sucesso = await removerTitular(req.params.id, destino);
     if (!sucesso) {
       return res.status(404).json({ erro: 'Titular não encontrado para exclusão.' });
     }

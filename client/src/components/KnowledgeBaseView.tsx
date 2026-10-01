@@ -42,6 +42,7 @@ import {
   Navigation,
   Pencil,
   MoveRight,
+  UserX,
 } from 'lucide-react';
 import { ASSISTENTE } from '../config/assistente.js';
 import { gerarLinksNavegacao } from '../utils/geoLinks.js';
@@ -59,6 +60,8 @@ import { DocumentosFaltantesView } from './DocumentosFaltantesView.js';
 import { SugestoesDocumentosView } from './SugestoesDocumentosView.js';
 import { ModalEditarDocumento } from './ModalEditarDocumento.js';
 import { ModalConfirmarMoverDocumento } from './ModalConfirmarMoverDocumento.js';
+import { ModalEditarTitular } from './ModalEditarTitular.js';
+import { ModalExcluirTitular } from './ModalExcluirTitular.js';
 
 interface KnowledgeBaseViewProps {
   subAbaInicial?: 'conhecimento' | 'documentos' | 'faltantes' | 'sugestoes';
@@ -203,6 +206,13 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
 
   // Filtro de revisão
   const [filtroSomenteRevisar, setFiltroSomenteRevisar] = useState(false);
+
+  // Gerenciamento de titulares (Editar e Excluir titular cadastrado)
+  const [titularParaEditarGeral, setTitularParaEditarGeral] = useState<FichaTitular | null>(null);
+  const [titularParaExcluirGeral, setTitularParaExcluirGeral] = useState<{
+    titular: FichaTitular;
+    totalDocs: number;
+  } | null>(null);
 
   // Destravamento de PDF protegido por senha
   const [docParaDestravar, setDocParaDestravar] = useState<DocumentoRegistro | null>(null);
@@ -734,13 +744,25 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
     return false;
   };
 
+  const isDocumentoSemTitular = (doc: DocumentoRegistro): boolean => {
+    if (doc.corporativo) return false;
+    const pId = doc.pessoaId || doc.pessoa_id;
+    if (pId) {
+      return !titulares.some((t) => t.id === pId);
+    }
+    const t = (doc.titular || '').toLowerCase().trim();
+    if (!t || t === 'sem titular' || t === 'sem_titular' || t === 'nenhum') return true;
+    if (t.includes('delta') || t.includes('empresa') || t === 'corporativo') return false;
+    return !titulares.some((tit) => docPertenceAoTitular(doc, tit));
+  };
+
   const isDocumentoEmpresa = (doc: DocumentoRegistro): boolean => {
-    if (!doc.titular || !doc.titular.trim()) return true;
-    const t = doc.titular.toLowerCase().trim();
+    if (doc.corporativo) return true;
+    const t = (doc.titular || '').toLowerCase().trim();
     if (t.includes('delta') || t.includes('empresa') || t.includes('geral') || t === 'corporativo') {
       return true;
     }
-    return !titulares.some((tit) => docPertenceAoTitular(doc, tit));
+    return false;
   };
 
   const tiposDocumentosDisponiveis = useMemo(() => {
@@ -770,10 +792,13 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
     if (!docArrastado) return;
 
     // Se já pertence ao destino, ignora
+    if (destinoId === 'sem_titular' && isDocumentoSemTitular(docArrastado)) {
+      return;
+    }
     if (destinoId === 'empresa' && isDocumentoEmpresa(docArrastado)) {
       return;
     }
-    if (destinoId !== 'empresa') {
+    if (destinoId !== 'empresa' && destinoId !== 'sem_titular') {
       const titDestino = titulares.find((t) => t.id === destinoId);
       if (titDestino && docPertenceAoTitular(docArrastado, titDestino)) {
         return;
@@ -806,6 +831,8 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
       let matchTitular = true;
       if (filtroTitularDoc === 'empresa') {
         matchTitular = isDocumentoEmpresa(doc);
+      } else if (filtroTitularDoc === 'sem_titular') {
+        matchTitular = isDocumentoSemTitular(doc);
       } else if (filtroTitularDoc !== 'todos') {
         const titAlvo = titulares.find((t) => t.id === filtroTitularDoc);
         matchTitular = titAlvo ? docPertenceAoTitular(doc, titAlvo) : false;
@@ -827,7 +854,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   }, [documentos, buscaDocumentos, filtroTitularDoc, filtroTipoDoc, filtroValidadeDoc, filtroSomenteRevisar, titulares]);
 
   const titularesFiltrados = useMemo(() => {
-    if (filtroTitularDoc === 'empresa') return [];
+    if (filtroTitularDoc === 'empresa' || filtroTitularDoc === 'sem_titular') return [];
     return titulares
       .filter((tit) => {
         if (filtroTitularDoc !== 'todos' && tit.id !== filtroTitularDoc) return false;
@@ -846,6 +873,11 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   const documentosEmpresaFiltrados = useMemo(() => {
     if (filtroTitularDoc !== 'todos' && filtroTitularDoc !== 'empresa') return [];
     return documentosFiltrados.filter((d) => isDocumentoEmpresa(d));
+  }, [documentosFiltrados, filtroTitularDoc]);
+
+  const documentosSemTitularFiltrados = useMemo(() => {
+    if (filtroTitularDoc !== 'todos' && filtroTitularDoc !== 'sem_titular') return [];
+    return documentosFiltrados.filter((d) => isDocumentoSemTitular(d));
   }, [documentosFiltrados, filtroTitularDoc]);
 
   // ==========================================
@@ -1469,6 +1501,9 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                     <option value="empresa" className="bg-[#121820] text-slate-200">
                       Documentos da Empresa
                     </option>
+                    <option value="sem_titular" className="bg-[#121820] text-amber-300">
+                      Documentos sem Titular
+                    </option>
                     {titulares.map((tit) => (
                       <option key={tit.id} value={tit.id} className="bg-[#121820] text-slate-200">
                         {tit.nome}
@@ -1619,6 +1654,65 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                   </div>
                 )}
 
+                {/* BLOCO: DOCUMENTOS SEM TITULAR (Caso existam ou durante o arrasto) */}
+                {(documentosSemTitularFiltrados.length > 0 || (arrastandoDocId && (filtroTitularDoc === 'todos' || filtroTitularDoc === 'sem_titular'))) && (
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      if (arrastandoDocId && dropTargetId !== 'sem_titular') {
+                        setDropTargetId('sem_titular');
+                      }
+                    }}
+                    onDragLeave={(e) => {
+                      if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                      if (dropTargetId === 'sem_titular') setDropTargetId(null);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      handleDropDocumento('sem_titular', 'Sem titular');
+                    }}
+                    className={`bg-[#121820] border rounded-xl p-4 sm:p-5 space-y-3.5 shadow-sm transition-all ${
+                      dropTargetId === 'sem_titular'
+                        ? 'border-amber-500/80 bg-amber-950/20 ring-2 ring-amber-500/40 shadow-lg shadow-amber-950/40'
+                        : 'border-[#202937]'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between border-b border-[#202937] pb-3">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                          <UserX className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <h3 className="font-semibold text-xs sm:text-sm text-slate-100 flex items-center gap-2">
+                            <span>Documentos sem Titular</span>
+                            {dropTargetId === 'sem_titular' && (
+                              <span className="text-[10px] font-medium text-amber-400 bg-amber-500/20 px-2 py-0.5 rounded-full animate-pulse flex items-center gap-1">
+                                <MoveRight className="w-3 h-3" /> Solte para desvincular titular
+                              </span>
+                            )}
+                          </h3>
+                          <p className="text-[11px] text-slate-400">
+                            Arquivos pendentes de atribuição a uma pessoa física ou à empresa
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-xs text-amber-400 font-medium px-2 py-0.5 rounded-full bg-[#18202b] border border-amber-500/30">
+                        {documentosSemTitularFiltrados.length} doc(s)
+                      </span>
+                    </div>
+
+                    <div className="space-y-2">
+                      {documentosSemTitularFiltrados.length === 0 ? (
+                        <div className="p-4 text-center text-xs text-slate-500 border border-dashed border-[#202937] rounded-lg">
+                          Nenhum documento sem titular no momento.
+                        </div>
+                      ) : (
+                        documentosSemTitularFiltrados.map((doc) => renderItemDocumentoCompacto(doc))
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {titularesFiltrados.map((tit) => {
                   const docsDoTitular = documentosFiltrados.filter((d) => docPertenceAoTitular(d, tit));
                   const aberto = isTitularAberto(tit.id);
@@ -1685,8 +1779,27 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                         <div className="flex items-center gap-1.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
                           <button
                             type="button"
+                            onClick={() => setTitularParaEditarGeral(tit)}
+                            className="p-1.5 bg-[#18202b] hover:bg-[#202937] text-slate-400 hover:text-emerald-400 rounded-lg border border-[#202937] hover:border-emerald-500/30 transition-colors cursor-pointer"
+                            title={`Editar nome e apelidos de ${tit.nome}`}
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setTitularParaExcluirGeral({ titular: tit, totalDocs: docsDoTitular.length })}
+                            className="p-1.5 bg-[#18202b] hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 rounded-lg border border-[#202937] hover:border-rose-500/30 transition-colors cursor-pointer"
+                            title={`Excluir titular ${tit.nome}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button
+                            type="button"
                             onClick={() => toggleTitularExpandido(tit.id)}
                             className="p-1.5 bg-[#18202b] hover:bg-[#202937] text-slate-300 rounded-lg border border-[#202937] transition-colors cursor-pointer"
+                            title={aberto ? 'Recolher' : 'Expandir'}
                           >
                             {aberto ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                           </button>
@@ -3227,6 +3340,16 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
         onTitularCriado={(novoTitular) => {
           setTitulares((prev) => [...prev, novoTitular]);
         }}
+        onTitularAtualizado={(titAtualizado) => {
+          setTitulares((prev) => prev.map((t) => (t.id === titAtualizado.id ? titAtualizado : t)));
+          carregarTitulares();
+          carregarDocumentos(true);
+        }}
+        onTitularExcluido={(titId) => {
+          setTitulares((prev) => prev.filter((t) => t.id !== titId));
+          carregarTitulares();
+          carregarDocumentos(true);
+        }}
       />
 
       {/* Modal de Confirmação de Mover Rápido (Drag & Drop) */}
@@ -3243,6 +3366,33 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
           setDocumentos((prev) => prev.map((d) => (d.id === docAtualizado.id ? docAtualizado : d)));
           carregarDocumentos(true);
           carregarTitulares();
+        }}
+      />
+
+      {/* Modal para Editar Titular a partir do Cofre */}
+      <ModalEditarTitular
+        aberto={!!titularParaEditarGeral}
+        titular={titularParaEditarGeral}
+        onFechar={() => setTitularParaEditarGeral(null)}
+        onSalvo={(titAtualizado) => {
+          setTitularParaEditarGeral(null);
+          setTitulares((prev) => prev.map((t) => (t.id === titAtualizado.id ? titAtualizado : t)));
+          carregarTitulares();
+          carregarDocumentos(true);
+        }}
+      />
+
+      {/* Modal para Excluir Titular a partir do Cofre */}
+      <ModalExcluirTitular
+        aberto={!!titularParaExcluirGeral}
+        titular={titularParaExcluirGeral?.titular || null}
+        totalDocumentos={titularParaExcluirGeral?.totalDocs || 0}
+        onFechar={() => setTitularParaExcluirGeral(null)}
+        onExcluido={(titId) => {
+          setTitularParaExcluirGeral(null);
+          setTitulares((prev) => prev.filter((t) => t.id !== titId));
+          carregarTitulares();
+          carregarDocumentos(true);
         }}
       />
     </div>

@@ -81,9 +81,10 @@ export const ModalConfirmarMoverDocumento: React.FC<ModalConfirmarMoverDocumento
       setSalvando(true);
       setErro(null);
 
+      const isSemTitular = novoTitularId === 'sem_titular';
       const isEmpresa = novoTitularId === 'empresa';
-      const novoPessoaId = isEmpresa ? null : novoTitularId;
-      const novoNome = isEmpresa ? 'Delta Plan' : novoTitularNome;
+      const novoPessoaId = isEmpresa || isSemTitular ? null : novoTitularId;
+      const novoNome = isSemTitular ? 'Sem titular' : isEmpresa ? 'Delta Plan' : novoTitularNome;
 
       const res = await fetch(`/api/documentos/${encodeURIComponent(doc.id)}`, {
         method: 'PATCH',
