@@ -196,7 +196,8 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
 ---
 
 ## 24. Proteção Rígida de Dados no Supabase (Aprovação Prévia Obrigatória)
-- **Regra Permanente e Inviolável:** NUNCA alterar, apagar, atualizar ou limpar dados no Supabase (em qualquer tabela: `titulares`, `documentos`, `trechos`, `usuarios`, `conhecimentos`, etc.) sem antes mostrar ao usuário a lista exata do que será modificado (valores atuais vs. valores propostos) e receber aprovação prévia e explícita do usuário.
-- **Validade Irrestrita:** Aplica-se a scripts de correção, testes, migrações, comandos temporários, rotinas de depuração ou manutenção. Nenhuma mutação de banco de dados pode ser executada sem essa validação humana prévia.
+- **Regra Permanente e Inviolável:** NUNCA alterar, apagar, atualizar ou limpar dados reais no Supabase (em qualquer tabela: `titulares`, `documentos`, `trechos`, `usuarios`, `conhecimentos`, etc.) sem antes mostrar ao usuário a lista exata do que será modificado (valores atuais vs. valores propostos) e receber aprovação prévia e explícita do usuário.
+- **Validade para Dados Reais:** Aplica-se obrigatoriamente a qualquer alteração ou intervenção em registros reais existentes no banco de dados (scripts de correção, migrações, comandos manuais, rotinas de depuração ou manutenção).
+- **Exceção para Testes Automatizados (Dados Fictícios):** Dados fictícios criados pelo próprio script de teste e apagados por ele ao final da execução estão expressamente liberados, desde que nenhum registro real seja modificado ou afetado.
 
 
