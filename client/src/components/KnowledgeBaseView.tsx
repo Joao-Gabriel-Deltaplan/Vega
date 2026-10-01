@@ -43,6 +43,7 @@ import {
   Pencil,
   MoveRight,
   UserX,
+  Plus,
 } from 'lucide-react';
 import { ASSISTENTE } from '../config/assistente.js';
 import { gerarLinksNavegacao } from '../utils/geoLinks.js';
@@ -62,6 +63,7 @@ import { ModalEditarDocumento } from './ModalEditarDocumento.js';
 import { ModalConfirmarMoverDocumento } from './ModalConfirmarMoverDocumento.js';
 import { ModalEditarTitular } from './ModalEditarTitular.js';
 import { ModalExcluirTitular } from './ModalExcluirTitular.js';
+import { ModalCriarTitular } from './ModalCriarTitular.js';
 
 interface KnowledgeBaseViewProps {
   subAbaInicial?: 'conhecimento' | 'documentos' | 'faltantes' | 'sugestoes';
@@ -208,7 +210,9 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   // Filtro de revisão
   const [filtroSomenteRevisar, setFiltroSomenteRevisar] = useState(false);
 
-  // Gerenciamento de titulares (Editar e Excluir titular cadastrado)
+  // Gerenciamento de titulares (Criar, Editar e Excluir titular cadastrado)
+  const [modalCriarTitularAberto, setModalCriarTitularAberto] = useState(false);
+  const [mensagemSucessoTitular, setMensagemSucessoTitular] = useState('');
   const [titularParaEditarGeral, setTitularParaEditarGeral] = useState<FichaTitular | null>(null);
   const [titularParaExcluirGeral, setTitularParaExcluirGeral] = useState<{
     titular: FichaTitular;
@@ -1475,6 +1479,23 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
               </div>
             )}
 
+            {/* MENSAGEM DE SUCESSO DE TITULAR */}
+            {mensagemSucessoTitular && (
+              <div className="p-3 bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 rounded-xl text-xs flex items-center justify-between gap-2 animate-fadeIn shadow-sm">
+                <div className="flex items-center gap-2">
+                  <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                  <span>{mensagemSucessoTitular}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMensagemSucessoTitular('')}
+                  className="p-1 text-emerald-400/70 hover:text-emerald-300 hover:bg-emerald-500/10 rounded-md transition-colors cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
             {/* FILTROS E BUSCA DO COFRE */}
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pt-2">
               <div className="relative flex-1 max-w-md">
@@ -1489,6 +1510,16 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
+                {/* BOTÃO + NOVO TITULAR */}
+                <button
+                  type="button"
+                  onClick={() => setModalCriarTitularAberto(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold rounded-lg text-xs shadow-sm shadow-emerald-500/20 transition-all cursor-pointer whitespace-nowrap active:scale-95"
+                  title="Cadastrar novo titular de documentos (Pessoa Física ou Empresa/PJ)"
+                >
+                  <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                  <span>Novo Titular</span>
+                </button>
                 <div className="flex items-center gap-1.5 bg-[#121820] border border-[#202937] rounded-lg px-2.5 py-1.5 text-xs">
                   <Filter className="w-3 h-3 text-slate-400" />
                   <select
@@ -1832,6 +1863,20 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                     </div>
                   );
                 })}
+
+                {/* BOTÃO RÁPIDO PARA CRIAR OUTRO TITULAR */}
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setModalCriarTitularAberto(true)}
+                    className="w-full py-3 px-4 rounded-xl border border-dashed border-[#202937] hover:border-emerald-500/50 bg-[#121820]/40 hover:bg-emerald-950/10 text-slate-400 hover:text-emerald-300 text-xs font-medium flex items-center justify-center gap-2 transition-all cursor-pointer group shadow-xs"
+                  >
+                    <div className="w-6 h-6 rounded-lg bg-[#18202b] group-hover:bg-emerald-500/20 text-slate-400 group-hover:text-emerald-400 flex items-center justify-center transition-colors">
+                      <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                    </div>
+                    <span>Criar novo titular de documentos (Pessoa Física ou Empresa/PJ)</span>
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -3500,6 +3545,27 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
           setTitulares((prev) => prev.filter((t) => t.id !== titId));
           carregarTitulares();
           carregarDocumentos(true);
+        }}
+      />
+
+      {/* Modal para Criar Novo Titular a partir do Cofre */}
+      <ModalCriarTitular
+        aberto={modalCriarTitularAberto}
+        onFechar={() => setModalCriarTitularAberto(false)}
+        onCriado={(novoTit) => {
+          setModalCriarTitularAberto(false);
+          setTitulares((prev) => {
+            const existe = prev.some((t) => t.id === novoTit.id);
+            if (existe) {
+              return prev.map((t) => (t.id === novoTit.id ? novoTit : t));
+            }
+            return [...prev, novoTit].sort((a, b) => a.nome.localeCompare(b.nome));
+          });
+          setTitularesExpandidos((prev) => ({ ...prev, [novoTit.id]: true }));
+          setMensagemSucessoTitular(`Titular "${novoTit.nome}" cadastrado com sucesso!`);
+          carregarTitulares();
+          carregarDocumentos(true);
+          setTimeout(() => setMensagemSucessoTitular(''), 6000);
         }}
       />
     </div>
