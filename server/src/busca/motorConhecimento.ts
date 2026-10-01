@@ -207,7 +207,25 @@ export async function buscarConhecimento(
       score = Math.max(score, 100);
     }
 
-    // 3. Palavras do título presentes no texto -> 70
+    // 2.1. Apelidos ou nome em dadosEstruturados -> 95
+    const dEstrut = item.dadosEstruturados as any;
+    if (dEstrut?.apelidos && Array.isArray(dEstrut.apelidos)) {
+      for (const ap of dEstrut.apelidos) {
+        const apNorm = removerAcentos(String(ap).toLowerCase());
+        if (apNorm && (textoCruSemAcentos.includes(apNorm) || textoLimpo === apNorm)) {
+          score = Math.max(score, 95);
+          break;
+        }
+      }
+    }
+    if (dEstrut?.nome) {
+      const nomeNorm = removerAcentos(String(dEstrut.nome).toLowerCase());
+      if (nomeNorm && (textoCruSemAcentos.includes(nomeNorm) || textoLimpo === nomeNorm)) {
+        score = Math.max(score, 90);
+      }
+    }
+
+    // 3. Palavras do título presentes no texto -> 70 (ou 85 se for o núcleo do título sem prefixo)
     const palavrasTitulo = tituloNorm
       .split(/\s+/)
       .filter((p) => p.length > 2 && !['para', 'com', 'dos', 'das', 'uma', 'sobre'].includes(p));
@@ -217,6 +235,23 @@ export async function buscarConhecimento(
       const proporcaoTitulo = palavrasPresentes.length / palavrasTitulo.length;
       if (proporcaoTitulo >= 0.75) {
         score = Math.max(score, 70);
+      }
+    }
+
+    // 3.1. Núcleo do título sem prefixos ("contato", "chave pix", "pix", "link", "telefone")
+    const tituloSemPrefixo = tituloNorm
+      .replace(/^(contato|chave\s+pix|pix|link|telefone|sistema)\s+(de\s+|do\s+|da\s+|dos\s+|das\s+)?/i, '')
+      .trim();
+    if (tituloSemPrefixo && tituloSemPrefixo !== tituloNorm) {
+      const palavrasNucleo = tituloSemPrefixo
+        .split(/\s+/)
+        .filter((p) => p.length > 2 && !['para', 'com', 'dos', 'das', 'uma', 'sobre'].includes(p));
+      if (palavrasNucleo.length > 0) {
+        const presentesNucleo = palavrasNucleo.filter((p) => textoCruSemAcentos.includes(p));
+        const proporcaoNucleo = presentesNucleo.length / palavrasNucleo.length;
+        if (proporcaoNucleo >= 0.75 || textoCruSemAcentos.includes(tituloSemPrefixo)) {
+          score = Math.max(score, 85);
+        }
       }
     }
 

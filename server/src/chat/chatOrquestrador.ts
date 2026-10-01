@@ -12,6 +12,7 @@ import {
   obterTodosConhecimentos,
   adicionarConhecimento,
   atualizarConhecimento,
+  removerConhecimento,
   salvarOuAtualizarTitular,
   resolverTitularCadastrado,
   resolverTitularComAmbiguidade,
@@ -47,6 +48,7 @@ import {
   Mensagem,
   CampoTitularId,
   ItemConhecimento,
+  TipoConhecimento,
   RastroRegistro,
   EtapaRastro,
   DocumentoRastro,
@@ -66,6 +68,14 @@ import { criarAnexoParaDocumento, gerarPdfDeMarkdown } from '../pdfService.js';
 import { mascararDadosSensiveis, mascararDocumento, truncarTrecho } from '../utils/segurancaUtils.js';
 import { gerarLinksNavegacao } from '../utils/geoLinks.js';
 import { salvarRastro } from '../rastros/rastroService.js';
+
+export function normalizarParaComparacao(s: string): string {
+  return (s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+}
 
 /**
  * Sanitiza rigorosamente qualquer texto que será entregue ao usuário no WhatsApp ou no painel.
@@ -2703,6 +2713,120 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'salvar_conhecimento',
+      description: 'Cadastra um novo item na Base de Conhecimento interna da Delta Plan (contatos, telefones, chaves PIX, links de sistemas, regras de negócio ou procedimentos). ATENÇÃO REGRA CRÍTICA: Antes de gravar, você DEVE confirmar com o usuário em uma única frase ("Vou salvar: [Título], [dado]. Confirma?") e só acionar esta ferramenta quando o usuário responder "sim", "pode salvar", "confirma" ou afirmação equivalente. Se a ferramenta indicar que já existe item parecido, pergunte ao usuário se deseja atualizar ou criar novo.',
+      parameters: {
+        type: 'object',
+        properties: {
+          categoria: {
+            type: 'string',
+            description: 'Categoria do item (ex: "Contatos", "Financeiro", "Sistemas", "Geral")',
+          },
+          titulo: {
+            type: 'string',
+            description: 'Título amigável do item (ex: "Contato João do Pix", "Chave PIX do Berna", "Link do ERP")',
+          },
+          conteudo: {
+            type: 'string',
+            description: 'Conteúdo detalhado com os dados (ex: "Telefone: (14) 99999-8888", "Chave PIX: 11987654321")',
+          },
+          apelidos: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Apelidos ou termos de busca alternativos (opcional)',
+          },
+          tipo: {
+            type: 'string',
+            enum: ['contato', 'pix', 'link', 'regra', 'local', 'outro'],
+            description: 'Tipo do item',
+          },
+          dados_estruturados: {
+            type: 'object',
+            description: 'Campos estruturados (ex: { telefone: "...", nome: "..." })',
+          },
+          confirmado: {
+            type: 'boolean',
+            description: 'True se o usuário já disse "sim" ou confirmou a gravação explicitamente',
+          },
+          forcar_novo: {
+            type: 'boolean',
+            description: 'Se true, cria novo item mesmo que já exista um com nome parecido',
+          },
+        },
+        required: ['categoria', 'titulo', 'conteudo'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'atualizar_conhecimento',
+      description: 'Atualiza um item existente na Base de Conhecimento (altera telefone, chave PIX, link ou conteúdo). Requer confirmação prévia do usuário ("Vou atualizar: [Título]... Confirma?").',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+            description: 'ID do item na base de conhecimento (se conhecido)',
+          },
+          titulo_atual: {
+            type: 'string',
+            description: 'Título ou nome atual do item a ser atualizado (ex: "Contato João do Pix")',
+          },
+          novo_titulo: {
+            type: 'string',
+            description: 'Novo título se for alterado (opcional)',
+          },
+          categoria: {
+            type: 'string',
+            description: 'Nova categoria (opcional)',
+          },
+          novo_conteudo: {
+            type: 'string',
+            description: 'Novo conteúdo com os dados atualizados (ex: "Telefone: (14) 98888-7777")',
+          },
+          apelidos: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Apelidos ou variações atualizados (opcional)',
+          },
+          confirmado: {
+            type: 'boolean',
+            description: 'True se o usuário já disse "sim" para a atualização',
+          },
+        },
+        required: ['novo_conteudo'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'remover_conhecimento',
+      description: 'Remove um item da Base de Conhecimento. Requer confirmação explícita prévia do usuário ("Você confirma a exclusão do item [Título]?").',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+            description: 'ID do item na base de conhecimento (se conhecido)',
+          },
+          titulo: {
+            type: 'string',
+            description: 'Título do item a ser excluído',
+          },
+          confirmado: {
+            type: 'boolean',
+            description: 'True se o usuário respondeu "sim" para a exclusão',
+          },
+        },
+        required: ['titulo'],
+      },
+    },
+  },
 ];
 
 /**
@@ -4314,6 +4438,364 @@ async function toolBuscarConhecimento(
 }
 
 /**
+ * Tool: salvar_conhecimento
+ */
+export async function toolSalvarConhecimento(
+  args: {
+    categoria: string;
+    titulo: string;
+    conteudo: string;
+    apelidos?: string[];
+    tipo?: TipoConhecimento;
+    dados_estruturados?: any;
+    confirmado?: boolean;
+    forcar_novo?: boolean;
+    quer_atualizar?: boolean;
+  },
+  contato: Contato,
+  historicoRecente: Mensagem[] = [],
+  mensagemUsuarioAtual: string = ''
+): Promise<{
+  sucesso: boolean;
+  status: 'sucesso' | 'precisa_confirmacao' | 'item_existente' | 'sem_permissao' | 'erro';
+  id?: string;
+  titulo?: string;
+  mensagem: string;
+  instrucao_resposta?: string;
+  item_existente?: any;
+}> {
+  // 1. Permissão: apenas admin ou diretoria
+  const ehAdmin =
+    contato.nivelAcesso === 'diretoria' ||
+    (contato as any).nivelAcesso === 'admin' ||
+    contato.setor === 'Diretoria' ||
+    contato.setor === 'Administrativo' ||
+    Boolean(contato.permiteCadastroConhecimento);
+
+  if (!ehAdmin) {
+    return {
+      sucesso: false,
+      status: 'sem_permissao',
+      mensagem:
+        'Você não tem permissão para cadastrar informações na Base de Conhecimento da VEGA. Apenas administradores podem realizar cadastros.',
+      instrucao_resposta:
+        'Responda estritamente ao usuário: "Você não tem permissão para cadastrar informações na Base de Conhecimento da VEGA. Apenas administradores podem realizar cadastros."',
+    };
+  }
+
+  const todosK = await obterTodosConhecimentos();
+  const tituloLimpo = (args.titulo || '').trim();
+  const tituloNorm = normalizarParaComparacao(tituloLimpo);
+
+  // 2. Verificar se já existe item parecido na Base de Conhecimento
+  const itemExistente = todosK.find((k) => {
+    const kTitNorm = normalizarParaComparacao(k.titulo);
+    if (kTitNorm === tituloNorm) return true;
+    if (tituloNorm.length >= 4 && (kTitNorm.includes(tituloNorm) || tituloNorm.includes(kTitNorm))) return true;
+    if (args.dados_estruturados?.telefone && (k.dadosEstruturados as any)?.telefone === args.dados_estruturados.telefone) return true;
+    if (args.dados_estruturados?.chavePix && (k.dadosEstruturados as any)?.chavePix === args.dados_estruturados.chavePix) return true;
+    return false;
+  });
+
+  const msgNorm = normalizarParaComparacao(mensagemUsuarioAtual);
+  const querCriarNovo = /\b(criar\s*novo|novo|outro|adicionar\s*novo)\b/i.test(msgNorm);
+  const querAtualizar = Boolean(args.quer_atualizar) || /\b(atualizar|substituir|alterar|mudar)\b/i.test(msgNorm);
+
+  if (itemExistente && !querCriarNovo && !querAtualizar && !args.forcar_novo) {
+    return {
+      sucesso: false,
+      status: 'item_existente',
+      item_existente: {
+        id: itemExistente.id,
+        titulo: itemExistente.titulo,
+        conteudo: itemExistente.conteudo,
+      },
+      mensagem: `Já existe um item cadastrado como '${itemExistente.titulo}'. Deseja atualizar o item existente ou criar um novo?`,
+      instrucao_resposta: `ATENÇÃO: Já existe um item com nome/dado parecido ('${itemExistente.titulo}'). Você DEVE perguntar ao usuário: "Já existe um item cadastrado como '${itemExistente.titulo}'. Deseja atualizar o item existente ou criar um novo?"`,
+    };
+  }
+
+  // 3. Verificação de confirmação explícita prévia
+  const ehConfirmacaoSimples =
+    isConfirmacaoSimples(mensagemUsuarioAtual) ||
+    /^(sim|s|pode\s*salvar|pode\s*cadastrar|confirmo|confirma|isso|ok|claro|com\s*certeza)\b/i.test(msgNorm);
+
+  const ultimaMsgAssistente = [...historicoRecente].reverse().find((m) => m.remetente === 'assistente');
+  const assistentePediuConfirmacao =
+    ultimaMsgAssistente?.texto &&
+    (/vou salvar.*confirma/i.test(ultimaMsgAssistente.texto) || /confirma\?/i.test(ultimaMsgAssistente.texto));
+
+  const usuarioConfirmou = args.confirmado || (ehConfirmacaoSimples && assistentePediuConfirmacao);
+
+  if (!usuarioConfirmou && !ehConfirmacaoSimples) {
+    let resumoDado = args.conteudo.trim();
+    if ((args.categoria?.toLowerCase() === 'contatos' || args.tipo === 'contato') && !resumoDado.toLowerCase().includes('telefone')) {
+      resumoDado = `telefone ${resumoDado}`;
+    } else if ((args.categoria?.toLowerCase() === 'financeiro' || args.tipo === 'pix') && !resumoDado.toLowerCase().includes('chave') && !resumoDado.toLowerCase().includes('pix')) {
+      resumoDado = `chave ${resumoDado}`;
+    }
+    const fraseConfirmacao = `Vou salvar: ${args.titulo}, ${resumoDado}. Confirma?`;
+    return {
+      sucesso: false,
+      status: 'precisa_confirmacao',
+      mensagem: fraseConfirmacao,
+      instrucao_resposta: `ATENÇÃO: Não grave ainda. Pergunte ao usuário em uma única frase para confirmar: "${fraseConfirmacao}". Somente grave após o usuário responder confirmando.`,
+    };
+  }
+
+  // 4. Se o usuário escolheu atualizar o existente
+  if (itemExistente && querAtualizar) {
+    const atualizado = await atualizarConhecimento(itemExistente.id, {
+      categoria: args.categoria || itemExistente.categoria,
+      titulo: args.titulo || itemExistente.titulo,
+      conteudo: args.conteudo || itemExistente.conteudo,
+      tipo: args.tipo || itemExistente.tipo,
+      dadosEstruturados: {
+        ...(itemExistente.dadosEstruturados || {}),
+        ...(args.dados_estruturados || {}),
+        atualizadoPor: contato.nome,
+        dataAtualizacaoIso: new Date().toISOString(),
+      },
+    });
+
+    if (atualizado) {
+      indexarConhecimentoBackground(atualizado).catch(() => {});
+      return {
+        sucesso: true,
+        status: 'sucesso',
+        id: atualizado.id,
+        titulo: atualizado.titulo,
+        mensagem: `${atualizado.titulo} atualizado com sucesso na Base de Conhecimento!`,
+        instrucao_resposta: `Item '${atualizado.titulo}' atualizado com sucesso na Base de Conhecimento. Responda confirmando ao usuário de forma curta e natural.`,
+      };
+    }
+  }
+
+  // 5. Salva novo item
+  const novoItem = await adicionarConhecimento({
+    categoria: args.categoria || 'Geral',
+    titulo: tituloLimpo,
+    conteudo: args.conteudo,
+    tipo: args.tipo || 'regra',
+    dadosEstruturados: {
+      ...(args.dados_estruturados || {}),
+      apelidos: args.apelidos || [],
+      cadastradoPor: contato.nome,
+      dataCadastroIso: new Date().toISOString(),
+    },
+  });
+
+  indexarConhecimentoBackground(novoItem).catch(() => {});
+
+  return {
+    sucesso: true,
+    status: 'sucesso',
+    id: novoItem.id,
+    titulo: novoItem.titulo,
+    mensagem: `${novoItem.titulo} salvo com sucesso na Base de Conhecimento!`,
+    instrucao_resposta: `Item '${novoItem.titulo}' salvo com sucesso na Base de Conhecimento. Responda ao usuário confirmando o salvamento em tom natural.`,
+  };
+}
+
+/**
+ * Tool: atualizar_conhecimento
+ */
+export async function toolAtualizarConhecimento(
+  args: {
+    id?: string;
+    titulo_atual?: string;
+    novo_titulo?: string;
+    categoria?: string;
+    novo_conteudo: string;
+    apelidos?: string[];
+    confirmado?: boolean;
+  },
+  contato: Contato,
+  historicoRecente: Mensagem[] = [],
+  mensagemUsuarioAtual: string = ''
+): Promise<{
+  sucesso: boolean;
+  status: 'sucesso' | 'precisa_confirmacao' | 'nao_encontrado' | 'sem_permissao' | 'erro';
+  id?: string;
+  titulo?: string;
+  mensagem: string;
+  instrucao_resposta?: string;
+}> {
+  const ehAdmin =
+    contato.nivelAcesso === 'diretoria' ||
+    (contato as any).nivelAcesso === 'admin' ||
+    contato.setor === 'Diretoria' ||
+    contato.setor === 'Administrativo' ||
+    Boolean(contato.permiteCadastroConhecimento);
+
+  if (!ehAdmin) {
+    return {
+      sucesso: false,
+      status: 'sem_permissao',
+      mensagem:
+        'Você não tem permissão para cadastrar informações na Base de Conhecimento da VEGA. Apenas administradores podem realizar cadastros.',
+      instrucao_resposta:
+        'Responda estritamente ao usuário: "Você não tem permissão para cadastrar informações na Base de Conhecimento da VEGA. Apenas administradores podem realizar cadastros."',
+    };
+  }
+
+  const todosK = await obterTodosConhecimentos();
+  let item = args.id ? todosK.find((k) => k.id === args.id) : null;
+  if (!item && args.titulo_atual) {
+    const titNorm = normalizarParaComparacao(args.titulo_atual);
+    item =
+      todosK.find(
+        (k) =>
+          normalizarParaComparacao(k.titulo) === titNorm ||
+          normalizarParaComparacao(k.titulo).includes(titNorm)
+      ) || null;
+  }
+
+  if (!item) {
+    return {
+      sucesso: false,
+      status: 'nao_encontrado',
+      mensagem: `Não encontrei o item '${args.titulo_atual || args.id}' na Base de Conhecimento para atualizar.`,
+    };
+  }
+
+  const msgNorm = normalizarParaComparacao(mensagemUsuarioAtual);
+  const ehConfirmacaoSimples =
+    isConfirmacaoSimples(mensagemUsuarioAtual) ||
+    /^(sim|s|pode\s*atualizar|confirmo|confirma|isso|ok|claro)\b/i.test(msgNorm);
+
+  if (!args.confirmado && !ehConfirmacaoSimples) {
+    const fraseConfirmacao = `Vou atualizar o item '${item.titulo}' para: ${args.novo_conteudo}. Confirma?`;
+    return {
+      sucesso: false,
+      status: 'precisa_confirmacao',
+      mensagem: fraseConfirmacao,
+      instrucao_resposta: `ATENÇÃO: Peça confirmação antes de gravar: "${fraseConfirmacao}".`,
+    };
+  }
+
+  const atualizado = await atualizarConhecimento(item.id, {
+    titulo: args.novo_titulo || item.titulo,
+    categoria: args.categoria || item.categoria,
+    conteudo: args.novo_conteudo,
+    dadosEstruturados: {
+      ...(item.dadosEstruturados || {}),
+      apelidos: args.apelidos || (item.dadosEstruturados as any)?.apelidos || [],
+      atualizadoPor: contato.nome,
+      dataAtualizacaoIso: new Date().toISOString(),
+    },
+  });
+
+  if (atualizado) {
+    indexarConhecimentoBackground(atualizado).catch(() => {});
+    return {
+      sucesso: true,
+      status: 'sucesso',
+      id: atualizado.id,
+      titulo: atualizado.titulo,
+      mensagem: `${atualizado.titulo} atualizado com sucesso na Base de Conhecimento!`,
+      instrucao_resposta: `Item '${atualizado.titulo}' atualizado com sucesso. Responda confirmando ao usuário.`,
+    };
+  }
+
+  return {
+    sucesso: false,
+    status: 'erro',
+    mensagem: 'Falha técnica ao atualizar o item.',
+  };
+}
+
+/**
+ * Tool: remover_conhecimento
+ */
+export async function toolRemoverConhecimento(
+  args: {
+    id?: string;
+    titulo: string;
+    confirmado?: boolean;
+  },
+  contato: Contato,
+  historicoRecente: Mensagem[] = [],
+  mensagemUsuarioAtual: string = ''
+): Promise<{
+  sucesso: boolean;
+  status: 'sucesso' | 'precisa_confirmacao' | 'nao_encontrado' | 'sem_permissao' | 'erro';
+  id?: string;
+  titulo?: string;
+  mensagem: string;
+  instrucao_resposta?: string;
+}> {
+  const ehAdmin =
+    contato.nivelAcesso === 'diretoria' ||
+    (contato as any).nivelAcesso === 'admin' ||
+    contato.setor === 'Diretoria' ||
+    contato.setor === 'Administrativo' ||
+    Boolean(contato.permiteExclusao);
+
+  if (!ehAdmin) {
+    return {
+      sucesso: false,
+      status: 'sem_permissao',
+      mensagem:
+        'Você não tem permissão para apagar informações da Base de Conhecimento da VEGA. Apenas administradores podem realizar exclusões.',
+    };
+  }
+
+  const todosK = await obterTodosConhecimentos();
+  let item = args.id ? todosK.find((k) => k.id === args.id) : null;
+  if (!item && args.titulo) {
+    const titNorm = normalizarParaComparacao(args.titulo);
+    item =
+      todosK.find(
+        (k) =>
+          normalizarParaComparacao(k.titulo) === titNorm ||
+          normalizarParaComparacao(k.titulo).includes(titNorm)
+      ) || null;
+  }
+
+  if (!item) {
+    return {
+      sucesso: false,
+      status: 'nao_encontrado',
+      mensagem: `Não encontrei o item '${args.titulo || args.id}' na Base de Conhecimento para remover.`,
+    };
+  }
+
+  const msgNorm = normalizarParaComparacao(mensagemUsuarioAtual);
+  const ehConfirmacaoSimples =
+    isConfirmacaoSimples(mensagemUsuarioAtual) ||
+    /^(sim|s|pode\s*apagar|pode\s*remover|confirmo|confirma|isso|ok)\b/i.test(msgNorm);
+
+  if (!args.confirmado && !ehConfirmacaoSimples) {
+    const fraseConfirmacao = `Você confirma a exclusão do item '${item.titulo}' da Base de Conhecimento? Responda Sim para confirmar ou Não para cancelar.`;
+    return {
+      sucesso: false,
+      status: 'precisa_confirmacao',
+      mensagem: fraseConfirmacao,
+      instrucao_resposta: `ATENÇÃO: Peça confirmação antes de apagar: "${fraseConfirmacao}".`,
+    };
+  }
+
+  const removido = await removerConhecimento(item.id);
+  if (removido) {
+    return {
+      sucesso: true,
+      status: 'sucesso',
+      id: item.id,
+      titulo: item.titulo,
+      mensagem: `Item '${item.titulo}' removido com sucesso da Base de Conhecimento!`,
+      instrucao_resposta: `Item '${item.titulo}' apagado com sucesso. Responda confirmando ao usuário.`,
+    };
+  }
+
+  return {
+    sucesso: false,
+    status: 'erro',
+    mensagem: 'Falha técnica ao remover o item.',
+  };
+}
+
+/**
  * Tool 7: ler_documento_completo(doc_id?, termo_documento?, titular?)
  * Retorna todos os trechos do documento em ordem sequencial para perguntas
  * que exigem varredura completa de itens (contas, bens, dependentes, etc.)
@@ -4545,6 +5027,362 @@ export function detectarReferenciaItemLista(
 }
 
 /**
+ * DETECÇÃO DE AÇÕES SEM FERRAMENTA (Regra: Não prometer o que não pode fazer)
+ * Se o usuário pedir ações para as quais não há tool disponível no chat (ex: envio de e-mails,
+ * ligações, transferências bancárias/PIX diretas, reuniões em calendários externos),
+ * recusa de imediato informando os limites da VEGA.
+ */
+export function detectarAcaoSemFerramenta(mensagemUsuario: string): string | null {
+  const msgNorm = normalizarParaComparacao(mensagemUsuario);
+
+  // 1. Envio de e-mail (ex: "manda um e-mail pro Thomaz", "envie um email", "manda email para fulano", "escreva um email")
+  const ehEnvioEmail =
+    /\b(manda|mande|envia|enviar|envie|disparar|dispara|escrever|escreva|mandar)\s+(um\s+|uma\s+)?(e-?mail|mensagem por e-?mail)\b/i.test(msgNorm);
+
+  if (ehEnvioEmail) {
+    return 'Não consigo enviar e-mails pelo chat. Como assistente da VEGA, posso consultar e cadastrar informações na Base de Conhecimento, buscar documentos e dados de titulares no Cofre.';
+  }
+
+  // 2. Fazer ligação telefônica (ex: "liga pro Thomaz", "faça uma ligação", "telefona pro fulano")
+  const ehLigacao =
+    /\b(liga|ligar|ligue|telefona|telefonar|fazer uma ligacao|faca uma ligacao)\s+(para|pro|pra|a)\b/i.test(msgNorm);
+
+  if (ehLigacao) {
+    return 'Não consigo realizar ligações pelo chat. Como assistente da VEGA, posso consultar e cadastrar informações na Base de Conhecimento, buscar documentos e dados de titulares no Cofre.';
+  }
+
+  // 3. Fazer pagamentos ou transferências financeiras (ex: "faz um pix de 100", "paga esse boleto", "transfere esse dinheiro")
+  // CUIDADO: NÃO interceptar se for salvar chave pix ("salva o pix", "cadastra o pix", "anota o pix") ou consultar ("qual o pix")
+  const ehAcaoFinanceiraDireta =
+    /\b(faz|fazer|transfere|transferir|pagar|pague)\s+(um\s+)?(pix de|pagamento|boleto|dinheiro|ted|doc)\b/i.test(msgNorm) &&
+    !/\b(salva|salvar|cadastra|cadastrar|anota|anotar|guarda|guardar|qual|onde|consulta|consultar)\b/i.test(msgNorm);
+
+  if (ehAcaoFinanceiraDireta) {
+    return 'Não consigo realizar pagamentos ou transferências pelo chat. Como assistente da VEGA, posso consultar e cadastrar informações na Base de Conhecimento, buscar documentos e dados de titulares no Cofre.';
+  }
+
+  // 4. Agendamento em calendários externos (ex: "agenda uma reunião no google calendar", "marca no teams")
+  const ehAgendaExterna =
+    /\b(agenda|agendar|marque|marcar)\s+(uma\s+)?(reuniao|call|compromisso|evento)\s+(no\s+google|no\s+teams|no\s+calendario|na\s+agenda)\b/i.test(msgNorm);
+
+  if (ehAgendaExterna) {
+    return 'Não consigo agendar reuniões em calendários externos pelo chat. Como assistente da VEGA, posso consultar e cadastrar informações na Base de Conhecimento, buscar documentos e dados de titulares no Cofre.';
+  }
+
+  return null;
+}
+
+/**
+ * DETECÇÃO DE CONTINUAÇÃO DE CADASTRO NA BASE DE CONHECIMENTO (Fluxo em várias mensagens)
+ * Quando o usuário anunciou anteriormente que ia passar uma informação ("vou te passar o telefone")
+ * e agora enviou o dado (número de telefone, chave PIX, link), intercepta para evitar buscas espúrias no Cofre
+ * e formula a confirmação em uma frase: "Vou salvar: Contato João do Pix, telefone (14) 9xxxx-xxxx. Confirma?".
+ */
+export function detectarContinuacaoCadastroConhecimento(
+  historicoRecente: Mensagem[],
+  mensagemUsuarioAtual: string
+): ResultadoChatOrquestrador | null {
+  if (!historicoRecente || historicoRecente.length === 0) return null;
+
+  const ultimaMsgAssistente = [...historicoRecente].reverse().find((m) => m.remetente === 'assistente');
+  const ultimasMsgsUsuario = historicoRecente.filter((m) => m.remetente === 'cliente');
+  const msgAnteriorUsuario = ultimasMsgsUsuario[ultimasMsgsUsuario.length - 1];
+
+  if (!ultimaMsgAssistente || !msgAnteriorUsuario) return null;
+
+  const txtAssistente = (ultimaMsgAssistente.texto || '').toLowerCase();
+  const txtUserAnterior = (msgAnteriorUsuario.texto || '').toLowerCase();
+
+  // Verifica se houve convite da VEGA ou anúncio prévio do usuário
+  const assistenteConvidouEnvio =
+    /\b(pode mandar|pode passar|pode enviar|manda|envia|qual e|qual [eé]|me passa)\s+(o\s+telefone|o\s+numero|o\s+n[úu]mero|o\s+contato|a\s+chave|o\s+link|o\s+pix|os\s+dados)\b/i.test(
+      txtAssistente
+    ) || /^(pode mandar|pode passar|pode me mandar|pode enviar)[!.]?$/i.test(txtAssistente.trim());
+
+  const userAnunciouEnvio =
+    /\b(adicione|adiciona|salva|salve|cadastre|cadastra|guarde|guarda|anote|anota|quero que voce adicione|quero que voce salve)\b/i.test(
+      txtUserAnterior
+    ) && /\b(vou te passar|vou passar|vou mandar|vou te mandar|vou enviar|vou te enviar)\b/i.test(txtUserAnterior);
+
+  if (!assistenteConvidouEnvio && !userAnunciouEnvio) {
+    return null;
+  }
+
+  // Extrai o nome da pessoa/entidade mencionada na mensagem anterior
+  let nomePessoa = '';
+  const matchNome = txtUserAnterior.match(
+    /(?:contato|telefone|chave\s+pix|pix|link)\s+d[oea]\s+([^\.,;\n]+?)(?:,|\.|\s+eu\s+vou|\s+vou|\s+e\s+eu|$)/i
+  );
+  if (matchNome) {
+    nomePessoa = matchNome[1].trim();
+  } else {
+    const matchGen = txtUserAnterior.match(
+      /(?:adicione|adiciona|salva|salve|cadastre|cadastra)\s+(?:o\s+)?(?:contato|telefone)?\s*(?:d[oea]\s*)?([^\.,;\n]+?)(?:,|\.|\s+eu\s+vou|\s+vou|$)/i
+    );
+    if (matchGen) {
+      nomePessoa = matchGen[1].replace(/^(contato|telefone)\s*/i, '').trim();
+    }
+  }
+
+  // Capitaliza o nome da pessoa preservando preposições em minúsculas
+  const minusculas = new Set(['de', 'do', 'da', 'dos', 'das', 'e']);
+  const nomeFormatado = nomePessoa
+    ? nomePessoa
+        .split(/\s+/)
+        .map((p, idx) => (minusculas.has(p.toLowerCase()) && idx > 0 ? p.toLowerCase() : p.charAt(0).toUpperCase() + p.slice(1)))
+        .join(' ')
+    : 'Novo Item';
+
+  // 1. Caso: Telefone
+  const matchTelefone = mensagemUsuarioAtual.match(
+    /(?:\+?55\s*)?(?:\(?([1-9]{2})\)?\s*)?(9\s*\d{4}[-\s]?\d{4}|\d{4}[-\s]?\d{4})\b/
+  );
+  if (matchTelefone && (txtUserAnterior.includes('telefone') || txtUserAnterior.includes('contato') || assistenteConvidouEnvio)) {
+    const telefoneEncontrado = matchTelefone[0].trim();
+    const titulo = nomeFormatado.toLowerCase().startsWith('contato') ? nomeFormatado : `Contato ${nomeFormatado}`;
+    const fraseConfirmacao = `Vou salvar: ${titulo}, telefone ${telefoneEncontrado}. Confirma?`;
+
+    return {
+      textoResposta: fraseConfirmacao,
+      origem: 'motor',
+      intencaoDetectada: 'cadastrar_conhecimento',
+      perguntaReescrita: `Salvar ${titulo}: ${telefoneEncontrado}`,
+    };
+  }
+
+  // 2. Caso: Chave PIX
+  if (txtUserAnterior.includes('pix') || txtAssistente.includes('pix') || txtAssistente.includes('chave')) {
+    const chave = mensagemUsuarioAtual.trim();
+    if (chave.length >= 4) {
+      const titulo = `Chave PIX do ${nomeFormatado}`;
+      const fraseConfirmacao = `Vou salvar: ${titulo}, chave ${chave}. Confirma?`;
+      return {
+        textoResposta: fraseConfirmacao,
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: `Salvar ${titulo}: ${chave}`,
+      };
+    }
+  }
+
+  // 3. Caso: Link / URL
+  const matchUrl = mensagemUsuarioAtual.match(/https?:\/\/[^\s]+/i);
+  if (matchUrl) {
+    const url = matchUrl[0].trim();
+    const titulo = `Link ${nomeFormatado}`;
+    const fraseConfirmacao = `Vou salvar: ${titulo}, url ${url}. Confirma?`;
+    return {
+      textoResposta: fraseConfirmacao,
+      origem: 'motor',
+      intencaoDetectada: 'cadastrar_conhecimento',
+      perguntaReescrita: `Salvar ${titulo}: ${url}`,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * RESOLUÇÃO DE CONFIRMAÇÃO DE SALVAMENTO / ATUALIZAÇÃO / EXCLUSÃO NA BASE DE CONHECIMENTO
+ */
+export async function detectarConfirmacaoSalvarConhecimento(
+  historicoRecente: Mensagem[],
+  mensagemUsuarioAtual: string,
+  contato: Contato
+): Promise<ResultadoChatOrquestrador | null> {
+  if (!historicoRecente || historicoRecente.length === 0) return null;
+
+  const ultimaMsgAssistente = [...historicoRecente].reverse().find((m) => m.remetente === 'assistente');
+  if (!ultimaMsgAssistente || !ultimaMsgAssistente.texto) return null;
+
+  const txtAssistente = ultimaMsgAssistente.texto.trim();
+  const msgNorm = normalizarParaComparacao(mensagemUsuarioAtual);
+
+  const ehAfirmativo =
+    isConfirmacaoSimples(mensagemUsuarioAtual) ||
+    /^(sim|s|pode|pode salvar|pode cadastrar|confirmo|confirma|isso|ok|claro|com certeza)\b/i.test(msgNorm);
+
+  const ehNegativo =
+    /^(n[aã]o|n|cancela|cancelar|deixa|esquece|nao quero)\b/i.test(msgNorm);
+
+  // 1. Confirmação de gravação: "Vou salvar: [Título], [Dado]. Confirma?"
+  const matchSalvar = txtAssistente.match(/Vou salvar:\s*([^,]+),\s*(.+?)\.\s*Confirma\?/i);
+  if (matchSalvar) {
+    if (ehNegativo) {
+      return {
+        textoResposta: 'Operação cancelada. A informação não foi salva na Base de Conhecimento.',
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: 'Cancelamento de cadastro na Base de Conhecimento',
+      };
+    }
+
+    if (ehAfirmativo) {
+      const titulo = matchSalvar[1].trim();
+      const dado = matchSalvar[2].trim();
+
+      let categoria = 'Geral';
+      let tipo: TipoConhecimento = 'regra';
+      let conteudo = dado;
+      let dadosEstruturados: any = {};
+
+      if (dado.toLowerCase().startsWith('telefone')) {
+        categoria = 'Contatos';
+        tipo = 'contato';
+        const telLimpo = dado.replace(/^telefone\s*[:\s]*/i, '').trim();
+        conteudo = telLimpo;
+        dadosEstruturados = { telefone: telLimpo, nome: titulo.replace(/^contato\s*/i, '').trim() };
+      } else if (dado.toLowerCase().startsWith('chave')) {
+        categoria = 'Financeiro';
+        tipo = 'pix';
+        const chaveLimpa = dado.replace(/^chave\s*[:\s]*/i, '').trim();
+        conteudo = chaveLimpa;
+        dadosEstruturados = { chavePix: chaveLimpa, beneficiario: titulo.replace(/^chave\s+pix\s+(?:d[oea]\s*)?/i, '').trim() };
+      } else if (dado.toLowerCase().startsWith('url')) {
+        categoria = 'Sistemas';
+        tipo = 'link';
+        const urlLimpa = dado.replace(/^url\s*[:\s]*/i, '').trim();
+        conteudo = urlLimpa;
+        dadosEstruturados = { url: urlLimpa, nomeSistema: titulo.replace(/^link\s*/i, '').trim() };
+      }
+
+      const resSalvar = await toolSalvarConhecimento(
+        {
+          categoria,
+          titulo,
+          conteudo,
+          tipo,
+          dados_estruturados: dadosEstruturados,
+          confirmado: true,
+        },
+        contato,
+        historicoRecente,
+        mensagemUsuarioAtual
+      );
+
+      return {
+        textoResposta: resSalvar.mensagem,
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: `Salvar ${titulo}`,
+      };
+    }
+  }
+
+  // 2. Resposta a duplicidade: "Já existe um item cadastrado como '[Título]'. Deseja atualizar o item existente ou criar um novo?"
+  const matchDuplicado = txtAssistente.match(/Já existe um item cadastrado como '([^']+)'. Deseja atualizar o item existente ou criar um novo\?/i);
+  if (matchDuplicado) {
+    const tituloExistente = matchDuplicado[1].trim();
+
+    const querAtualizar = /\b(atualizar|atualiza|sim,?\s*atualiza|substituir|substitui|o existente|atualizar o existente)\b/i.test(msgNorm);
+    const querCriarNovo = /\b(criar novo|novo|adicionar novo|cria novo|outro)\b/i.test(msgNorm);
+
+    // Recupera a mensagem anterior onde estava a proposta de dado
+    const msgProposta = [...historicoRecente].reverse().find((m) => m.texto && /Vou salvar:\s*([^,]+),\s*(.+?)\.\s*Confirma\?/i.test(m.texto));
+    let dado = '';
+    if (msgProposta && msgProposta.texto) {
+      const mProp = msgProposta.texto.match(/Vou salvar:\s*([^,]+),\s*(.+?)\.\s*Confirma\?/i);
+      if (mProp) dado = mProp[2].trim();
+    }
+
+    let categoria = 'Geral';
+    let tipo: TipoConhecimento = 'regra';
+    let conteudo = dado;
+    let dadosEstruturados: any = {};
+    if (dado.toLowerCase().startsWith('telefone')) {
+      categoria = 'Contatos';
+      tipo = 'contato';
+      conteudo = dado.replace(/^telefone\s*[:\s]*/i, '').trim();
+      dadosEstruturados = { telefone: conteudo };
+    } else if (dado.toLowerCase().startsWith('chave')) {
+      categoria = 'Financeiro';
+      tipo = 'pix';
+      conteudo = dado.replace(/^chave\s*[:\s]*/i, '').trim();
+      dadosEstruturados = { chavePix: conteudo };
+    }
+
+    if (querAtualizar) {
+      const resSalvar = await toolSalvarConhecimento(
+        {
+          categoria,
+          titulo: tituloExistente,
+          conteudo,
+          tipo,
+          dados_estruturados: dadosEstruturados,
+          confirmado: true,
+          quer_atualizar: true,
+        },
+        contato,
+        historicoRecente,
+        mensagemUsuarioAtual
+      );
+
+      return {
+        textoResposta: resSalvar.mensagem,
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: `Atualizar ${tituloExistente}`,
+      };
+    }
+
+    if (querCriarNovo) {
+      const resSalvar = await toolSalvarConhecimento(
+        {
+          categoria,
+          titulo: `${tituloExistente} (Novo)`,
+          conteudo,
+          tipo,
+          dados_estruturados: dadosEstruturados,
+          confirmado: true,
+          forcar_novo: true,
+        },
+        contato,
+        historicoRecente,
+        mensagemUsuarioAtual
+      );
+
+      return {
+        textoResposta: resSalvar.mensagem,
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: `Novo item: ${tituloExistente}`,
+      };
+    }
+  }
+
+  // 3. Confirmação de exclusão: "Você confirma a exclusão do item '[Título]' da Base de Conhecimento?..."
+  const matchRemover = txtAssistente.match(/Você confirma a exclusão do item '([^']+)' da Base de Conhecimento\?/i);
+  if (matchRemover) {
+    if (ehNegativo) {
+      return {
+        textoResposta: 'Operação cancelada. O item continua salvo na Base de Conhecimento.',
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: 'Cancelamento de exclusão na Base de Conhecimento',
+      };
+    }
+
+    if (ehAfirmativo) {
+      const tituloRemover = matchRemover[1].trim();
+      const resRemover = await toolRemoverConhecimento(
+        { titulo: tituloRemover, confirmado: true },
+        contato,
+        historicoRecente,
+        mensagemUsuarioAtual
+      );
+      return {
+        textoResposta: resRemover.mensagem,
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: `Remover ${tituloRemover}`,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
  * MOTOR CENTRAL DA VEGA: Function Calling com gpt-5.4-mini
  */
 export async function executarOrquestradorIaCentral(dados: {
@@ -4635,6 +5473,36 @@ export async function executarOrquestradorIaCentral(dados: {
         perguntaReescrita: `Exclusão cancelada: ${docTitulo}`,
       };
     }
+  }
+
+  // 3.1. VERIFICAÇÃO DE AÇÃO SEM FERRAMENTA (Regra: Não prometer o que não pode fazer)
+  const recusaSemTool = detectarAcaoSemFerramenta(mensagemUsuario);
+  if (recusaSemTool) {
+    return {
+      textoResposta: recusaSemTool,
+      origem: 'motor',
+      intencaoDetectada: 'saudacao_ou_vago',
+      perguntaReescrita: mensagemUsuario,
+    };
+  }
+
+  // 3.2. CONFIRMAÇÃO DE SALVAMENTO / ATUALIZAÇÃO / EXCLUSÃO NA BASE DE CONHECIMENTO
+  const resConfirmacaoK = await detectarConfirmacaoSalvarConhecimento(
+    historicoRecente,
+    mensagemUsuario,
+    contato
+  );
+  if (resConfirmacaoK) {
+    return resConfirmacaoK;
+  }
+
+  // 3.3. FLUXO EM VÁRIAS MENSAGENS: DADO ENVIADO APÓS ANÚNCIO DE CADASTRO NA BASE DE CONHECIMENTO
+  const resContinuacaoK = detectarContinuacaoCadastroConhecimento(
+    historicoRecente,
+    mensagemUsuario
+  );
+  if (resContinuacaoK) {
+    return resContinuacaoK;
   }
 
   // 3.5. MAPEAMENTO DE OPÇÕES DA ÚLTIMA LISTA NUMERADA (Passado como dado ao contexto da IA)
@@ -4951,6 +5819,45 @@ ${statusSaudacao}
             for (const it of resultadoTool.itens) {
               dadosRetornadosTools.push(`${it.titulo}: ${it.conteudo}`);
             }
+          }
+        } else if (nomeTool === 'salvar_conhecimento') {
+          resultadoTool = await toolSalvarConhecimento(
+            args,
+            contato,
+            historicoLimitado,
+            mensagemUsuario
+          );
+          if (resultadoTool.mensagem) {
+            dadosRetornadosTools.push(resultadoTool.mensagem);
+          }
+          if (resultadoTool.instrucao_resposta) {
+            dadosRetornadosTools.push(resultadoTool.instrucao_resposta);
+          }
+        } else if (nomeTool === 'atualizar_conhecimento') {
+          resultadoTool = await toolAtualizarConhecimento(
+            args,
+            contato,
+            historicoLimitado,
+            mensagemUsuario
+          );
+          if (resultadoTool.mensagem) {
+            dadosRetornadosTools.push(resultadoTool.mensagem);
+          }
+          if (resultadoTool.instrucao_resposta) {
+            dadosRetornadosTools.push(resultadoTool.instrucao_resposta);
+          }
+        } else if (nomeTool === 'remover_conhecimento') {
+          resultadoTool = await toolRemoverConhecimento(
+            args,
+            contato,
+            historicoLimitado,
+            mensagemUsuario
+          );
+          if (resultadoTool.mensagem) {
+            dadosRetornadosTools.push(resultadoTool.mensagem);
+          }
+          if (resultadoTool.instrucao_resposta) {
+            dadosRetornadosTools.push(resultadoTool.instrucao_resposta);
           }
         } else if (nomeTool === 'ler_documento_completo') {
           const titularEfetivo = args.titular || ultimoTitularFoco;

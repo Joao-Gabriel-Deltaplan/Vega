@@ -289,6 +289,8 @@ export interface Contato {
   nivelAcesso?: NivelAcesso;
   titularVinculado?: string;
   ficha: FichaContato;
+  permiteCadastroConhecimento?: boolean;
+  permiteExclusao?: boolean;
 }
 
 export interface Conversa {
