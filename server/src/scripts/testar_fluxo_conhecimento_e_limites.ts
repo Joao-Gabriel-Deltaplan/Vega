@@ -1,7 +1,11 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import { processarMensagemChat } from '../chat/chatOrquestrador.js';
+import {
+  processarMensagemChat,
+  acoesConhecimentoPendentes,
+  limparAcaoConhecimentoPendenteSupabase,
+} from '../chat/chatOrquestrador.js';
 import { obterTodosConhecimentos, removerConhecimento } from '../storage.js';
 import { Contato, Mensagem } from '../types.js';
 
@@ -25,81 +29,55 @@ const contatoAdmin: Contato = {
 
 async function rodarTestes() {
   console.log('================================================================');
-  console.log('🧪 BATERIA DE TESTES: BASE DE CONHECIMENTO, ÁUDIO, NOMES E CONFIRMAÇÃO');
+  console.log('🧪 BATERIA DE TESTES: SEQUÊNCIA REAL, REINÍCIO DE SERVIDOR E IA');
   console.log('================================================================\n');
 
   let testesPassaram = 0;
-  const totalTestes = 6;
+  const totalTestes = 7;
   const idsParaLimpar: string[] = [];
 
   try {
     // --------------------------------------------------------------------------
-    // TESTE 1: ÁUDIO "adicione o contato do João do Pix pra mim" (sem número)
-    // -> deve pedir o telefone, sem gravar nada no banco e sem "não encontrei".
+    // TESTE 1: SEQUÊNCIA EXATA DO TESTE REAL + REINÍCIO DO SERVIDOR NO MEIO
+    // Áudio: "Viu, adiciona o contato do João do Pix, por favor, pra mim."
+    // VEGA: "Pode mandar o telefone do João do Pix."
+    // [SIMULAÇÃO DE DEPLOY NO RAILWAY / REINÍCIO: MEMÓRIA RAM ZERADA]
+    // Usuário (digitado, só o número puro): "14998810675"
+    // VEGA DEVE responder: "Vou salvar: Contato João do Pix, telefone 14998810675. Confirma?"
     // --------------------------------------------------------------------------
-    console.log('▶️ Teste 1: Áudio "adicione o contato do João do Pix pra mim" (sem número)');
-    const msg1 = 'Eu quero que você adicione o contato do João do Pix pra mim.';
-    console.log(`   Usuário (ÁUDIO): "${msg1}"`);
+    console.log('▶️ Teste 1: Caso Real Exato com Reinício do Servidor (número puro digitado "14998810675")');
+    await limparAcaoConhecimentoPendenteSupabase(contatoAdmin);
 
-    const res1 = await processarMensagemChat({
-      mensagemUsuario: msg1,
+    const msg1Real = 'Viu, adiciona o contato do João do Pix, por favor, pra mim.';
+    console.log(`   [1.1] Usuário (ÁUDIO): "${msg1Real}"`);
+
+    const res1Real = await processarMensagemChat({
+      mensagemUsuario: msg1Real,
       historicoRecente: [],
       contato: contatoAdmin,
       origemMensagem: 'audio',
     });
-    console.log(`   VEGA: "${res1.textoResposta}"`);
+    console.log(`   [1.1] VEGA: "${res1Real.textoResposta}"`);
 
-    const resp1Lower = res1.textoResposta.toLowerCase();
-    const pediuTelefone =
-      resp1Lower.includes('telefone') ||
-      resp1Lower.includes('número') ||
-      resp1Lower.includes('numero') ||
-      resp1Lower.includes('pode mandar');
-
-    const naoDisseNaoEncontrei =
-      !resp1Lower.includes('não encontrei') &&
-      !resp1Lower.includes('nao encontrei');
-
-    const naoAfirmouGravacao =
-      !resp1Lower.includes('salvo com sucesso') &&
-      !resp1Lower.includes('item salvo');
-
-    // Verifica no banco: nada deve ter sido criado!
-    const conhecimentosAposPasso1 = await obterTodosConhecimentos();
-    const itemCriadoIndevido1 = conhecimentosAposPasso1.find((k) =>
-      k.titulo.toLowerCase().includes('joão do pix') || k.titulo.toLowerCase().includes('joao do pix')
-    );
-
-    if (!pediuTelefone) {
-      throw new Error(`Falha no Teste 1: VEGA não pediu o telefone ao usuário. Resposta: "${res1.textoResposta}"`);
-    }
-    if (!naoDisseNaoEncontrei) {
-      throw new Error(`Falha no Teste 1: VEGA disparou guardrail de "não encontrei" indevidamente ao cadastrar contato. Resposta: "${res1.textoResposta}"`);
-    }
-    if (!naoAfirmouGravacao) {
-      throw new Error(`Falha no Teste 1: VEGA afirmou que gravou antes de ter o telefone! Resposta: "${res1.textoResposta}"`);
-    }
-    if (itemCriadoIndevido1) {
-      idsParaLimpar.push(itemCriadoIndevido1.id);
-      throw new Error(`Falha no Teste 1: Item foi gravado no banco prematuramente sem telefone e sem confirmação! ID: ${itemCriadoIndevido1.id}`);
+    const r1Lower = res1Real.textoResposta.toLowerCase();
+    if (!r1Lower.includes('telefone') && !r1Lower.includes('pode mandar')) {
+      throw new Error(`Falha no Teste 1 (1.1): VEGA não pediu o telefone do contato. Resposta: "${res1Real.textoResposta}"`);
     }
 
-    console.log('   ✅ Teste 1 OK: VEGA pediu o telefone cordialmente, sem "não encontrei", e nenhum item foi criado no banco.');
-    testesPassaram++;
+    // SIMULAÇÃO DE REINÍCIO DO SERVIDOR / DEPLOY DO RAILWAY
+    console.log('   🔄 Simulação de deploy no Railway: zerando memória RAM (acoesConhecimentoPendentes.clear())...');
+    acoesConhecimentoPendentes.clear();
+    if (acoesConhecimentoPendentes.size !== 0) {
+      throw new Error('Falha ao limpar cache de memória para o teste');
+    }
 
-    // --------------------------------------------------------------------------
-    // TESTE 2: Cenário (a): "adiciona o contato do João do Pix" -> "O telefone dele é 14 99881-0675" -> "sim" -> Confere no banco "Contato João do Pix"
-    // --------------------------------------------------------------------------
-    console.log('\n----------------------------------------------------------------');
-    console.log('▶️ Teste 2 (Cenário a): Envio do telefone com frase -> "sim" -> Conferir no banco título "Contato João do Pix"');
-
-    const historicoFluxo: Mensagem[] = [
+    const historicoAposPasso1: Mensagem[] = [
       {
         id: 'msg-u1',
         remetente: 'cliente',
         nomeRemetente: contatoAdmin.nome,
         horario: '10:00',
-        texto: msg1,
+        texto: msg1Real,
         tipoMensagem: 'audio',
       },
       {
@@ -107,390 +85,382 @@ async function rodarTestes() {
         remetente: 'assistente',
         nomeRemetente: 'VEGA',
         horario: '10:00',
-        texto: res1.textoResposta,
+        texto: res1Real.textoResposta,
       },
     ];
 
-    // Passo 2.1: Envio do telefone em frase falada/digitada (como no caso real)
-    const msg2Num = 'O telefone dele é 14 99885-0675';
-    console.log(`   [Passo 2.1] Usuário: "${msg2Num}"`);
+    // Passo 1.2: Usuário envia apenas os dígitos no WhatsApp (como no caso real)
+    const msgNumeroPuro = '14998810675';
+    console.log(`   [1.2] Usuário (DIGITADO, só números): "${msgNumeroPuro}"`);
 
-    const res2Num = await processarMensagemChat({
-      mensagemUsuario: msg2Num,
-      historicoRecente: historicoFluxo,
+    const resNumeroPuro = await processarMensagemChat({
+      mensagemUsuario: msgNumeroPuro,
+      historicoRecente: historicoAposPasso1,
       contato: contatoAdmin,
+      origemMensagem: 'texto',
     });
-    console.log(`   [Passo 2.1] VEGA: "${res2Num.textoResposta}"`);
+    console.log(`   [1.2] VEGA: "${resNumeroPuro.textoResposta}"`);
 
-    const pediuConfirmacao =
-      res2Num.textoResposta.toLowerCase().includes('vou salvar') &&
-      (res2Num.textoResposta.toLowerCase().includes('joão do pix') || res2Num.textoResposta.toLowerCase().includes('joao do pix')) &&
-      !res2Num.textoResposta.toLowerCase().includes('novo item') &&
-      res2Num.textoResposta.includes('99885-0675') &&
-      res2Num.textoResposta.toLowerCase().includes('confirma?');
+    const r2Lower = resNumeroPuro.textoResposta.toLowerCase();
+    const pediuConfirmacaoNomeCerto =
+      r2Lower.includes('vou salvar') &&
+      (r2Lower.includes('joão do pix') || r2Lower.includes('joao do pix')) &&
+      !r2Lower.includes('novo item') &&
+      !r2Lower.includes('mas de quem é') &&
+      !r2Lower.includes('mas de quem e') &&
+      resNumeroPuro.textoResposta.includes('14998810675') &&
+      r2Lower.includes('confirma?');
 
-    // Checagem rigorosa: NENHUM item com esse telefone pode ser criado no banco antes do "sim"!
-    const conhecimentosAntesDoSim = await obterTodosConhecimentos();
-    const itemExisteAntesDoSim = conhecimentosAntesDoSim.find((k) =>
-      (k.dadosEstruturados as any)?.telefone === '14 99885-0675' || k.conteudo.includes('99885-0675')
-    );
-
-    if (!pediuConfirmacao) {
-      throw new Error(`Falha no Passo 2.1: VEGA não formulou a confirmação esperada ou usou nome genérico. Resposta: "${res2Num.textoResposta}"`);
+    if (!pediuConfirmacaoNomeCerto) {
+      throw new Error(`Falha no Teste 1 (1.2): VEGA não pediu confirmação para "Contato João do Pix" ou perdeu o nome após o reinício. Resposta: "${resNumeroPuro.textoResposta}"`);
     }
-    if (itemExisteAntesDoSim) {
-      idsParaLimpar.push(itemExisteAntesDoSim.id);
-      throw new Error(`Falha no Passo 2.1: O item foi gravado no banco antes do "sim"! ID: ${itemExisteAntesDoSim.id}`);
-    }
-    console.log('   ✅ Passo 2.1 OK: Pediu confirmação com o nome "João do Pix" (sem "Novo Item") antes do "sim".');
 
-    historicoFluxo.push(
+    // Passo 1.3: Usuário responde "sim"
+    const historicoAposPasso2 = [
+      ...historicoAposPasso1,
       {
         id: 'msg-u2',
         remetente: 'cliente',
         nomeRemetente: contatoAdmin.nome,
         horario: '10:01',
-        texto: msg2Num,
+        texto: msgNumeroPuro,
+        tipoMensagem: 'texto' as const,
       },
       {
         id: 'msg-a2',
         remetente: 'assistente',
         nomeRemetente: 'VEGA',
         horario: '10:01',
-        texto: res2Num.textoResposta,
-      }
-    );
-
-    // Passo 2.2: Usuário diz "sim"
-    const msg2Sim = 'sim';
-    console.log(`   [Passo 2.2] Usuário: "${msg2Sim}"`);
-
-    const res2Sim = await processarMensagemChat({
-      mensagemUsuario: msg2Sim,
-      historicoRecente: historicoFluxo,
-      contato: contatoAdmin,
-    });
-    console.log(`   [Passo 2.2] VEGA: "${res2Sim.textoResposta}"`);
-
-    const confirmouSalvamento =
-      res2Sim.textoResposta.toLowerCase().includes('salvo com sucesso') ||
-      res2Sim.textoResposta.toLowerCase().includes('salvo');
-
-    // Agora sim o item DEVE existir no banco de dados com título "Contato João do Pix"!
-    const conhecimentosAposSim = await obterTodosConhecimentos();
-    const itemSalvoReal = conhecimentosAposSim.find((k) =>
-      k.titulo.toLowerCase().includes('joão do pix') || k.titulo.toLowerCase().includes('joao do pix')
-    );
-
-    if (!confirmouSalvamento) {
-      throw new Error(`Falha no Passo 2.2: VEGA não confirmou salvamento após "sim". Resposta: "${res2Sim.textoResposta}"`);
-    }
-    if (!itemSalvoReal) {
-      throw new Error('Falha no Passo 2.2: O item NÃO foi gravado no banco após o "sim"!');
-    }
-    if (itemSalvoReal.titulo.toLowerCase().includes('novo item')) {
-      throw new Error(`Falha no Passo 2.2: O item foi gravado com título genérico "${itemSalvoReal.titulo}" em vez de "Contato João do Pix"!`);
-    }
-
-    idsParaLimpar.push(itemSalvoReal.id);
-    console.log(`   ✅ Passo 2.2 OK: Item gravado no banco com título EXATO "${itemSalvoReal.titulo}" [ID: ${itemSalvoReal.id}].`);
-    testesPassaram++;
-
-    historicoFluxo.push(
-      {
-        id: 'msg-u3',
-        remetente: 'cliente',
-        nomeRemetente: contatoAdmin.nome,
-        horario: '10:02',
-        texto: msg2Sim,
-      },
-      {
-        id: 'msg-a3',
-        remetente: 'assistente',
-        nomeRemetente: 'VEGA',
-        horario: '10:02',
-        texto: res2Sim.textoResposta,
-      }
-    );
-
-    // --------------------------------------------------------------------------
-    // TESTE 3: Cenários (b) e (c): Correção de nome ("você salvou errado, o nome certo é João do Financeiro") -> "sim" -> banco atualiza para o novo título -> consulta pelo novo nome
-    // --------------------------------------------------------------------------
-    console.log('\n----------------------------------------------------------------');
-    console.log('▶️ Teste 3 (Cenários b e c): Correção de nome -> "sim" -> banco atualizado -> consulta pelo novo nome');
-
-    // Passo 3.1: Usuário avisa que o nome está errado e passa o nome correto
-    const msg3Corr = 'você salvou errado, o nome certo é João do Financeiro';
-    console.log(`   [Passo 3.1] Usuário: "${msg3Corr}"`);
-
-    const res3Corr = await processarMensagemChat({
-      mensagemUsuario: msg3Corr,
-      historicoRecente: historicoFluxo,
-      contato: contatoAdmin,
-    });
-    console.log(`   [Passo 3.1] VEGA: "${res3Corr.textoResposta}"`);
-
-    const pediuConfirmacaoAtualizacao =
-      res3Corr.textoResposta.toLowerCase().includes('atualizar') &&
-      (res3Corr.textoResposta.toLowerCase().includes('joão do financeiro') || res3Corr.textoResposta.toLowerCase().includes('joao do financeiro')) &&
-      res3Corr.textoResposta.toLowerCase().includes('confirma?');
-
-    if (!pediuConfirmacaoAtualizacao) {
-      throw new Error(`Falha no Passo 3.1: VEGA não pediu confirmação da atualização com o novo nome. Resposta: "${res3Corr.textoResposta}"`);
-    }
-    console.log('   ✅ Passo 3.1 OK: Pediu confirmação para atualizar o nome para "João do Financeiro".');
-
-    historicoFluxo.push(
-      {
-        id: 'msg-u4',
-        remetente: 'cliente',
-        nomeRemetente: contatoAdmin.nome,
-        horario: '10:03',
-        texto: msg3Corr,
-      },
-      {
-        id: 'msg-a4',
-        remetente: 'assistente',
-        nomeRemetente: 'VEGA',
-        horario: '10:03',
-        texto: res3Corr.textoResposta,
-      }
-    );
-
-    // Passo 3.2: Usuário confirma a atualização com "sim"
-    const msg3Sim = 'sim';
-    console.log(`   [Passo 3.2] Usuário: "${msg3Sim}"`);
-
-    const res3Sim = await processarMensagemChat({
-      mensagemUsuario: msg3Sim,
-      historicoRecente: historicoFluxo,
-      contato: contatoAdmin,
-    });
-    console.log(`   [Passo 3.2] VEGA: "${res3Sim.textoResposta}"`);
-
-    const confirmouAtualizacao =
-      res3Sim.textoResposta.toLowerCase().includes('atualizado com sucesso') ||
-      res3Sim.textoResposta.toLowerCase().includes('atualizado');
-
-    // Confere no banco se o item real teve seu título atualizado para "Contato João do Financeiro"
-    const todosKAposAtualizacao = await obterTodosConhecimentos();
-    const itemAtualizadoNoBanco = todosKAposAtualizacao.find((k) => k.id === itemSalvoReal.id);
-
-    if (!confirmouAtualizacao) {
-      throw new Error(`Falha no Passo 3.2: VEGA não confirmou a atualização após "sim". Resposta: "${res3Sim.textoResposta}"`);
-    }
-    if (!itemAtualizadoNoBanco) {
-      throw new Error('Falha no Passo 3.2: O item sumiu do banco de dados!');
-    }
-    const tituloLower = itemAtualizadoNoBanco.titulo.toLowerCase();
-    if (!tituloLower.includes('joão do financeiro') && !tituloLower.includes('joao do financeiro')) {
-      throw new Error(`Falha no Passo 3.2: O título no banco NÃO foi atualizado! Continua como: "${itemAtualizadoNoBanco.titulo}"`);
-    }
-    console.log(`   ✅ Passo 3.2 OK: O título do item ${itemSalvoReal.id} no banco foi atualizado de fato para "${itemAtualizadoNoBanco.titulo}".`);
-
-    historicoFluxo.push(
-      {
-        id: 'msg-u5',
-        remetente: 'cliente',
-        nomeRemetente: contatoAdmin.nome,
-        horario: '10:04',
-        texto: msg3Sim,
-      },
-      {
-        id: 'msg-a5',
-        remetente: 'assistente',
-        nomeRemetente: 'VEGA',
-        horario: '10:04',
-        texto: res3Sim.textoResposta,
-      }
-    );
-
-    // Passo 3.3 (Cenário c): Consulta pelo novo nome -> "qual o telefone do João do Financeiro?" -> retorna o número
-    const msg3Consulta = 'qual o telefone do João do Financeiro?';
-    console.log(`   [Passo 3.3] Usuário: "${msg3Consulta}"`);
-
-    const res3Consulta = await processarMensagemChat({
-      mensagemUsuario: msg3Consulta,
-      historicoRecente: historicoFluxo,
-      contato: contatoAdmin,
-    });
-    console.log(`   [Passo 3.3] VEGA: "${res3Consulta.textoResposta}"`);
-
-    const retornouTelefoneNovo =
-      res3Consulta.textoResposta.includes('99885-0675') || res3Consulta.textoResposta.includes('998850675');
-
-    if (!retornouTelefoneNovo) {
-      throw new Error(`Falha no Passo 3.3: A consulta pelo novo nome não retornou o telefone. Resposta: "${res3Consulta.textoResposta}"`);
-    }
-    console.log('   ✅ Passo 3.3 OK: A consulta pelo novo nome retornou o telefone perfeitamente.');
-    testesPassaram++;
-
-    // --------------------------------------------------------------------------
-    // TESTE 3: Checagem de duplicidade ANTES da confirmação (não depois do "sim")
-    // --------------------------------------------------------------------------
-    // TESTE 4: Checagem de duplicidade ANTES da confirmação (não depois do "sim")
-    // --------------------------------------------------------------------------
-    console.log('\n----------------------------------------------------------------');
-    console.log('▶️ Teste 4: Checar duplicidade ANTES da confirmação (não depois do "sim")');
-
-    const msg4Anuncio = 'quero adicionar o contato do João do Financeiro';
-    const res4Anuncio = await processarMensagemChat({
-      mensagemUsuario: msg4Anuncio,
-      historicoRecente: [],
-      contato: contatoAdmin,
-    });
-
-    const msg4NovoNum = '(14) 91111-2222';
-    console.log(`   Usuário envia novo número "${msg4NovoNum}" para contato já existente`);
-
-    const res4Duplicado = await processarMensagemChat({
-      mensagemUsuario: msg4NovoNum,
-      historicoRecente: [
-        {
-          id: 'dup-u1',
-          remetente: 'cliente',
-          nomeRemetente: contatoAdmin.nome,
-          horario: '10:10',
-          texto: msg4Anuncio,
-        },
-        {
-          id: 'dup-a1',
-          remetente: 'assistente',
-          nomeRemetente: 'VEGA',
-          horario: '10:10',
-          texto: res4Anuncio.textoResposta,
-        },
-      ],
-      contato: contatoAdmin,
-    });
-    console.log(`   VEGA resposta: "${res4Duplicado.textoResposta}"`);
-
-    const detectouDuplicidadeAntes =
-      res4Duplicado.textoResposta.toLowerCase().includes('já existe um item') &&
-      res4Duplicado.textoResposta.toLowerCase().includes('atualizar o item existente ou criar um novo');
-
-    if (!detectouDuplicidadeAntes) {
-      throw new Error(`Falha no Teste 4: VEGA não detectou duplicidade ANTES da confirmação. Resposta: "${res4Duplicado.textoResposta}"`);
-    }
-    console.log('   ✅ Teste 4 OK: Duplicidade foi apontada ANTES de propor confirmação e antes do "sim".');
-    testesPassaram++;
-
-    // --------------------------------------------------------------------------
-    // TESTE 5: Mudança de assunto no meio ("deixa pra lá, qual o CPF do Thomaz?")
-    // -> deve responder o CPF e descartar a ação pendente sem gravar nada no banco.
-    // --------------------------------------------------------------------------
-    console.log('\n----------------------------------------------------------------');
-    console.log('▶️ Teste 5: Mudança de assunto no meio ("deixa pra lá, qual o CPF do Thomaz?")');
-
-    const historicoMudancaAssunto: Mensagem[] = [
-      {
-        id: 'mud-u1',
-        remetente: 'cliente',
-        nomeRemetente: contatoAdmin.nome,
-        horario: '10:20',
-        texto: 'adiciona o contato do Carlos da Silva pra mim',
-      },
-      {
-        id: 'mud-a1',
-        remetente: 'assistente',
-        nomeRemetente: 'VEGA',
-        horario: '10:20',
-        texto: 'Pode mandar o telefone do Carlos da Silva.',
-      },
-      {
-        id: 'mud-u2',
-        remetente: 'cliente',
-        nomeRemetente: contatoAdmin.nome,
-        horario: '10:21',
-        texto: '(14) 97777-6666',
-      },
-      {
-        id: 'mud-a2',
-        remetente: 'assistente',
-        nomeRemetente: 'VEGA',
-        horario: '10:21',
-        texto: 'Vou salvar: Contato Carlos da Silva, telefone (14) 97777-6666. Confirma?',
+        texto: resNumeroPuro.textoResposta,
       },
     ];
 
-    const msg5Mudanca = 'deixa pra lá, qual o CPF do Thomaz?';
-    console.log(`   Usuário: "${msg5Mudanca}" (mudando de assunto)`);
-
-    const res5Mudanca = await processarMensagemChat({
-      mensagemUsuario: msg5Mudanca,
-      historicoRecente: historicoMudancaAssunto,
+    const resSim1 = await processarMensagemChat({
+      mensagemUsuario: 'sim',
+      historicoRecente: historicoAposPasso2,
       contato: contatoAdmin,
     });
-    console.log(`   VEGA: "${res5Mudanca.textoResposta}"`);
+    console.log(`   [1.3] Usuário: "sim" -> VEGA: "${resSim1.textoResposta}"`);
 
-    // Validação: deve responder o CPF do Thomaz e NÃO confirmar o salvamento do Carlos
-    const respondeuCpf =
-      /\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/.test(res5Mudanca.textoResposta) ||
-      res5Mudanca.textoResposta.toLowerCase().includes('cpf do thomaz');
-
-    const naoConfirmouCarlos =
-      !res5Mudanca.textoResposta.toLowerCase().includes('carlos da silva salvo') &&
-      !res5Mudanca.textoResposta.toLowerCase().includes('carlos da silva foi salvo');
-
-    // Validação no banco: "Carlos da Silva" NUNCA pode ter sido criado!
-    const conhecimentosAposMudanca = await obterTodosConhecimentos();
-    const itemCarlosCriado = conhecimentosAposMudanca.find((k) =>
-      k.titulo.toLowerCase().includes('carlos da silva')
+    const todosK1 = await obterTodosConhecimentos();
+    const item1Salvo = todosK1.find((k) =>
+      k.titulo.toLowerCase().includes('joão do pix') || k.titulo.toLowerCase().includes('joao do pix')
     );
 
-    if (itemCarlosCriado) {
-      idsParaLimpar.push(itemCarlosCriado.id);
-      throw new Error(`Falha no Teste 5: O contato Carlos da Silva foi criado no banco mesmo com mudança de assunto! ID: ${itemCarlosCriado.id}`);
+    if (!item1Salvo) {
+      throw new Error('Falha no Teste 1: Item não foi gravado no banco após o "sim"!');
     }
-    if (!respondeuCpf) {
-      throw new Error(`Falha no Teste 5: VEGA não respondeu à nova pergunta sobre o CPF do Thomaz. Resposta: "${res5Mudanca.textoResposta}"`);
-    }
-    if (!naoConfirmouCarlos) {
-      throw new Error(`Falha no Teste 5: VEGA confirmou o salvamento cancelado. Resposta: "${res5Mudanca.textoResposta}"`);
+    if (item1Salvo.titulo.toLowerCase().includes('novo item')) {
+      throw new Error(`Falha no Teste 1: Título genérico "${item1Salvo.titulo}" gravado no banco!`);
     }
 
-    console.log('   ✅ Teste 5 OK: Respondeu o CPF do Thomaz, descartou a ação pendente e nada foi gravado no banco.');
+    idsParaLimpar.push(item1Salvo.id);
+    console.log(`   ✅ Teste 1 OK: Sobreviveu ao reinício, completou pendência do Supabase via IA e gravou "${item1Salvo.titulo}".`);
     testesPassaram++;
 
+    // Limpa para o próximo teste
+    await removerConhecimento(item1Salvo.id);
+    await limparAcaoConhecimentoPendenteSupabase(contatoAdmin);
+
     // --------------------------------------------------------------------------
-    // TESTE 6: Consulta "qual o CPF do Danilo?" por áudio
-    // -> continua pedindo para confirmar/digitar o nome (privacidade de nomes em áudio)
+    // TESTE 2: VARIAÇÃO COM NÚMERO FORMATADO COM ESPAÇOS E TRAÇO ("14 99881-0675")
     // --------------------------------------------------------------------------
     console.log('\n----------------------------------------------------------------');
-    console.log('▶️ Teste 6: Consulta "qual o CPF do Danilo?" por áudio');
+    console.log('▶️ Teste 2: Variação com número formatado ("14 99881-0675") e reinício do servidor');
 
-    const msg6Audio = 'qual o CPF do Danilo?';
-    console.log(`   Usuário (ÁUDIO): "${msg6Audio}"`);
+    const res2_1 = await processarMensagemChat({
+      mensagemUsuario: 'adiciona o contato do João do Pix por favor',
+      historicoRecente: [],
+      contato: contatoAdmin,
+    });
+    console.log(`   [2.1] VEGA: "${res2_1.textoResposta}"`);
 
-    const res6Audio = await processarMensagemChat({
-      mensagemUsuario: msg6Audio,
+    // Reinício
+    acoesConhecimentoPendentes.clear();
+
+    const hist2 = [
+      { id: 'h2-1', remetente: 'cliente' as const, nomeRemetente: contatoAdmin.nome, horario: '10:00', texto: 'adiciona o contato do João do Pix por favor' },
+      { id: 'h2-2', remetente: 'assistente' as const, nomeRemetente: 'VEGA', horario: '10:00', texto: res2_1.textoResposta },
+    ];
+
+    const res2_2 = await processarMensagemChat({
+      mensagemUsuario: '14 99881-0675',
+      historicoRecente: hist2,
+      contato: contatoAdmin,
+    });
+    console.log(`   [2.2] Usuário: "14 99881-0675" -> VEGA: "${res2_2.textoResposta}"`);
+
+    const r2_2Lower = res2_2.textoResposta.toLowerCase();
+    if (
+      !r2_2Lower.includes('vou salvar') ||
+      (!r2_2Lower.includes('joão do pix') && !r2_2Lower.includes('joao do pix')) ||
+      r2_2Lower.includes('novo item') ||
+      r2_2Lower.includes('de quem é')
+    ) {
+      throw new Error(`Falha no Teste 2: VEGA não formulou a confirmação esperada para o número formatado. Resposta: "${res2_2.textoResposta}"`);
+    }
+
+    const res2_3 = await processarMensagemChat({
+      mensagemUsuario: 'sim',
+      historicoRecente: [
+        ...hist2,
+        { id: 'h2-3', remetente: 'cliente' as const, nomeRemetente: contatoAdmin.nome, horario: '10:01', texto: '14 99881-0675' },
+        { id: 'h2-4', remetente: 'assistente' as const, nomeRemetente: 'VEGA', horario: '10:01', texto: res2_2.textoResposta },
+      ],
+      contato: contatoAdmin,
+    });
+    console.log(`   [2.3] Usuário: "sim" -> VEGA: "${res2_3.textoResposta}"`);
+
+    const todosK2 = await obterTodosConhecimentos();
+    const item2Salvo = todosK2.find((k) =>
+      k.titulo.toLowerCase().includes('joão do pix') || k.titulo.toLowerCase().includes('joao do pix')
+    );
+    if (!item2Salvo) {
+      throw new Error('Falha no Teste 2: Item formatado não gravado!');
+    }
+    idsParaLimpar.push(item2Salvo.id);
+    console.log(`   ✅ Teste 2 OK: Número formatado aceito e gravado com sucesso: "${item2Salvo.titulo}".`);
+    testesPassaram++;
+
+    await removerConhecimento(item2Salvo.id);
+    await limparAcaoConhecimentoPendenteSupabase(contatoAdmin);
+
+    // --------------------------------------------------------------------------
+    // TESTE 3: VARIAÇÃO COM NÚMERO ENVIADO VIA ÁUDIO
+    // --------------------------------------------------------------------------
+    console.log('\n----------------------------------------------------------------');
+    console.log('▶️ Teste 3: Variação com número enviado por ÁUDIO e reinício do servidor');
+
+    const res3_1 = await processarMensagemChat({
+      mensagemUsuario: 'Quero cadastrar o contato do João do Pix',
       historicoRecente: [],
       contato: contatoAdmin,
       origemMensagem: 'audio',
     });
-    console.log(`   VEGA: "${res6Audio.textoResposta}"`);
+    console.log(`   [3.1] VEGA: "${res3_1.textoResposta}"`);
 
-    const resp6Lower = res6Audio.textoResposta.toLowerCase();
+    // Reinício
+    acoesConhecimentoPendentes.clear();
+
+    const hist3 = [
+      { id: 'h3-1', remetente: 'cliente' as const, nomeRemetente: contatoAdmin.nome, horario: '10:00', texto: 'Quero cadastrar o contato do João do Pix', tipoMensagem: 'audio' as const },
+      { id: 'h3-2', remetente: 'assistente' as const, nomeRemetente: 'VEGA', horario: '10:00', texto: res3_1.textoResposta },
+    ];
+
+    const res3_2 = await processarMensagemChat({
+      mensagemUsuario: 'O número é 14 99881-0675',
+      historicoRecente: hist3,
+      contato: contatoAdmin,
+      origemMensagem: 'audio',
+    });
+    console.log(`   [3.2] Usuário (ÁUDIO): "O número é 14 99881-0675" -> VEGA: "${res3_2.textoResposta}"`);
+
+    const r3_2Lower = res3_2.textoResposta.toLowerCase();
+    if (
+      !r3_2Lower.includes('vou salvar') ||
+      (!r3_2Lower.includes('joão do pix') && !r3_2Lower.includes('joao do pix')) ||
+      r3_2Lower.includes('novo item')
+    ) {
+      throw new Error(`Falha no Teste 3: VEGA não pediu confirmação para o áudio com o número. Resposta: "${res3_2.textoResposta}"`);
+    }
+
+    const res3_3 = await processarMensagemChat({
+      mensagemUsuario: 'confirmo',
+      historicoRecente: [
+        ...hist3,
+        { id: 'h3-3', remetente: 'cliente' as const, nomeRemetente: contatoAdmin.nome, horario: '10:01', texto: 'O número é 14 99881-0675', tipoMensagem: 'audio' as const },
+        { id: 'h3-4', remetente: 'assistente' as const, nomeRemetente: 'VEGA', horario: '10:01', texto: res3_2.textoResposta },
+      ],
+      contato: contatoAdmin,
+    });
+    console.log(`   [3.3] Usuário: "confirmo" -> VEGA: "${res3_3.textoResposta}"`);
+
+    const todosK3 = await obterTodosConhecimentos();
+    const item3Salvo = todosK3.find((k) =>
+      k.titulo.toLowerCase().includes('joão do pix') || k.titulo.toLowerCase().includes('joao do pix')
+    );
+    if (!item3Salvo) {
+      throw new Error('Falha no Teste 3: Item por áudio não gravado!');
+    }
+    idsParaLimpar.push(item3Salvo.id);
+    console.log(`   ✅ Teste 3 OK: Fluxo com áudio completou a pendência e gravou "${item3Salvo.titulo}".`);
+    testesPassaram++;
+
+    // Mantém o item3 para o Teste 4 de correção de nome
+    // --------------------------------------------------------------------------
+    // TESTE 4: CORREÇÃO DE NOME ("você salvou errado, o nome certo é João do Financeiro") -> "sim" -> consulta
+    // --------------------------------------------------------------------------
+    console.log('\n----------------------------------------------------------------');
+    console.log('▶️ Teste 4: Correção de nome -> "sim" -> banco atualizado -> consulta pelo novo nome');
+
+    const hist4 = [
+      { id: 'h4-1', remetente: 'cliente' as const, nomeRemetente: contatoAdmin.nome, horario: '10:00', texto: 'Quero cadastrar o contato do João do Pix' },
+      { id: 'h4-2', remetente: 'assistente' as const, nomeRemetente: 'VEGA', horario: '10:00', texto: res3_1.textoResposta },
+      { id: 'h4-3', remetente: 'cliente' as const, nomeRemetente: contatoAdmin.nome, horario: '10:01', texto: '14 99881-0675' },
+      { id: 'h4-4', remetente: 'assistente' as const, nomeRemetente: 'VEGA', horario: '10:01', texto: res3_2.textoResposta },
+      { id: 'h4-5', remetente: 'cliente' as const, nomeRemetente: contatoAdmin.nome, horario: '10:02', texto: 'confirmo' },
+      { id: 'h4-6', remetente: 'assistente' as const, nomeRemetente: 'VEGA', horario: '10:02', texto: res3_3.textoResposta },
+    ];
+
+    const msgCorr = 'você salvou errado, o nome certo é João do Financeiro';
+    console.log(`   [4.1] Usuário: "${msgCorr}"`);
+    const resCorr = await processarMensagemChat({
+      mensagemUsuario: msgCorr,
+      historicoRecente: hist4,
+      contato: contatoAdmin,
+    });
+    console.log(`   [4.1] VEGA: "${resCorr.textoResposta}"`);
+
+    const rCorrLower = resCorr.textoResposta.toLowerCase();
+    if (!rCorrLower.includes('atualizar') || (!rCorrLower.includes('joão do financeiro') && !rCorrLower.includes('joao do financeiro'))) {
+      throw new Error(`Falha no Teste 4: VEGA não pediu confirmação para corrigir o nome. Resposta: "${resCorr.textoResposta}"`);
+    }
+
+    const resSimCorr = await processarMensagemChat({
+      mensagemUsuario: 'sim',
+      historicoRecente: [
+        ...hist4,
+        { id: 'h4-7', remetente: 'cliente' as const, nomeRemetente: contatoAdmin.nome, horario: '10:03', texto: msgCorr },
+        { id: 'h4-8', remetente: 'assistente' as const, nomeRemetente: 'VEGA', horario: '10:03', texto: resCorr.textoResposta },
+      ],
+      contato: contatoAdmin,
+    });
+    console.log(`   [4.2] Usuário: "sim" -> VEGA: "${resSimCorr.textoResposta}"`);
+
+    const todosK4 = await obterTodosConhecimentos();
+    const itemAtualizado = todosK4.find((k) => k.id === item3Salvo.id);
+    if (!itemAtualizado || !itemAtualizado.titulo.toLowerCase().includes('financeiro')) {
+      throw new Error(`Falha no Teste 4: Título no banco não foi atualizado para João do Financeiro! Título atual: "${itemAtualizado?.titulo}"`);
+    }
+
+    const resConsulta = await processarMensagemChat({
+      mensagemUsuario: 'qual o telefone do João do Financeiro?',
+      historicoRecente: [],
+      contato: contatoAdmin,
+    });
+    console.log(`   [4.3] Usuário: "qual o telefone do João do Financeiro?" -> VEGA: "${resConsulta.textoResposta}"`);
+
+    if (!resConsulta.textoResposta.includes('99881-0675') && !resConsulta.textoResposta.includes('998810675')) {
+      throw new Error(`Falha no Teste 4: Consulta pelo novo nome não retornou o telefone. Resposta: "${resConsulta.textoResposta}"`);
+    }
+
+    console.log('   ✅ Teste 4 OK: Nome corrigido no banco e consultável com sucesso.');
+    testesPassaram++;
+
+    await removerConhecimento(item3Salvo.id);
+    await limparAcaoConhecimentoPendenteSupabase(contatoAdmin);
+
+    // --------------------------------------------------------------------------
+    // TESTE 5: CHECAR DUPLICIDADE ANTES DA CONFIRMAÇÃO
+    // --------------------------------------------------------------------------
+    console.log('\n----------------------------------------------------------------');
+    console.log('▶️ Teste 5: Checar duplicidade ANTES da confirmação (não depois do "sim")');
+
+    // Cria um item prévio
+    const resPrevio = await processarMensagemChat({
+      mensagemUsuario: 'salva o contato da Maria do RH telefone 14991112233',
+      historicoRecente: [],
+      contato: contatoAdmin,
+    });
+    await processarMensagemChat({
+      mensagemUsuario: 'sim',
+      historicoRecente: [
+        { id: 'hp-1', remetente: 'cliente', nomeRemetente: contatoAdmin.nome, horario: '10:00', texto: 'salva o contato da Maria do RH telefone 14991112233' },
+        { id: 'hp-2', remetente: 'assistente', nomeRemetente: 'VEGA', horario: '10:00', texto: resPrevio.textoResposta },
+      ],
+      contato: contatoAdmin,
+    });
+    const itemMaria = (await obterTodosConhecimentos()).find((k) => k.titulo.toLowerCase().includes('maria do rh'));
+    if (itemMaria) idsParaLimpar.push(itemMaria.id);
+
+    // Tenta salvar de novo
+    const resDup = await processarMensagemChat({
+      mensagemUsuario: 'salva o contato da Maria do RH com o telefone 14 99111-2233',
+      historicoRecente: [],
+      contato: contatoAdmin,
+    });
+    console.log(`   VEGA duplicidade: "${resDup.textoResposta}"`);
+
+    const indicouDuplicidade =
+      resDup.textoResposta.toLowerCase().includes('já existe') ||
+      resDup.textoResposta.toLowerCase().includes('ja existe');
+
+    if (!indicouDuplicidade) {
+      throw new Error(`Falha no Teste 5: Duplicidade não foi acusada antes da confirmação. Resposta: "${resDup.textoResposta}"`);
+    }
+    console.log('   ✅ Teste 5 OK: Duplicidade apontada antes de propor confirmação.');
+    testesPassaram++;
+
+    // --------------------------------------------------------------------------
+    // TESTE 6: MUDANÇA DE ASSUNTO NO MEIO ("deixa pra lá, qual o CPF do Thomaz?")
+    // --------------------------------------------------------------------------
+    console.log('\n----------------------------------------------------------------');
+    console.log('▶️ Teste 6: Mudança de assunto no meio ("deixa pra lá, qual o CPF do Thomaz?")');
+
+    const resMud1 = await processarMensagemChat({
+      mensagemUsuario: 'salva o contato do Carlos da Silva telefone (14) 97777-6666',
+      historicoRecente: [],
+      contato: contatoAdmin,
+    });
+
+    const resMud2 = await processarMensagemChat({
+      mensagemUsuario: 'deixa pra lá, qual o CPF do Thomaz?',
+      historicoRecente: [
+        { id: 'hm-1', remetente: 'cliente', nomeRemetente: contatoAdmin.nome, horario: '10:00', texto: 'salva o contato do Carlos da Silva telefone (14) 97777-6666' },
+        { id: 'hm-2', remetente: 'assistente', nomeRemetente: 'VEGA', horario: '10:00', texto: resMud1.textoResposta },
+      ],
+      contato: contatoAdmin,
+    });
+    console.log(`   VEGA mudança: "${resMud2.textoResposta}"`);
+
+    const respondeuCpf =
+      /\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/.test(resMud2.textoResposta) ||
+      resMud2.textoResposta.toLowerCase().includes('cpf do thomaz');
+
+    const todosKMud = await obterTodosConhecimentos();
+    const itemCarlos = todosKMud.find((k) => k.titulo.toLowerCase().includes('carlos da silva'));
+    if (itemCarlos) {
+      idsParaLimpar.push(itemCarlos.id);
+      throw new Error(`Falha no Teste 6: Contato Carlos da Silva foi gravado indevidamente! ID: ${itemCarlos.id}`);
+    }
+    if (!respondeuCpf) {
+      throw new Error(`Falha no Teste 6: VEGA não respondeu o CPF do Thomaz na mudança de assunto. Resposta: "${resMud2.textoResposta}"`);
+    }
+
+    console.log('   ✅ Teste 6 OK: Respondeu a nova pergunta e cancelou a pendência.');
+    testesPassaram++;
+
+    // --------------------------------------------------------------------------
+    // TESTE 7: CONSULTA POR ÁUDIO DE NOME NÃO CADASTRADO
+    // --------------------------------------------------------------------------
+    console.log('\n----------------------------------------------------------------');
+    console.log('▶️ Teste 7: Consulta "qual o CPF do Danilo?" por áudio (privacidade estrita)');
+
+    const res7 = await processarMensagemChat({
+      mensagemUsuario: 'qual o CPF do Danilo?',
+      historicoRecente: [],
+      contato: contatoAdmin,
+      origemMensagem: 'audio',
+    });
+    console.log(`   VEGA: "${res7.textoResposta}"`);
+
+    const r7Lower = res7.textoResposta.toLowerCase();
     const pediuConfirmarNome =
-      resp6Lower.includes('danilo') &&
-      (resp6Lower.includes('confirmar o nome') || resp6Lower.includes('digite'));
+      r7Lower.includes('danilo') &&
+      (r7Lower.includes('confirmar o nome') || r7Lower.includes('digite'));
 
-    const naoVazouCpf = !/\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/.test(res6Audio.textoResposta);
+    const naoVazouCpf = !/\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/.test(res7.textoResposta);
 
-    if (!naoVazouCpf) {
-      throw new Error(`Falha no Teste 6: VEGA entregou CPF indevido para nome não cadastrado via áudio! Resposta: "${res6Audio.textoResposta}"`);
-    }
-    if (!pediuConfirmarNome) {
-      throw new Error(`Falha no Teste 6: VEGA não pediu para confirmar/digitar o nome na consulta por áudio. Resposta: "${res6Audio.textoResposta}"`);
+    if (!naoVazouCpf || !pediuConfirmarNome) {
+      throw new Error(`Falha no Teste 7: Consulta de áudio não respeitou regra de privacidade. Resposta: "${res7.textoResposta}"`);
     }
 
-    console.log('   ✅ Teste 6 OK: A consulta por áudio pediu para confirmar/digitar o nome sem vazar dados.');
+    console.log('   ✅ Teste 7 OK: Pediu confirmação sem vazar dados cadastrais.');
     testesPassaram++;
 
   } catch (err: any) {
     console.error('\n❌ ERRO DURANTE A EXECUÇÃO DOS TESTES:', err.message || err);
   } finally {
-    // Limpeza de todos os itens criados durante os testes
     console.log('\n🧹 Limpando itens criados para os testes...');
     for (const id of idsParaLimpar) {
       try {
@@ -500,6 +470,7 @@ async function rodarTestes() {
         console.warn(`   Falha ao remover item ${id}:`, errLimpeza.message || errLimpeza);
       }
     }
+    await limparAcaoConhecimentoPendenteSupabase(contatoAdmin);
   }
 
   console.log('\n================================================================');

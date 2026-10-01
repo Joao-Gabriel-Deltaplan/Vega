@@ -2717,7 +2717,7 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'salvar_conhecimento',
-      description: 'Cadastra um novo item na Base de Conhecimento interna da Delta Plan (contatos, telefones, chaves PIX, links de sistemas, regras de negócio ou procedimentos). ATENÇÃO REGRA CRÍTICA: Antes de gravar, você DEVE confirmar com o usuário em uma única frase ("Vou salvar: [Título], [dado]. Confirma?") e só acionar esta ferramenta quando o usuário responder "sim", "pode salvar", "confirma" ou afirmação equivalente. Se a ferramenta indicar que já existe item parecido, pergunte ao usuário se deseja atualizar ou criar novo.',
+      description: 'Cadastra ou prepara o cadastro de um novo item na Base de Conhecimento interna da Delta Plan (contatos, telefones, chaves PIX, links de sistemas, regras de negócio ou procedimentos). Acione esta ferramenta quando o usuário solicitar salvar/adicionar ou quando enviar dados complementares de um cadastro em andamento (ex: telefone, chave PIX, link). A ferramenta valida se faltam dados, verifica duplicidade e gera a frase de confirmação que você deve apresentar ao usuário antes da gravação definitiva.',
       parameters: {
         type: 'object',
         properties: {
@@ -4462,7 +4462,7 @@ export interface AcaoConhecimentoPendente {
   apelidos?: string[];
 }
 
-const acoesConhecimentoPendentes = new Map<string, AcaoConhecimentoPendente>();
+export const acoesConhecimentoPendentes = new Map<string, AcaoConhecimentoPendente>();
 
 export function registrarAcaoConhecimentoPendente(contatoId: string, acao: AcaoConhecimentoPendente) {
   acoesConhecimentoPendentes.set(contatoId, acao);
@@ -4471,7 +4471,7 @@ export function registrarAcaoConhecimentoPendente(contatoId: string, acao: AcaoC
 export function obterAcaoConhecimentoPendente(contatoId: string): AcaoConhecimentoPendente | undefined {
   const acao = acoesConhecimentoPendentes.get(contatoId);
   if (!acao) return undefined;
-  if (Date.now() - acao.dataCriacao > 15 * 60 * 1000) {
+  if (Date.now() - acao.dataCriacao > 30 * 60 * 1000) {
     acoesConhecimentoPendentes.delete(contatoId);
     return undefined;
   }
@@ -4480,6 +4480,148 @@ export function obterAcaoConhecimentoPendente(contatoId: string): AcaoConhecimen
 
 export function limparAcaoConhecimentoPendente(contatoId: string) {
   acoesConhecimentoPendentes.delete(contatoId);
+}
+
+/**
+ * Persiste ação pendente de conhecimento no Supabase (resistente a deploy/reinício no Railway)
+ */
+export async function salvarAcaoConhecimentoPendenteSupabase(
+  contato: Contato,
+  acao: AcaoConhecimentoPendente
+): Promise<void> {
+  registrarAcaoConhecimentoPendente(contato.id, acao);
+  if (contato.telefone) {
+    registrarAcaoConhecimentoPendente(contato.telefone, acao);
+    registrarAcaoConhecimentoPendente(normalizarNumeroCanonica(contato.telefone), acao);
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const id = `pend-k-${contato.id}`;
+    const expiraEm = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    const tel = contato.telefone || '';
+
+    await supabase.from('pendencias_documento_whatsapp').upsert({
+      id,
+      conversa_id: contato.id,
+      remetente_numero: tel,
+      remetente_jid: tel ? `${tel}@s.whatsapp.net` : '',
+      documento_id: 'conhecimento',
+      tipo_pendencia: 'cadastro_conhecimento',
+      dados_detectados: acao,
+      expira_em: expiraEm,
+      resolvido: false,
+    });
+  } catch (err) {
+    console.warn('[ChatOrquestrador ⚠️] Falha ao persistir ação de conhecimento pendente no Supabase:', err);
+  }
+}
+
+/**
+ * Recupera ação pendente de conhecimento, consultando a memória e caindo no Supabase se o servidor tiver reiniciado
+ */
+export async function obterAcaoConhecimentoPendenteSupabase(
+  contato: Contato
+): Promise<AcaoConhecimentoPendente | undefined> {
+  const tel = contato.telefone || '';
+  const telCanonica = tel ? normalizarNumeroCanonica(tel) : '';
+
+  // 1. Tenta recuperar da memória RAM
+  const emMemoria =
+    obterAcaoConhecimentoPendente(contato.id) ||
+    (tel ? obterAcaoConhecimentoPendente(tel) : undefined) ||
+    (telCanonica ? obterAcaoConhecimentoPendente(telCanonica) : undefined);
+
+  if (emMemoria) return emMemoria;
+
+  // 2. Se a memória foi zerada (ex: deploy ou reinício no Railway), busca no Supabase
+  try {
+    const supabase = getSupabaseClient();
+    const agoraIso = new Date().toISOString();
+
+    // 2.1. Busca direta por ID da pendência do contato
+    const { data: porId } = await supabase
+      .from('pendencias_documento_whatsapp')
+      .select('dados_detectados, expira_em')
+      .eq('id', `pend-k-${contato.id}`)
+      .eq('resolvido', false)
+      .gt('expira_em', agoraIso)
+      .maybeSingle();
+
+    if (porId?.dados_detectados) {
+      const acao = porId.dados_detectados as AcaoConhecimentoPendente;
+      registrarAcaoConhecimentoPendente(contato.id, acao);
+      return acao;
+    }
+
+    // 2.2. Se tiver telefone, busca por número ou conversa_id
+    if (tel || telCanonica) {
+      const condicoes = [
+        `conversa_id.eq.${contato.id}`,
+        tel ? `remetente_numero.eq.${tel}` : '',
+        telCanonica ? `remetente_numero.eq.${telCanonica}` : '',
+        telCanonica ? `conversa_id.eq.wa-${telCanonica}` : '',
+      ]
+        .filter(Boolean)
+        .join(',');
+
+      const { data: porTel } = await supabase
+        .from('pendencias_documento_whatsapp')
+        .select('dados_detectados, expira_em')
+        .or(condicoes)
+        .eq('tipo_pendencia', 'cadastro_conhecimento')
+        .eq('resolvido', false)
+        .gt('expira_em', agoraIso)
+        .order('criado_em', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (porTel?.dados_detectados) {
+        const acao = porTel.dados_detectados as AcaoConhecimentoPendente;
+        registrarAcaoConhecimentoPendente(contato.id, acao);
+        return acao;
+      }
+    }
+  } catch (err) {
+    console.warn('[ChatOrquestrador ⚠️] Falha ao consultar ação de conhecimento pendente no Supabase:', err);
+  }
+
+  return undefined;
+}
+
+/**
+ * Limpa a ação pendente de conhecimento da memória e do Supabase
+ */
+export async function limparAcaoConhecimentoPendenteSupabase(
+  contato: Contato
+): Promise<void> {
+  limparAcaoConhecimentoPendente(contato.id);
+  if (contato.telefone) {
+    limparAcaoConhecimentoPendente(contato.telefone);
+    limparAcaoConhecimentoPendente(normalizarNumeroCanonica(contato.telefone));
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const tel = contato.telefone || '';
+    const telCanonica = tel ? normalizarNumeroCanonica(tel) : '';
+
+    const condicoes = [
+      `id.eq.pend-k-${contato.id}`,
+      `conversa_id.eq.${contato.id}`,
+      tel ? `remetente_numero.eq.${tel}` : '',
+      telCanonica ? `conversa_id.eq.wa-${telCanonica}` : '',
+    ]
+      .filter(Boolean)
+      .join(',');
+
+    await supabase
+      .from('pendencias_documento_whatsapp')
+      .delete()
+      .or(condicoes);
+  } catch (err) {
+    console.warn('[ChatOrquestrador ⚠️] Falha ao limpar ação de conhecimento pendente no Supabase:', err);
+  }
 }
 
 /**
@@ -4564,12 +4706,14 @@ export async function toolSalvarConhecimento(
   }
 
   let tituloLimpo = (args.titulo || '').trim();
-  const pendenciaAtual = obterAcaoConhecimentoPendente(contato.id);
+  const pendenciaAtual = await obterAcaoConhecimentoPendenteSupabase(contato);
 
   // Se o título informado for genérico, tenta recuperar de pendência anterior ou recusa
   if (ehTituloGenerico(tituloLimpo)) {
     if (pendenciaAtual && pendenciaAtual.titulo && !ehTituloGenerico(pendenciaAtual.titulo)) {
       tituloLimpo = pendenciaAtual.titulo;
+    } else if (pendenciaAtual && pendenciaAtual.nomePessoa && !ehTituloGenerico(pendenciaAtual.nomePessoa)) {
+      tituloLimpo = formatarTituloContato(pendenciaAtual.nomePessoa);
     } else {
       return {
         sucesso: false,
@@ -4609,7 +4753,7 @@ export async function toolSalvarConhecimento(
       }
 
       const tituloContato = formatarTituloContato(nomePessoa);
-      registrarAcaoConhecimentoPendente(contato.id, {
+      await salvarAcaoConhecimentoPendenteSupabase(contato, {
         tipoAcao: 'salvar',
         categoria: 'Contatos',
         titulo: tituloContato,
@@ -4631,6 +4775,15 @@ export async function toolSalvarConhecimento(
         mensagem: `Não é possível salvar contato sem o número de telefone. Peça o telefone ao usuário.`,
         instrucao_resposta: `Falta o número de telefone para o contato "${nomePessoa}". Pergunte o telefone ao usuário de forma curta e direta (ex: "Pode mandar o telefone do ${nomePessoa}."). NÃO afirme que salvou, NÃO gere confirmação de salvamento e NÃO grave nada.`,
       };
+    } else {
+      // Garante que o telefone seja atribuído ao conteúdo e dados_estruturados
+      args.conteudo = telefone;
+      if (!args.dados_estruturados) args.dados_estruturados = {};
+      args.dados_estruturados.telefone = telefone;
+      const nomeContatoExtraido = tituloLimpo.replace(/^(?:contato\s*(?:d[oa]\s*)?)/i, '').trim();
+      if (nomeContatoExtraido && !ehTituloGenerico(nomeContatoExtraido)) {
+        args.dados_estruturados.nome = nomeContatoExtraido;
+      }
     }
   }
 
@@ -4639,7 +4792,7 @@ export async function toolSalvarConhecimento(
     if (!chave || chave.toLowerCase().includes('joão do pix')) {
       const beneficiario = tituloLimpo.replace(/^(?:chave\s*pix\s*(?:d[oa]\s*)?)/i, '').trim();
       if (!ehTituloGenerico(beneficiario)) {
-        registrarAcaoConhecimentoPendente(contato.id, {
+        await salvarAcaoConhecimentoPendenteSupabase(contato, {
           tipoAcao: 'salvar',
           categoria: 'Financeiro',
           titulo: `Chave PIX do ${beneficiario}`,
@@ -4669,7 +4822,7 @@ export async function toolSalvarConhecimento(
     if (!temUrl) {
       const nomeSistema = tituloLimpo.replace(/^(?:link\s*(?:d[oa]\s*)?|sistema\s*(?:d[oa]\s*)?)/i, '').trim();
       if (!ehTituloGenerico(nomeSistema)) {
-        registrarAcaoConhecimentoPendente(contato.id, {
+        await salvarAcaoConhecimentoPendenteSupabase(contato, {
           tipoAcao: 'salvar',
           categoria: 'Sistemas',
           titulo: `Link ${nomeSistema}`,
@@ -4720,7 +4873,7 @@ export async function toolSalvarConhecimento(
   const querAtualizar = Boolean(args.quer_atualizar) || /\b(atualizar|substituir|alterar|mudar)\b/i.test(msgNorm);
 
   if (itemExistente && !querCriarNovo && !querAtualizar && !args.forcar_novo) {
-    registrarAcaoConhecimentoPendente(contato.id, {
+    await salvarAcaoConhecimentoPendenteSupabase(contato, {
       tipoAcao: 'salvar',
       categoria: args.categoria || (ehContato ? 'Contatos' : ehPix ? 'Financeiro' : 'Geral'),
       titulo: tituloLimpo,
@@ -4758,7 +4911,7 @@ export async function toolSalvarConhecimento(
 
   const fraseConfirmacao = `Vou salvar: ${tituloLimpo}, ${resumoDado}. Confirma?`;
 
-  registrarAcaoConhecimentoPendente(contato.id, {
+  await salvarAcaoConhecimentoPendenteSupabase(contato, {
     tipoAcao: itemExistente && querAtualizar ? 'atualizar' : 'salvar',
     categoria: args.categoria || (ehContato ? 'Contatos' : ehPix ? 'Financeiro' : 'Geral'),
     titulo: tituloLimpo,
@@ -4889,7 +5042,7 @@ export async function toolAtualizarConhecimento(
     fraseConfirmacao = `Vou atualizar o item de '${item.titulo}' para '${novoTituloFinal}' com o dado ${novoConteudoFinal}. Confirma?`;
   }
 
-  registrarAcaoConhecimentoPendente(contato.id, {
+  await salvarAcaoConhecimentoPendenteSupabase(contato, {
     tipoAcao: 'atualizar',
     categoria: args.categoria || item.categoria,
     titulo: novoTituloFinal,
@@ -4975,7 +5128,7 @@ export async function toolRemoverConhecimento(
 
   const fraseConfirmacao = `Você confirma a exclusão do item '${item.titulo}' da Base de Conhecimento? Responda Sim para confirmar ou Não para cancelar.`;
 
-  registrarAcaoConhecimentoPendente(contato.id, {
+  await salvarAcaoConhecimentoPendenteSupabase(contato, {
     tipoAcao: 'remover',
     categoria: item.categoria,
     titulo: item.titulo,
@@ -5274,473 +5427,8 @@ export function detectarAcaoSemFerramenta(mensagemUsuario: string): string | nul
 }
 
 /**
- * DETECÇÃO DE CONTINUAÇÃO DE CADASTRO NA BASE DE CONHECIMENTO (Fluxo em várias mensagens)
- * Quando o usuário anunciou anteriormente que ia passar uma informação ("vou te passar o telefone")
- * ou quando faltava um dado (telefone, chave PIX, URL, nome) e agora enviou o dado,
- * intercepta para evitar buscas espúrias no Cofre, aproveita a pendência parcial
- * e formula a confirmação em uma frase clara.
- */
-export async function detectarContinuacaoCadastroConhecimento(
-  historicoRecente: Mensagem[],
-  mensagemUsuarioAtual: string,
-  contato: Contato
-): Promise<ResultadoChatOrquestrador | null> {
-  const pendenciaMemoria = obterAcaoConhecimentoPendente(contato.id);
-
-  // 1. RESOLUÇÃO VIA PENDÊNCIA PARCIAL REGISTRADA EM MEMÓRIA
-  if (pendenciaMemoria && pendenciaMemoria.status === 'aguardando_dado_faltante') {
-    // 1.1. Aguardando Telefone
-    if (pendenciaMemoria.campoFaltante === 'telefone') {
-      const matchTelefone = mensagemUsuarioAtual.match(
-        /(?:\+?55\s*)?(?:\(?([1-9]{2})\)?\s*)?(9\s*\d{4}[-\s]?\d{4}|\d{4}[-\s]?\d{4})\b/
-      );
-      if (matchTelefone) {
-        const telefoneEncontrado = matchTelefone[0].trim();
-        const titulo = pendenciaMemoria.titulo;
-        const nomePessoa = pendenciaMemoria.nomePessoa || titulo.replace(/^contato\s*/i, '').trim();
-
-        if (ehTituloGenerico(titulo)) {
-          return {
-            textoResposta: `Recebi o número ${telefoneEncontrado}, mas de quem é esse contato? Me diga o nome da pessoa para eu salvar.`,
-            origem: 'motor',
-            intencaoDetectada: 'cadastrar_conhecimento',
-            perguntaReescrita: `Pedir nome para contato com telefone ${telefoneEncontrado}`,
-          };
-        }
-
-        // Checagem de duplicidade
-        const todosK = await obterTodosConhecimentos();
-        const tituloNorm = normalizarParaComparacao(titulo);
-        const itemExistente = todosK.find((k) => {
-          const kTitNorm = normalizarParaComparacao(k.titulo);
-          if (kTitNorm === tituloNorm) return true;
-          if (tituloNorm.length >= 4 && (kTitNorm.includes(tituloNorm) || tituloNorm.includes(kTitNorm))) return true;
-          if ((k.dadosEstruturados as any)?.telefone && (k.dadosEstruturados as any).telefone === telefoneEncontrado) return true;
-          return false;
-        });
-
-        if (itemExistente) {
-          registrarAcaoConhecimentoPendente(contato.id, {
-            ...pendenciaMemoria,
-            conteudo: telefoneEncontrado,
-            dadosEstruturados: {
-              ...(pendenciaMemoria.dadosEstruturados || {}),
-              telefone: telefoneEncontrado,
-              nome: nomePessoa,
-            },
-            duplicadoId: itemExistente.id,
-            duplicadoTitulo: itemExistente.titulo,
-            status: 'aguardando_decisao_duplicado',
-          });
-
-          return {
-            textoResposta: `Já existe um item cadastrado como '${itemExistente.titulo}'. Deseja atualizar o item existente ou criar um novo?`,
-            origem: 'motor',
-            intencaoDetectada: 'cadastrar_conhecimento',
-            perguntaReescrita: `Verificação de duplicidade: ${titulo}`,
-          };
-        }
-
-        const fraseConfirmacao = `Vou salvar: ${titulo}, telefone ${telefoneEncontrado}. Confirma?`;
-
-        registrarAcaoConhecimentoPendente(contato.id, {
-          ...pendenciaMemoria,
-          conteudo: telefoneEncontrado,
-          dadosEstruturados: {
-            ...(pendenciaMemoria.dadosEstruturados || {}),
-            telefone: telefoneEncontrado,
-            nome: nomePessoa,
-          },
-          status: 'aguardando_confirmacao',
-          campoFaltante: undefined,
-          dataCriacao: Date.now(),
-        });
-
-        return {
-          textoResposta: fraseConfirmacao,
-          origem: 'motor',
-          intencaoDetectada: 'cadastrar_conhecimento',
-          perguntaReescrita: `Salvar ${titulo}: ${telefoneEncontrado}`,
-        };
-      }
-    }
-
-    // 1.2. Aguardando Nome da pessoa
-    if (pendenciaMemoria.campoFaltante === 'nome') {
-      let nomeInformado = mensagemUsuarioAtual.replace(/^(?:[ée]\s*(?:o|a|do|da|de)?\s*)/i, '').trim();
-      nomeInformado = nomeInformado.replace(/\s+(?:pra mim|para mim|por favor|por gentileza|ai|aí)$/i, '').trim();
-
-      if (!ehTituloGenerico(nomeInformado)) {
-        const tituloContato = formatarTituloContato(nomeInformado);
-        const telefone = pendenciaMemoria.conteudo;
-        const fraseConfirmacao = `Vou salvar: ${tituloContato}, telefone ${telefone}. Confirma?`;
-
-        registrarAcaoConhecimentoPendente(contato.id, {
-          tipoAcao: 'salvar',
-          categoria: 'Contatos',
-          titulo: tituloContato,
-          conteudo: telefone,
-          tipoConhecimento: 'contato',
-          dadosEstruturados: { telefone, nome: nomeInformado },
-          nomePessoa: nomeInformado,
-          usuarioNome: contato.nome,
-          usuarioId: contato.id,
-          dataCriacao: Date.now(),
-          status: 'aguardando_confirmacao',
-        });
-
-        return {
-          textoResposta: fraseConfirmacao,
-          origem: 'motor',
-          intencaoDetectada: 'cadastrar_conhecimento',
-          perguntaReescrita: `Salvar ${tituloContato}: ${telefone}`,
-        };
-      }
-    }
-
-    // 1.3. Aguardando Chave PIX
-    if (pendenciaMemoria.campoFaltante === 'chave_pix') {
-      const chave = mensagemUsuarioAtual.trim();
-      if (chave.length >= 4 && !/^(pix|chave)$/i.test(chave)) {
-        const titulo = pendenciaMemoria.titulo;
-        const fraseConfirmacao = `Vou salvar: ${titulo}, chave ${chave}. Confirma?`;
-
-        registrarAcaoConhecimentoPendente(contato.id, {
-          ...pendenciaMemoria,
-          conteudo: chave,
-          dadosEstruturados: {
-            ...(pendenciaMemoria.dadosEstruturados || {}),
-            chavePix: chave,
-          },
-          status: 'aguardando_confirmacao',
-          campoFaltante: undefined,
-          dataCriacao: Date.now(),
-        });
-
-        return {
-          textoResposta: fraseConfirmacao,
-          origem: 'motor',
-          intencaoDetectada: 'cadastrar_conhecimento',
-          perguntaReescrita: `Salvar ${titulo}: ${chave}`,
-        };
-      }
-    }
-
-    // 1.4. Aguardando URL / Link
-    if (pendenciaMemoria.campoFaltante === 'url') {
-      const matchUrl = mensagemUsuarioAtual.match(/https?:\/\/[^\s]+/i);
-      if (matchUrl) {
-        const url = matchUrl[0].trim();
-        const titulo = pendenciaMemoria.titulo;
-        const fraseConfirmacao = `Vou salvar: ${titulo}, url ${url}. Confirma?`;
-
-        registrarAcaoConhecimentoPendente(contato.id, {
-          ...pendenciaMemoria,
-          conteudo: url,
-          dadosEstruturados: {
-            ...(pendenciaMemoria.dadosEstruturados || {}),
-            url,
-          },
-          status: 'aguardando_confirmacao',
-          campoFaltante: undefined,
-          dataCriacao: Date.now(),
-        });
-
-        return {
-          textoResposta: fraseConfirmacao,
-          origem: 'motor',
-          intencaoDetectada: 'cadastrar_conhecimento',
-          perguntaReescrita: `Salvar ${titulo}: ${url}`,
-        };
-      }
-    }
-  }
-
-  // 2. DETECÇÃO BASEADA NO HISTÓRICO DE MENSAGENS (Convite da VEGA ou anúncio prévio)
-  if (!historicoRecente || historicoRecente.length === 0) return null;
-
-  const ultimaMsgAssistente = [...historicoRecente].reverse().find((m) => m.remetente === 'assistente');
-  const ultimasMsgsUsuario = historicoRecente.filter((m) => m.remetente === 'cliente');
-  const msgAnteriorUsuario = ultimasMsgsUsuario[ultimasMsgsUsuario.length - 1];
-
-  if (!ultimaMsgAssistente || !msgAnteriorUsuario) return null;
-
-  const txtAssistente = (ultimaMsgAssistente.texto || '').toLowerCase();
-  const txtUserAnterior = (msgAnteriorUsuario.texto || '').toLowerCase();
-
-  const assistenteConvidouEnvio =
-    /\b(pode mandar|pode passar|pode enviar|manda|envia|qual e|qual [eé]|me passa)\s+(o\s+telefone|o\s+numero|o\s+n[úu]mero|o\s+contato|a\s+chave|o\s+link|o\s+pix|os\s+dados)\b/i.test(
-      txtAssistente
-    ) || /^(pode mandar|pode passar|pode me mandar|pode enviar)[!.]?$/i.test(txtAssistente.trim());
-
-  const userAnunciouEnvio =
-    /\b(adicione|adiciona|salva|salve|cadastre|cadastra|guarde|guarda|anote|anota|quero que voce adicione|quero que voce salve)\b/i.test(
-      txtUserAnterior
-    ) && (/\b(vou te passar|vou passar|vou mandar|vou te mandar|vou enviar|vou te enviar)\b/i.test(txtUserAnterior) || assistenteConvidouEnvio);
-
-  if (!assistenteConvidouEnvio && !userAnunciouEnvio) {
-    return null;
-  }
-
-  // Extrai o nome da pessoa/entidade mencionada na mensagem anterior
-  let nomePessoa = '';
-  const matchNome = txtUserAnterior.match(
-    /(?:contato|telefone|chave\s+pix|pix|link)\s+d[oea]\s+([^\.,;\n]+?)(?:,|\.|\s+eu\s+vou|\s+vou|\s+e\s+eu|$)/i
-  );
-  if (matchNome) {
-    nomePessoa = matchNome[1].trim();
-  } else {
-    const matchGen = txtUserAnterior.match(
-      /(?:adicione|adiciona|salva|salve|cadastre|cadastra)\s+(?:o\s+)?(?:contato|telefone)?\s*(?:d[oea]\s*)?([^\.,;\n]+?)(?:,|\.|\s+eu\s+vou|\s+vou|$)/i
-    );
-    if (matchGen) {
-      nomePessoa = matchGen[1].replace(/^(contato|telefone)\s*/i, '').trim();
-    }
-  }
-
-  nomePessoa = nomePessoa.replace(/\s+(?:pra mim|para mim|por favor|por gentileza|ai|aí|no cofre|na base)$/i, '').trim();
-
-  // 2.1. Telefone enviado
-  const matchTelefone = mensagemUsuarioAtual.match(
-    /(?:\+?55\s*)?(?:\(?([1-9]{2})\)?\s*)?(9\s*\d{4}[-\s]?\d{4}|\d{4}[-\s]?\d{4})\b/
-  );
-  if (matchTelefone && (txtUserAnterior.includes('telefone') || txtUserAnterior.includes('contato') || assistenteConvidouEnvio)) {
-    const telefoneEncontrado = matchTelefone[0].trim();
-
-    // PROIBIÇÃO ABSOLUTA DE TÍTULOS GENÉRICOS ("Novo Item", "Contato")
-    if (!nomePessoa || ehTituloGenerico(nomePessoa)) {
-      registrarAcaoConhecimentoPendente(contato.id, {
-        tipoAcao: 'salvar',
-        categoria: 'Contatos',
-        titulo: '',
-        conteudo: telefoneEncontrado,
-        tipoConhecimento: 'contato',
-        dadosEstruturados: { telefone: telefoneEncontrado },
-        usuarioNome: contato.nome,
-        usuarioId: contato.id,
-        dataCriacao: Date.now(),
-        status: 'aguardando_dado_faltante',
-        campoFaltante: 'nome',
-      });
-
-      return {
-        textoResposta: `Recebi o número ${telefoneEncontrado}, mas de quem é esse contato? Me diga o nome da pessoa para eu salvar.`,
-        origem: 'motor',
-        intencaoDetectada: 'cadastrar_conhecimento',
-        perguntaReescrita: `Pedir nome para contato com telefone ${telefoneEncontrado}`,
-      };
-    }
-
-    const titulo = formatarTituloContato(nomePessoa);
-
-    // CHECAGEM DE DUPLICIDADE ANTES DE PEDIR CONFIRMAÇÃO
-    const todosK = await obterTodosConhecimentos();
-    const tituloNorm = normalizarParaComparacao(titulo);
-    const itemExistente = todosK.find((k) => {
-      const kTitNorm = normalizarParaComparacao(k.titulo);
-      if (kTitNorm === tituloNorm) return true;
-      if (tituloNorm.length >= 4 && (kTitNorm.includes(tituloNorm) || tituloNorm.includes(kTitNorm))) return true;
-      if ((k.dadosEstruturados as any)?.telefone && (k.dadosEstruturados as any).telefone === telefoneEncontrado) return true;
-      return false;
-    });
-
-    if (itemExistente) {
-      registrarAcaoConhecimentoPendente(contato.id, {
-        tipoAcao: 'salvar',
-        categoria: 'Contatos',
-        titulo,
-        conteudo: telefoneEncontrado,
-        tipoConhecimento: 'contato',
-        dadosEstruturados: { telefone: telefoneEncontrado, nome: nomePessoa },
-        usuarioNome: contato.nome,
-        usuarioId: contato.id,
-        dataCriacao: Date.now(),
-        duplicadoId: itemExistente.id,
-        duplicadoTitulo: itemExistente.titulo,
-        status: 'aguardando_decisao_duplicado',
-      });
-
-      return {
-        textoResposta: `Já existe um item cadastrado como '${itemExistente.titulo}'. Deseja atualizar o item existente ou criar um novo?`,
-        origem: 'motor',
-        intencaoDetectada: 'cadastrar_conhecimento',
-        perguntaReescrita: `Verificação de duplicidade: ${titulo}`,
-      };
-    }
-
-    const fraseConfirmacao = `Vou salvar: ${titulo}, telefone ${telefoneEncontrado}. Confirma?`;
-
-    registrarAcaoConhecimentoPendente(contato.id, {
-      tipoAcao: 'salvar',
-      categoria: 'Contatos',
-      titulo,
-      conteudo: telefoneEncontrado,
-      tipoConhecimento: 'contato',
-      dadosEstruturados: { telefone: telefoneEncontrado, nome: nomePessoa },
-      usuarioNome: contato.nome,
-      usuarioId: contato.id,
-      dataCriacao: Date.now(),
-      status: 'aguardando_confirmacao',
-    });
-
-    return {
-      textoResposta: fraseConfirmacao,
-      origem: 'motor',
-      intencaoDetectada: 'cadastrar_conhecimento',
-      perguntaReescrita: `Salvar ${titulo}: ${telefoneEncontrado}`,
-    };
-  }
-
-  // 2.2. Caso: Chave PIX
-  if (txtUserAnterior.includes('pix') || txtAssistente.includes('pix') || txtAssistente.includes('chave')) {
-    const chave = mensagemUsuarioAtual.trim();
-    if (chave.length >= 4 && !/^(pix|chave)$/i.test(chave)) {
-      if (!nomePessoa || ehTituloGenerico(nomePessoa)) {
-        return {
-          textoResposta: `Recebi a chave PIX, mas de quem é esse PIX? Me diga o nome do beneficiário para eu salvar.`,
-          origem: 'motor',
-          intencaoDetectada: 'cadastrar_conhecimento',
-          perguntaReescrita: `Pedir nome para chave PIX`,
-        };
-      }
-
-      const titulo = `Chave PIX do ${nomePessoa}`;
-
-      const todosK = await obterTodosConhecimentos();
-      const tituloNorm = normalizarParaComparacao(titulo);
-      const itemExistente = todosK.find((k) => {
-        const kTitNorm = normalizarParaComparacao(k.titulo);
-        if (kTitNorm === tituloNorm) return true;
-        if (tituloNorm.length >= 4 && (kTitNorm.includes(tituloNorm) || tituloNorm.includes(kTitNorm))) return true;
-        if ((k.dadosEstruturados as any)?.chavePix && (k.dadosEstruturados as any).chavePix === chave) return true;
-        return false;
-      });
-
-      if (itemExistente) {
-        registrarAcaoConhecimentoPendente(contato.id, {
-          tipoAcao: 'salvar',
-          categoria: 'Financeiro',
-          titulo,
-          conteudo: chave,
-          tipoConhecimento: 'pix',
-          dadosEstruturados: { chavePix: chave, beneficiario: nomePessoa },
-          usuarioNome: contato.nome,
-          usuarioId: contato.id,
-          dataCriacao: Date.now(),
-          duplicadoId: itemExistente.id,
-          duplicadoTitulo: itemExistente.titulo,
-          status: 'aguardando_decisao_duplicado',
-        });
-
-        return {
-          textoResposta: `Já existe um item cadastrado como '${itemExistente.titulo}'. Deseja atualizar o item existente ou criar um novo?`,
-          origem: 'motor',
-          intencaoDetectada: 'cadastrar_conhecimento',
-          perguntaReescrita: `Verificação de duplicidade: ${titulo}`,
-        };
-      }
-
-      const fraseConfirmacao = `Vou salvar: ${titulo}, chave ${chave}. Confirma?`;
-
-      registrarAcaoConhecimentoPendente(contato.id, {
-        tipoAcao: 'salvar',
-        categoria: 'Financeiro',
-        titulo,
-        conteudo: chave,
-        tipoConhecimento: 'pix',
-        dadosEstruturados: { chavePix: chave, beneficiario: nomePessoa },
-        usuarioNome: contato.nome,
-        usuarioId: contato.id,
-        dataCriacao: Date.now(),
-        status: 'aguardando_confirmacao',
-      });
-
-      return {
-        textoResposta: fraseConfirmacao,
-        origem: 'motor',
-        intencaoDetectada: 'cadastrar_conhecimento',
-        perguntaReescrita: `Salvar ${titulo}: ${chave}`,
-      };
-    }
-  }
-
-  // 2.3. Caso: Link / URL
-  const matchUrl = mensagemUsuarioAtual.match(/https?:\/\/[^\s]+/i);
-  if (matchUrl) {
-    const url = matchUrl[0].trim();
-    if (!nomePessoa || ehTituloGenerico(nomePessoa)) {
-      return {
-        textoResposta: `Recebi o link, mas a qual sistema ele se refere? Me diga o nome do sistema para eu salvar.`,
-        origem: 'motor',
-        intencaoDetectada: 'cadastrar_conhecimento',
-        perguntaReescrita: `Pedir nome para o link`,
-      };
-    }
-
-    const titulo = `Link ${nomePessoa}`;
-
-    const todosK = await obterTodosConhecimentos();
-    const tituloNorm = normalizarParaComparacao(titulo);
-    const itemExistente = todosK.find((k) => {
-      const kTitNorm = normalizarParaComparacao(k.titulo);
-      if (kTitNorm === tituloNorm) return true;
-      if (tituloNorm.length >= 4 && (kTitNorm.includes(tituloNorm) || tituloNorm.includes(kTitNorm))) return true;
-      if ((k.dadosEstruturados as any)?.url && (k.dadosEstruturados as any).url === url) return true;
-      return false;
-    });
-
-    if (itemExistente) {
-      registrarAcaoConhecimentoPendente(contato.id, {
-        tipoAcao: 'salvar',
-        categoria: 'Sistemas',
-        titulo,
-        conteudo: url,
-        tipoConhecimento: 'link',
-        dadosEstruturados: { url, nomeSistema: nomePessoa },
-        usuarioNome: contato.nome,
-        usuarioId: contato.id,
-        dataCriacao: Date.now(),
-        duplicadoId: itemExistente.id,
-        duplicadoTitulo: itemExistente.titulo,
-        status: 'aguardando_decisao_duplicado',
-      });
-
-      return {
-        textoResposta: `Já existe um item cadastrado como '${itemExistente.titulo}'. Deseja atualizar o item existente ou criar um novo?`,
-        origem: 'motor',
-        intencaoDetectada: 'cadastrar_conhecimento',
-        perguntaReescrita: `Verificação de duplicidade: ${titulo}`,
-      };
-    }
-
-    const fraseConfirmacao = `Vou salvar: ${titulo}, url ${url}. Confirma?`;
-
-    registrarAcaoConhecimentoPendente(contato.id, {
-      tipoAcao: 'salvar',
-      categoria: 'Sistemas',
-      titulo,
-      conteudo: url,
-      tipoConhecimento: 'link',
-      dadosEstruturados: { url, nomeSistema: nomePessoa },
-      usuarioNome: contato.nome,
-      usuarioId: contato.id,
-      dataCriacao: Date.now(),
-      status: 'aguardando_confirmacao',
-    });
-
-    return {
-      textoResposta: fraseConfirmacao,
-      origem: 'motor',
-      intencaoDetectada: 'cadastrar_conhecimento',
-      perguntaReescrita: `Salvar ${titulo}: ${url}`,
-    };
-  }
-
-  return null;
-}
-
-/**
  * RESOLUÇÃO DE CONFIRMAÇÃO DE SALVAMENTO / ATUALIZAÇÃO / EXCLUSÃO NA BASE DE CONHECIMENTO
+ * (Garante estritamente que nada seja gravado sem a confirmação explícita do usuário numa mensagem seguinte)
  */
 export async function detectarConfirmacaoSalvarConhecimento(
   historicoRecente: Mensagem[],
@@ -5750,7 +5438,7 @@ export async function detectarConfirmacaoSalvarConhecimento(
   if (!historicoRecente || historicoRecente.length === 0) return null;
 
   const ultimaMsgAssistente = [...historicoRecente].reverse().find((m) => m.remetente === 'assistente');
-  const pendenciaMemoria = obterAcaoConhecimentoPendente(contato.id);
+  const pendenciaMemoria = await obterAcaoConhecimentoPendenteSupabase(contato);
 
   const txtAssistente = (ultimaMsgAssistente?.texto || '').trim();
   const matchSalvar = txtAssistente.match(/Vou salvar:\s*([^,]+),\s*(.+?)\.\s*Confirma\?/i);
@@ -5779,12 +5467,12 @@ export async function detectarConfirmacaoSalvarConhecimento(
     /^(n[aã]o|n|cancela|cancelar|deixa|esquece|nao quero|nao precisa)\b/i.test(msgNorm);
 
   if (ehPerguntaOuNovaConsulta && !ehAfirmativo) {
-    limparAcaoConhecimentoPendente(contato.id);
+    await limparAcaoConhecimentoPendenteSupabase(contato);
     return null;
   }
 
   if (ehNegativo) {
-    limparAcaoConhecimentoPendente(contato.id);
+    await limparAcaoConhecimentoPendenteSupabase(contato);
     return {
       textoResposta: 'Operação cancelada. A informação não foi salva na Base de Conhecimento.',
       origem: 'motor',
@@ -5821,7 +5509,7 @@ export async function detectarConfirmacaoSalvarConhecimento(
       if (atualizado) {
         indexarConhecimentoBackground(atualizado).catch(() => {});
       }
-      limparAcaoConhecimentoPendente(contato.id);
+      await limparAcaoConhecimentoPendenteSupabase(contato);
 
       return {
         textoResposta: `${itemExistente.titulo} atualizado com sucesso na Base de Conhecimento!`,
@@ -5846,7 +5534,7 @@ export async function detectarConfirmacaoSalvarConhecimento(
       });
 
       indexarConhecimentoBackground(novoItem).catch(() => {});
-      limparAcaoConhecimentoPendente(contato.id);
+      await limparAcaoConhecimentoPendenteSupabase(contato);
 
       return {
         textoResposta: `${novoItem.titulo} salvo com sucesso na Base de Conhecimento!`,
@@ -5893,7 +5581,7 @@ export async function detectarConfirmacaoSalvarConhecimento(
 
       // Proibição estrita de títulos genéricos no salvamento
       if (ehTituloGenerico(titulo)) {
-        limparAcaoConhecimentoPendente(contato.id);
+        await limparAcaoConhecimentoPendenteSupabase(contato);
         return {
           textoResposta: 'Não posso salvar um contato com nome genérico ("Novo Item"). Por favor, me diga o nome da pessoa para salvar.',
           origem: 'motor',
@@ -5916,7 +5604,7 @@ export async function detectarConfirmacaoSalvarConhecimento(
         });
 
         indexarConhecimentoBackground(novoItem).catch(() => {});
-        limparAcaoConhecimentoPendente(contato.id);
+        await limparAcaoConhecimentoPendenteSupabase(contato);
 
         return {
           textoResposta: `${novoItem.titulo} salvo com sucesso na Base de Conhecimento!`,
@@ -5982,7 +5670,7 @@ export async function detectarConfirmacaoSalvarConhecimento(
         }
 
         const atualizado = await atualizarConhecimento(itemExistente.id, {
-          titulo: novoTitulo, // <--- APLICA O NOVO TÍTULO!
+          titulo: novoTitulo,
           categoria: pendenciaMemoria?.categoria || itemExistente.categoria,
           conteudo: novoConteudo,
           tipo: itemExistente.tipo,
@@ -5992,7 +5680,7 @@ export async function detectarConfirmacaoSalvarConhecimento(
         if (atualizado) {
           indexarConhecimentoBackground(atualizado).catch(() => {});
         }
-        limparAcaoConhecimentoPendente(contato.id);
+        await limparAcaoConhecimentoPendenteSupabase(contato);
 
         const tituloExibicao = atualizado?.titulo || novoTitulo;
         return {
@@ -6016,7 +5704,7 @@ export async function detectarConfirmacaoSalvarConhecimento(
 
       if (itemExistente) {
         await removerConhecimento(itemExistente.id);
-        limparAcaoConhecimentoPendente(contato.id);
+        await limparAcaoConhecimentoPendenteSupabase(contato);
 
         return {
           textoResposta: `Item '${itemExistente.titulo}' removido com sucesso da Base de Conhecimento!`,
@@ -6145,14 +5833,41 @@ export async function executarOrquestradorIaCentral(dados: {
     return resConfirmacaoK;
   }
 
-  // 3.3. FLUXO EM VÁRIAS MENSAGENS: DADO ENVIADO APÓS ANÚNCIO DE CADASTRO NA BASE DE CONHECIMENTO
-  const resContinuacaoK = await detectarContinuacaoCadastroConhecimento(
-    historicoRecente,
-    mensagemUsuario,
-    contato
-  );
-  if (resContinuacaoK) {
-    return resContinuacaoK;
+  // 3.3. CONSULTA DE AÇÃO PENDENTE NO SUPABASE (INJETADA NO CONTEXTO DA IA EM <acao_pendente>)
+  const pendenciaAtivaK = await obterAcaoConhecimentoPendenteSupabase(contato);
+  let blocoAcaoPendente = '';
+  if (pendenciaAtivaK) {
+    if (pendenciaAtivaK.status === 'aguardando_dado_faltante') {
+      const campo = pendenciaAtivaK.campoFaltante || 'telefone';
+      const nomeOuTitulo = pendenciaAtivaK.nomePessoa || pendenciaAtivaK.titulo || 'Contato';
+      blocoAcaoPendente = `\n<acao_pendente>
+Existe um cadastro de conhecimento EM ANDAMENTO aguardando dados complementares:
+- Tipo: ${pendenciaAtivaK.tipoConhecimento || 'contato'}
+- Categoria: ${pendenciaAtivaK.categoria || 'Contatos'}
+- Nome da Pessoa / Item: "${nomeOuTitulo}"
+- Dado Faltante Aguardado: "${campo}"
+${pendenciaAtivaK.titulo ? `- Título Proposto: "${pendenciaAtivaK.titulo}"` : ''}
+
+INSTRUÇÕES MANDATÓRIAS DE CONTINUAÇÃO:
+1. Se a mensagem do usuário contiver o dado faltante (${campo}) — mesmo que seja apenas números digitados (ex: "14998810675"), número formatado (ex: "14 99881-0675") ou áudio —, esta mensagem é a CONTINUAÇÃO DIRETA deste cadastro!
+2. Você DEVE acionar a ferramenta 'salvar_conhecimento' passando:
+   - titulo: "${pendenciaAtivaK.titulo || formatarTituloContato(nomeOuTitulo)}"
+   - categoria: "${pendenciaAtivaK.categoria || 'Contatos'}"
+   - tipo: "${pendenciaAtivaK.tipoConhecimento || 'contato'}"
+   - conteudo: o dado informado pelo usuário (ex.: o telefone completo)
+   - dados_estruturados: { ${campo}: o dado informado, nome: "${nomeOuTitulo}" }
+3. NUNCA pergunte "de quem é esse contato?" nem peça o nome novamente, pois o nome "${nomeOuTitulo}" já está definido nesta ação pendente!
+4. NUNCA pesquise no Cofre nem busque documentos para números ou dados complementares enviados nessa continuação!
+</acao_pendente>\n`;
+    } else if (pendenciaAtivaK.status === 'aguardando_confirmacao') {
+      blocoAcaoPendente = `\n<acao_pendente>
+Existe uma ação na Base de Conhecimento AGUARDANDO CONFIRMAÇÃO do usuário:
+- Operação: ${pendenciaAtivaK.tipoAcao}
+- Item: "${pendenciaAtivaK.titulo}"
+- Dado: "${pendenciaAtivaK.conteudo}"
+- Resposta esperada: Se o usuário confirmar (ex: "sim", "pode salvar"), a confirmação será processada. Se ele mudar de assunto, responda à nova pergunta normalmente.
+</acao_pendente>\n`;
+    }
   }
 
   // 3.5. MAPEAMENTO DE OPÇÕES DA ÚLTIMA LISTA NUMERADA (Passado como dado ao contexto da IA)
@@ -6212,7 +5927,7 @@ DIRETRIZ MANDATÓRIA SOBRE O CONTATO:
 
 <status_saudacao>
 ${statusSaudacao}
-</status_saudacao>${blocoOpcoesAnteriores}`;
+</status_saudacao>${blocoOpcoesAnteriores}${blocoAcaoPendente}`;
 
   // Últimas ~20 mensagens da conversa
   const historicoLimitado = historicoRecente.slice(-20);

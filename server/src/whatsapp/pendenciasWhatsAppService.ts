@@ -167,6 +167,12 @@ export async function processarRespostaPendenciaWhatsApp(
   // (Regra 22: Confirmação prévia obrigatória e permissão de admin)
   // -------------------------------------------------------------
   if (tipoPendencia === 'cadastro_conhecimento' || tipoPendencia === 'substituicao_conhecimento') {
+    // Se a pendência estiver apenas aguardando um dado faltante (ex: telefone, chave, url),
+    // ela NÃO é uma confirmação sim/não. Deve prosseguir diretamente para o chat da IA com o bloco <acao_pendente>!
+    if (pendencia.dados_detectados?.status === 'aguardando_dado_faltante') {
+      return null;
+    }
+
     if (perfilUsuario !== 'admin') {
       await supabase.from('pendencias_documento_whatsapp').delete().eq('id', pendencia.id);
       return 'Você não tem permissão para cadastrar informações na Base de Conhecimento da VEGA. Apenas administradores podem realizar cadastros.';
