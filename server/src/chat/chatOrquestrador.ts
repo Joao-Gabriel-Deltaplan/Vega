@@ -646,17 +646,24 @@ export function localizarDocumentoCitadoNoCofre(
 
   if (docsDoTipo.length > 1) {
     // Desempata pelas outras palavras do termo (ex: "menegazzo")
-    let melhorDoc = docsDoTipo[0];
-    let maxBates = -1;
+    let melhorDoc: DocumentoRegistro | null = null;
+    let maxBates = 0;
     for (const d of docsDoTipo) {
       const textoCompleto = `${d.titulo} ${d.arquivo} ${d.titular || ''}`.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
       const bates = palavrasTermo.filter((p) => textoCompleto.includes(p)).length;
       if (bates > maxBates) {
         maxBates = bates;
         melhorDoc = d;
+      } else if (bates === maxBates && maxBates > 0) {
+        // Empate no desempate
+        melhorDoc = null;
       }
     }
-    return melhorDoc;
+    // NUNCA fazer fallback cego para docsDoTipo[0] se não houve desempate inequívoco
+    if (melhorDoc && maxBates > 0) {
+      return melhorDoc;
+    }
+    return null;
   }
 
   // 3. Match por inclusão de partes significativas no título de algum documento
@@ -1050,11 +1057,11 @@ async function formatarOuResumirConhecimento(
   // 1. Resposta Determinística Exata para Chave PIX
   if (item.tipo === 'pix') {
     const d = (item.dadosEstruturados as any) || {};
-    const titular = d.titular || 'Delta Plan';
+    const titular = d.titular || item.titulo;
     const tipoChave = d.tipoChave || 'Chave';
     const chave = d.chave || item.conteudo;
     const bancoLinha = d.banco ? `\n*Banco:* ${d.banco}` : '';
-    const titularLinha = `\n*Titular:* ${titular}`;
+    const titularLinha = d.titular ? `\n*Titular:* ${d.titular}` : '';
 
     return {
       texto: `Aqui está a chave PIX de *${titular}*:\n\n*Chave:* \`${chave}\` (${tipoChave})${bancoLinha}${titularLinha}`,
@@ -1247,24 +1254,39 @@ export async function buscarConhecimentoPorNome(
       (c) => c.tipo === 'pix' || c.titulo.toLowerCase().includes('pix') || c.categoria?.toLowerCase() === 'financeiro'
     );
     if (itensPix.length > 0) {
+      // Match estruturado por pontuação para evitar retorno cego do primeiro item que casar uma palavra solta
+      const candidatosPix: { item: ItemConhecimento; pontos: number }[] = [];
       for (const p of itensPix) {
         const dados = (p.dadosEstruturados as any) || {};
         const titular = dados.titular ? normalizarParaBusca(dados.titular) : '';
         const titItem = normalizarParaBusca(p.titulo);
         const partesTitular = titular ? titular.split(/\s+/).filter((pt: string) => pt.length >= 3) : [];
-        const matchPartes = partesTitular.length > 0 && partesTitular.some((pt: string) => termoNorm.includes(pt));
+        const matchPartes = partesTitular.length > 0 ? partesTitular.filter((pt: string) => termoNorm.includes(pt)).length : 0;
 
         const titItemSemGenerico = titItem.replace(/\b(chave|pix)\b/g, '').trim();
-        const bateuTitItem =
-          (titItemSemGenerico.length >= 3 && termoNorm.includes(titItemSemGenerico)) ||
-          (termoNorm.includes(titItem) && titItemSemGenerico.length >= 3);
+        const partesTitItem = titItemSemGenerico ? titItemSemGenerico.split(/\s+/).filter((pt: string) => pt.length >= 3) : [];
+        const matchPartesTit = partesTitItem.length > 0 ? partesTitItem.filter((pt: string) => termoNorm.includes(pt)).length : 0;
 
-        if (
-          (titular && (termoNorm.includes(titular) || titular.includes(termoNorm) || matchPartes)) ||
-          bateuTitItem
-        ) {
-          return { item: p, score: 100 };
+        let pontos = 0;
+        if (titular && termoNorm === titular) pontos += 100;
+        else if (titItemSemGenerico && termoNorm === titItemSemGenerico) pontos += 100;
+        else if (titular && (termoNorm.includes(titular) || titular.includes(termoNorm))) pontos += 80;
+        else if (titItemSemGenerico && (termoNorm.includes(titItemSemGenerico) || titItemSemGenerico.includes(termoNorm))) pontos += 80;
+        else if (matchPartes > 0 || matchPartesTit > 0) pontos += (matchPartes + matchPartesTit) * 20;
+
+        if (pontos > 0) {
+          candidatosPix.push({ item: p, pontos });
         }
+      }
+
+      if (candidatosPix.length > 0) {
+        candidatosPix.sort((a, b) => b.pontos - a.pontos);
+        // Retorna apenas se o melhor candidato tiver pontuação superior aos demais (sem ambiguidade cega)
+        if (candidatosPix.length === 1 || candidatosPix[0].pontos > candidatosPix[1].pontos) {
+          return { item: candidatosPix[0].item, score: 100 };
+        }
+        // Se houver empate/ambiguidade, não seleciona nenhum arbitrariamente
+        return null;
       }
 
       // Regra 22: NUNCA devolver chave de outra pessoa se um titular/sujeito foi citado!
@@ -1447,10 +1469,16 @@ export async function buscarConhecimentoPorNome(
   }
 
   // 3. Se o título contém o termo de busca (ex: "proposta comercial" dentro de "Regra de Negócio: Proposta Comercial...")
-  for (const c of conhecimentos) {
+  const candidatosTitulo = conhecimentos.filter((c) => {
     const titNorm = normalizarParaBusca(c.titulo);
-    if (termoNorm.length >= 4 && titNorm.includes(termoNorm)) {
-      return { item: c, score: 90 };
+    return termoNorm.length >= 4 && (titNorm.includes(termoNorm) || termoNorm.includes(titNorm));
+  });
+  if (candidatosTitulo.length === 1) {
+    return { item: candidatosTitulo[0], score: 90 };
+  } else if (candidatosTitulo.length > 1) {
+    const matchExato = candidatosTitulo.find((c) => normalizarParaBusca(c.titulo) === termoNorm);
+    if (matchExato) {
+      return { item: matchExato, score: 95 };
     }
   }
 
@@ -3011,7 +3039,7 @@ export async function toolBuscarDocumentos(
         resultados.push({
           doc_id: d.id,
           nome_documento: d.titulo,
-          titular: d.titular || 'Delta Plan',
+          titular: d.titular || 'Não identificado',
           data_documento: dataEmissao || 'data do documento não identificada',
           data_armazenamento: formatarDataParaExibicao(d.dataCadastro),
           score: 1.0,
@@ -3030,7 +3058,7 @@ export async function toolBuscarDocumentos(
         resultados.push({
           doc_id: tp.documento_id,
           nome_documento: titulo,
-          titular: doc?.titular || 'Delta Plan',
+          titular: doc?.titular || 'Não identificado',
           data_documento: dataEmissao || 'data do documento não identificada',
           data_armazenamento: formatarDataParaExibicao(doc?.dataCadastro),
           score: 1.0,
@@ -3059,7 +3087,7 @@ export async function toolBuscarDocumentos(
           resultados.push({
             doc_id: tv.documento_id,
             nome_documento: titulo,
-            titular: doc?.titular || 'Delta Plan',
+            titular: doc?.titular || 'Não identificado',
             data_documento: dataEmissao || 'data do documento não identificada',
             data_armazenamento: formatarDataParaExibicao(doc?.dataCadastro),
             score: Number(Number(tv.similaridade ?? 0.85).toFixed(2)),
@@ -3384,8 +3412,18 @@ async function toolConfirmarVersaoDado(params: {
     );
   }
   if (!docOrigem && nome_documento_origem) {
-    const termoNorm = nome_documento_origem.toLowerCase();
-    docOrigem = todosDocs.find((d) => d.titulo.toLowerCase().includes(termoNorm));
+    const termoNorm = nome_documento_origem.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    // Prioriza estritamente os documentos DO PRÓPRIO TITULAR (Regra: sem fallback para documentos de terceiros)
+    const docsDoTitular = todosDocs.filter((d) => titularCorresponde(d.titular, titular.nome));
+    const candidatosTitular = docsDoTitular.filter((d) => {
+      const titNorm = d.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return titNorm.includes(termoNorm) || termoNorm.includes(titNorm);
+    });
+    if (candidatosTitular.length === 1) {
+      docOrigem = candidatosTitular[0];
+    } else if (candidatosTitular.length > 1) {
+      docOrigem = candidatosTitular.find((d) => d.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === termoNorm);
+    }
   }
 
   const campoKey = (campo || 'endereco') as CampoTitularId;
@@ -3578,11 +3616,21 @@ async function toolEnviarDocumento(
   );
   if (!doc) {
     const idNorm = idLimpo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    doc = docs.find((d) => {
+    const candidatos = docs.filter((d) => {
       const titNorm = d.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
       const arqNorm = (d.arquivo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
       return titNorm.includes(idNorm) || idNorm.includes(titNorm) || arqNorm.includes(idNorm);
     });
+    if (candidatos.length === 1) {
+      doc = candidatos[0];
+    } else if (candidatos.length > 1) {
+      // Ambiguidade: NUNCA enviar o primeiro da lista!
+      const opcoesAmbiguidade = candidatos.slice(0, 5).map((c) => `"${c.titulo}" (${c.titular || 'Sem titular'})`).join(', ');
+      return {
+        sucesso: false,
+        erro: `Existem ${candidatos.length} documentos compatíveis com "${idLimpo}" (${opcoesAmbiguidade}). É proibido escolher um documento arbitrariamente para envio. Pergunte ao usuário qual titular ou documento específico ele deseja.`,
+      };
+    }
   }
   if (!doc) {
     doc = localizarDocumentoCitadoNoCofre(idLimpo, docs) || undefined;
@@ -3593,11 +3641,20 @@ async function toolEnviarDocumento(
       doc = localizarDocumentoCitadoNoCofre(idSemPrefixo, docs) || undefined;
       if (!doc) {
         const idSemPrefNorm = idSemPrefixo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-        doc = docs.find((d) => {
+        const candidatosPref = docs.filter((d) => {
           const titNorm = d.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
           const arqNorm = (d.arquivo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
           return titNorm.includes(idSemPrefNorm) || idSemPrefNorm.includes(titNorm) || arqNorm.includes(idSemPrefNorm);
         });
+        if (candidatosPref.length === 1) {
+          doc = candidatosPref[0];
+        } else if (candidatosPref.length > 1) {
+          const opcoesPref = candidatosPref.slice(0, 5).map((c) => `"${c.titulo}" (${c.titular || 'Sem titular'})`).join(', ');
+          return {
+            sucesso: false,
+            erro: `Existem ${candidatosPref.length} documentos compatíveis com "${idSemPrefixo}" (${opcoesPref}). Pergunte ao usuário qual titular ou documento específico ele deseja enviar.`,
+          };
+        }
       }
     }
   }
@@ -3928,6 +3985,26 @@ export function formatarTituloContato(nomePessoa: string): string {
 }
 
 /**
+ * Extrai o dado principal de um item da Base de Conhecimento para exibição transparente em confirmações
+ */
+export function extrairDadoPrincipalItemConhecimento(item: ItemConhecimento): string {
+  if (item.tipo === 'pix') {
+    const chave = (item.dadosEstruturados as any)?.chave || (item.dadosEstruturados as any)?.chavePix;
+    if (chave) return chave;
+  }
+  if (item.tipo === 'contato') {
+    const tel = (item.dadosEstruturados as any)?.telefone;
+    if (tel) return tel;
+  }
+  if (item.tipo === 'link') {
+    const url = (item.dadosEstruturados as any)?.url || (item.dadosEstruturados as any)?.link;
+    if (url) return url;
+  }
+  const limpo = (item.conteudo || '').split('|')[0].trim();
+  return limpo;
+}
+
+/**
  * Tool: salvar_conhecimento
  */
 export async function toolSalvarConhecimento(
@@ -4244,31 +4321,69 @@ export async function toolAtualizarConhecimento(
     };
   }
 
-  const todosK = await obterTodosConhecimentos();
-  let item = args.id ? todosK.find((k) => k.id === args.id) : null;
-  if (!item && args.titulo_atual) {
-    const titNorm = normalizarParaComparacao(args.titulo_atual);
-    item =
-      todosK.find(
-        (k) =>
-          normalizarParaComparacao(k.titulo) === titNorm ||
-          normalizarParaComparacao(k.titulo).includes(titNorm) ||
-          titNorm.includes(normalizarParaComparacao(k.titulo))
-      ) || null;
+  // 1. CORREÇÃO DURANTE A CONFIRMAÇÃO: se houver uma proposta pendente ainda não gravada
+  // e o usuário pedir ajuste (nome, número, categoria), alterar a PROPOSTA pendente e pedir confirmação de novo!
+  // NUNCA transformar em atualização de item existente!
+  const pendenciaPendente = await obterAcaoConhecimentoPendenteSupabase(contato);
+  if (
+    pendenciaPendente &&
+    pendenciaPendente.tipoAcao === 'salvar' &&
+    (pendenciaPendente.status === 'aguardando_confirmacao' || pendenciaPendente.status === 'aguardando_dado_faltante')
+  ) {
+    let novoTituloProposta = args.novo_titulo || args.titulo_atual || pendenciaPendente.titulo;
+    const matchNome =
+      mensagemUsuarioAtual.match(/(?:n[aã]o\s+precisa\s+salvar\s+(?:como\s+)?(?:contato\s+)?[^,]+,\s*)?(?:somente\s+|s[oó]\s+)?salv[ea]\s+(?:como\s+|s[oó]\s+como\s+)(.+)/i) ||
+      mensagemUsuarioAtual.match(/(?:o\s+nome\s+(?:certo|correto)\s*(?:é|e)\s*|mudar?\s+(?:o\s+nome\s+)?para\s*|alterar?\s+(?:o\s+nome\s+)?para\s*)([^\.,;\n]+)/i);
+
+    if (matchNome && matchNome[1]?.trim() && !ehTituloGenerico(matchNome[1])) {
+      novoTituloProposta = matchNome[1].trim().replace(/[\.\?!]+$/, '').trim();
+    } else if (args.novo_titulo && !ehTituloGenerico(args.novo_titulo)) {
+      novoTituloProposta = args.novo_titulo.trim().replace(/[\.\?!]+$/, '').trim();
+    }
+
+    pendenciaPendente.titulo = novoTituloProposta;
+    if (args.novo_conteudo && args.novo_conteudo.trim()) {
+      pendenciaPendente.conteudo = args.novo_conteudo.trim();
+    }
+    if (args.categoria && args.categoria.trim()) {
+      pendenciaPendente.categoria = args.categoria.trim();
+    }
+    if (pendenciaPendente.dadosEstruturados) {
+      pendenciaPendente.dadosEstruturados.nome = novoTituloProposta.replace(/^contato\s*/i, '').trim();
+      if (args.novo_conteudo) pendenciaPendente.dadosEstruturados.telefone = args.novo_conteudo.trim();
+    }
+    pendenciaPendente.status = 'aguardando_confirmacao';
+
+    let resumoDado = pendenciaPendente.conteudo;
+    if (pendenciaPendente.tipoConhecimento === 'contato' && !resumoDado.toLowerCase().includes('telefone')) {
+      resumoDado = `telefone ${resumoDado}`;
+    } else if (pendenciaPendente.tipoConhecimento === 'pix' && !resumoDado.toLowerCase().includes('chave')) {
+      resumoDado = `chave ${resumoDado}`;
+    }
+
+    const fraseConfirmacao = `Vou salvar: ${pendenciaPendente.titulo}, ${resumoDado}. Confirma?`;
+    await salvarAcaoConhecimentoPendenteSupabase(contato, pendenciaPendente);
+
+    return {
+      sucesso: false,
+      status: 'precisa_confirmacao',
+      mensagem: fraseConfirmacao,
+      instrucao_resposta: `ATENÇÃO: A proposta pendente foi ajustada. NÃO grave ainda no banco de dados. Pergunte ao usuário para confirmar a proposta atualizada: "${fraseConfirmacao}".`,
+    };
   }
 
-  // Fallback inteligente: se o usuário diz "você salvou errado", "o nome certo é...", "salvou como..."
-  if (!item) {
-    const msgNorm = normalizarParaComparacao(mensagemUsuarioAtual);
-    const querCorrigirRecente =
-      /\b(salvou\s*errado|nome\s*errado|nome\s*certo\s*e|nome\s*correto|salvou\s*como|altera\s*o\s*nome|muda\s*o\s*nome|muda\s*o\s*titulo)\b/i.test(
-        msgNorm
-      );
-
-    if (querCorrigirRecente && todosK.length > 0) {
-      // Prioriza item com título genérico ou o item mais recente cadastrado
-      const itemGenerico = todosK.find((k) => ehTituloGenerico(k.titulo));
-      item = itemGenerico || todosK[todosK.length - 1];
+  // 2. ATUALIZAÇÃO SEGURA: exigir id exato ou título exato inequívoco.
+  // REMOVIDO qualquer fallback cego (como todosK[todosK.length - 1] ou busca solta de substring que captura outro item)
+  const todosK = await obterTodosConhecimentos();
+  let item: ItemConhecimento | null = null;
+  if (args.id) {
+    item = todosK.find((k) => k.id === args.id) || null;
+  }
+  if (!item && args.titulo_atual) {
+    const titNorm = normalizarParaComparacao(args.titulo_atual);
+    const exatos = todosK.filter((k) => normalizarParaComparacao(k.titulo) === titNorm);
+    if (exatos.length === 1) {
+      item = exatos[0];
     }
   }
 
@@ -4277,7 +4392,7 @@ export async function toolAtualizarConhecimento(
       sucesso: false,
       status: 'nao_encontrado',
       mensagem: `Não encontrei o item '${args.titulo_atual || args.id || 'solicitado'}' na Base de Conhecimento para atualizar.`,
-      instrucao_resposta: `Não encontrei o item na Base de Conhecimento. Pergunte ao usuário qual item ele deseja atualizar.`,
+      instrucao_resposta: `Não encontrei o item na Base de Conhecimento. Pergunte ao usuário exatamente qual item ele deseja atualizar, listando os itens se necessário.`,
     };
   }
 
@@ -4285,12 +4400,6 @@ export async function toolAtualizarConhecimento(
   let novoTituloFinal = item.titulo;
   if (args.novo_titulo && !ehTituloGenerico(args.novo_titulo)) {
     novoTituloFinal = item.tipo === 'contato' ? formatarTituloContato(args.novo_titulo) : args.novo_titulo.trim();
-  } else {
-    // Tenta extrair de "o nome certo é X"
-    const matchNome = mensagemUsuarioAtual.match(/(?:o\s+nome\s+(?:certo|correto)\s*(?:é|e)\s*|mudar?\s+(?:o\s+nome\s+)?para\s*|alterar?\s+(?:o\s+nome\s+)?para\s*)([^\.,;\n]+)/i);
-    if (matchNome && !ehTituloGenerico(matchNome[1])) {
-      novoTituloFinal = item.tipo === 'contato' ? formatarTituloContato(matchNome[1]) : matchNome[1].trim();
-    }
   }
 
   let novoConteudoFinal = item.conteudo;
@@ -4298,17 +4407,18 @@ export async function toolAtualizarConhecimento(
     novoConteudoFinal = args.novo_conteudo.trim();
   }
 
-  // Monta frase de confirmação clara
+  // 3. CONFIRMAÇÃO MOSTRA O ITEM REAL (título e dado principal)
+  const dadoPrincipal = extrairDadoPrincipalItemConhecimento(item);
   let fraseConfirmacao: string;
   const mudouTitulo = normalizarParaComparacao(novoTituloFinal) !== normalizarParaComparacao(item.titulo);
   const mudouConteudo = normalizarParaComparacao(novoConteudoFinal) !== normalizarParaComparacao(item.conteudo);
 
   if (mudouTitulo && !mudouConteudo) {
-    fraseConfirmacao = `Vou atualizar o nome do item de '${item.titulo}' para '${novoTituloFinal}'. Confirma?`;
+    fraseConfirmacao = `Vou renomear o item '${item.titulo} (${dadoPrincipal})' para '${novoTituloFinal}'. Confirma?`;
   } else if (!mudouTitulo && mudouConteudo) {
-    fraseConfirmacao = `Vou atualizar o item '${item.titulo}' para: ${novoConteudoFinal}. Confirma?`;
+    fraseConfirmacao = `Vou atualizar o item '${item.titulo} (${dadoPrincipal})' para: ${novoConteudoFinal}. Confirma?`;
   } else {
-    fraseConfirmacao = `Vou atualizar o item de '${item.titulo}' para '${novoTituloFinal}' com o dado ${novoConteudoFinal}. Confirma?`;
+    fraseConfirmacao = `Vou atualizar o item '${item.titulo} (${dadoPrincipal})' para '${novoTituloFinal}' com o dado ${novoConteudoFinal}. Confirma?`;
   }
 
   await salvarAcaoConhecimentoPendenteSupabase(contato, {
@@ -4345,7 +4455,7 @@ export async function toolAtualizarConhecimento(
 export async function toolRemoverConhecimento(
   args: {
     id?: string;
-    titulo: string;
+    titulo?: string;
     confirmado?: boolean;
   },
   contato: Contato,
@@ -4375,27 +4485,32 @@ export async function toolRemoverConhecimento(
     };
   }
 
+  // ATUALIZAÇÃO SEGURA: exigir id exato ou título exato inequívoco
   const todosK = await obterTodosConhecimentos();
-  let item = args.id ? todosK.find((k) => k.id === args.id) : null;
+  let item: ItemConhecimento | null = null;
+  if (args.id) {
+    item = todosK.find((k) => k.id === args.id) || null;
+  }
   if (!item && args.titulo) {
     const titNorm = normalizarParaComparacao(args.titulo);
-    item =
-      todosK.find(
-        (k) =>
-          normalizarParaComparacao(k.titulo) === titNorm ||
-          normalizarParaComparacao(k.titulo).includes(titNorm)
-      ) || null;
+    const exatos = todosK.filter((k) => normalizarParaComparacao(k.titulo) === titNorm);
+    if (exatos.length === 1) {
+      item = exatos[0];
+    }
   }
 
   if (!item) {
     return {
       sucesso: false,
       status: 'nao_encontrado',
-      mensagem: `Não encontrei o item '${args.titulo || args.id}' na Base de Conhecimento para remover.`,
+      mensagem: `Não encontrei o item '${args.titulo || args.id || 'solicitado'}' na Base de Conhecimento para remover.`,
+      instrucao_resposta: `Não encontrei o item na Base de Conhecimento. Pergunte ao usuário qual item ele deseja remover.`,
     };
   }
 
-  const fraseConfirmacao = `Você confirma a exclusão do item '${item.titulo}' da Base de Conhecimento? Responda Sim para confirmar ou Não para cancelar.`;
+  // CONFIRMAÇÃO MOSTRA O ITEM REAL (título e dado principal)
+  const dadoPrincipal = extrairDadoPrincipalItemConhecimento(item);
+  const fraseConfirmacao = `Você confirma a exclusão do item '${item.titulo} (${dadoPrincipal})' da Base de Conhecimento? Responda Sim para confirmar ou Não para cancelar.`;
 
   await salvarAcaoConhecimentoPendenteSupabase(contato, {
     tipoAcao: 'remover',
@@ -4469,7 +4584,9 @@ export async function toolLerDocumentoCompleto(params: {
       });
     }
 
-    if (!doc && candidatos.length === 1) {
+    // REMOVIDO FALLBACK CEGO: Se o usuário especificou termoDocumento e não encontrou correspondência,
+    // NUNCA assumir candidatos[0] só porque o titular tem 1 documento no Cofre (Regra 8).
+    if (!doc && !termo && candidatos.length === 1) {
       doc = candidatos[0];
     }
   }
@@ -4723,6 +4840,51 @@ export async function detectarConfirmacaoSalvarConhecimento(
 
   const msgNorm = normalizarParaComparacao(mensagemUsuarioAtual);
 
+  // CORREÇÃO DURANTE A CONFIRMAÇÃO (Ponto 2):
+  // Se houver uma ação pendente de salvamento ainda não gravada e o usuário pedir ajuste (nome, número, categoria):
+  // Alterar a PROPOSTA pendente e pedir confirmação de novo com os dados ajustados! NUNCA transformar em atualização de item existente.
+  const ehAjusteProposta =
+    pendenciaMemoria &&
+    pendenciaMemoria.tipoAcao === 'salvar' &&
+    (pendenciaMemoria.status === 'aguardando_confirmacao' || pendenciaMemoria.status === 'aguardando_dado_faltante') &&
+    (/\b(salv[ea]\s+(?:s[oó]\s+)?como|somente\s+salv[ea]|s[oó]\s+salv[ea]|nome\s*certo|nome\s*correto|muda\s*(?:o\s*nome|para)|altera\s*(?:o\s*nome|para))\b/i.test(msgNorm) ||
+     /\b(n[aã]o\s+precisa\s+salvar\s+como)\b/i.test(msgNorm));
+
+  if (ehAjusteProposta && pendenciaMemoria) {
+    let novoTitulo = '';
+    const matchAjusteNome =
+      mensagemUsuarioAtual.match(/(?:n[aã]o\s+precisa\s+salvar\s+(?:como\s+)?(?:contato\s+)?[^,]+,\s*)?(?:somente\s+|s[oó]\s+)?salv[ea]\s+(?:como\s+|s[oó]\s+como\s+)(.+)/i) ||
+      mensagemUsuarioAtual.match(/(?:o\s+nome\s+(?:certo|correto)\s*(?:é|e)\s*|mudar?\s+(?:o\s+nome\s+)?para\s*|alterar?\s+(?:o\s+nome\s+)?para\s*)([^\.,;\n]+)/i);
+
+    if (matchAjusteNome && matchAjusteNome[1]?.trim()) {
+      novoTitulo = matchAjusteNome[1].trim().replace(/[\.\?!]+$/, '').trim();
+    }
+
+    if (novoTitulo && !ehTituloGenerico(novoTitulo)) {
+      pendenciaMemoria.titulo = novoTitulo;
+      if (pendenciaMemoria.dadosEstruturados) {
+        pendenciaMemoria.dadosEstruturados.nome = novoTitulo.replace(/^contato\s*/i, '').trim();
+      }
+
+      let resumoDado = pendenciaMemoria.conteudo;
+      if (pendenciaMemoria.tipoConhecimento === 'contato' && !resumoDado.toLowerCase().includes('telefone')) {
+        resumoDado = `telefone ${resumoDado}`;
+      } else if (pendenciaMemoria.tipoConhecimento === 'pix' && !resumoDado.toLowerCase().includes('chave')) {
+        resumoDado = `chave ${resumoDado}`;
+      }
+
+      const fraseConfirmacao = `Vou salvar: ${pendenciaMemoria.titulo}, ${resumoDado}. Confirma?`;
+      await salvarAcaoConhecimentoPendenteSupabase(contato, pendenciaMemoria);
+
+      return {
+        textoResposta: fraseConfirmacao,
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: `Ajuste de proposta para ${novoTitulo}`,
+      };
+    }
+  }
+
   // MUDANÇA DE ASSUNTO NO MEIO ("deixa pra lá, qual o CPF do Thomaz?")
   const ehPerguntaOuNovaConsulta =
     /[?]/i.test(mensagemUsuarioAtual) ||
@@ -4885,80 +5047,99 @@ export async function detectarConfirmacaoSalvarConhecimento(
     }
   }
 
-  // 3. Confirmação de Atualização: "Vou atualizar o item '[Título]' para: ... Confirma?" ou "Vou atualizar o nome do item de '...' para '...'. Confirma?"
-  if (matchAtualizar || matchAtualizarNome || matchAtualizarAmbos || pendenciaMemoria?.tipoAcao === 'atualizar') {
+  // 3. Confirmação de Atualização: "Vou renomear o item '...' para '...'. Confirma?" ou "Vou atualizar o item '...' para: ... Confirma?"
+  const matchRenomear = txtAssistente.match(/Vou renomear o item ['*]([^'*]+)['*] para ['*]([^'*]+)['*]\.?\s*Confirma\?/i);
+  if (matchRenomear || matchAtualizar || matchAtualizarNome || matchAtualizarAmbos || pendenciaMemoria?.tipoAcao === 'atualizar') {
     if (ehAfirmativo) {
       const idAlvo = pendenciaMemoria?.idExistente;
       const tituloAlvo =
         pendenciaMemoria?.duplicadoTitulo ||
-        (matchAtualizarNome ? matchAtualizarNome[1].trim() : matchAtualizarAmbos ? matchAtualizarAmbos[1].trim() : matchAtualizar ? matchAtualizar[1].trim() : '');
+        (matchRenomear ? matchRenomear[1].trim() : matchAtualizarNome ? matchAtualizarNome[1].trim() : matchAtualizarAmbos ? matchAtualizarAmbos[1].trim() : matchAtualizar ? matchAtualizar[1].trim() : '');
 
       const todosK = await obterTodosConhecimentos();
-      let itemExistente = idAlvo
-        ? todosK.find((k) => k.id === idAlvo)
-        : todosK.find((k) => tituloAlvo && normalizarParaComparacao(k.titulo) === normalizarParaComparacao(tituloAlvo));
-
-      // Se ainda não encontrou, busca item genérico recente ou o mais recente da base
-      if (!itemExistente && todosK.length > 0) {
-        itemExistente = todosK.find((k) => ehTituloGenerico(k.titulo)) || todosK[todosK.length - 1];
+      let itemExistente: ItemConhecimento | null = null;
+      if (idAlvo) {
+        itemExistente = todosK.find((k) => k.id === idAlvo) || null;
+      }
+      if (!itemExistente && tituloAlvo) {
+        const tituloPuro = tituloAlvo.replace(/\s*\([^)]*\)$/, '').trim();
+        const exatos = todosK.filter(
+          (k) =>
+            normalizarParaComparacao(k.titulo) === normalizarParaComparacao(tituloAlvo) ||
+            normalizarParaComparacao(k.titulo) === normalizarParaComparacao(tituloPuro)
+        );
+        if (exatos.length === 1) {
+          itemExistente = exatos[0];
+        }
       }
 
-      if (itemExistente) {
-        let novoTitulo = pendenciaMemoria?.novoTitulo || pendenciaMemoria?.titulo;
-        if (!novoTitulo && matchAtualizarNome) {
-          novoTitulo = matchAtualizarNome[2].trim();
-        } else if (!novoTitulo && matchAtualizarAmbos) {
-          novoTitulo = matchAtualizarAmbos[2].trim();
-        }
-
-        if (!novoTitulo || ehTituloGenerico(novoTitulo)) {
-          novoTitulo = itemExistente.titulo;
-        }
-
-        let novoConteudo = pendenciaMemoria?.conteudo;
-        if (!novoConteudo && matchAtualizarAmbos) {
-          novoConteudo = matchAtualizarAmbos[3].trim();
-        } else if (!novoConteudo && matchAtualizar) {
-          novoConteudo = matchAtualizar[2].trim();
-        } else if (!novoConteudo) {
-          novoConteudo = itemExistente.conteudo;
-        }
-
-        const novosApelidos = pendenciaMemoria?.apelidos || (itemExistente.dadosEstruturados as any)?.apelidos;
-
-        const novosDadosEstruturados = {
-          ...(itemExistente.dadosEstruturados || {}),
-          ...(pendenciaMemoria?.dadosEstruturados || {}),
-          ...(novosApelidos ? { apelidos: novosApelidos } : {}),
-          atualizadoPor: contato.nome,
-          dataAtualizacaoIso: new Date().toISOString(),
-        };
-
-        if (itemExistente.tipo === 'contato' && novoTitulo) {
-          novosDadosEstruturados.nome = novoTitulo.replace(/^contato\s*/i, '').trim();
-        }
-
-        const atualizado = await atualizarConhecimento(itemExistente.id, {
-          titulo: novoTitulo,
-          categoria: pendenciaMemoria?.categoria || itemExistente.categoria,
-          conteudo: novoConteudo,
-          tipo: itemExistente.tipo,
-          dadosEstruturados: novosDadosEstruturados,
-        });
-
-        if (atualizado) {
-          indexarConhecimentoBackground(atualizado).catch(() => {});
-        }
+      // NUNCA fazer fallback cego de todosK[todosK.length - 1]!
+      if (!itemExistente) {
         await limparAcaoConhecimentoPendenteSupabase(contato);
-
-        const tituloExibicao = atualizado?.titulo || novoTitulo;
         return {
-          textoResposta: `${tituloExibicao} atualizado com sucesso na Base de Conhecimento!`,
+          textoResposta: 'Não foi possível localizar o item original na Base de Conhecimento para atualizar. A alteração não foi realizada.',
           origem: 'motor',
           intencaoDetectada: 'cadastrar_conhecimento',
-          perguntaReescrita: `Atualizar ${tituloExibicao}`,
+          perguntaReescrita: 'Falha ao localizar item para atualizar',
         };
       }
+
+      let novoTitulo = pendenciaMemoria?.novoTitulo || pendenciaMemoria?.titulo;
+      if (!novoTitulo && matchRenomear) {
+        novoTitulo = matchRenomear[2].trim();
+      } else if (!novoTitulo && matchAtualizarNome) {
+        novoTitulo = matchAtualizarNome[2].trim();
+      } else if (!novoTitulo && matchAtualizarAmbos) {
+        novoTitulo = matchAtualizarAmbos[2].trim();
+      }
+
+      if (!novoTitulo || ehTituloGenerico(novoTitulo)) {
+        novoTitulo = itemExistente.titulo;
+      }
+
+      let novoConteudo = pendenciaMemoria?.conteudo;
+      if (!novoConteudo && matchAtualizarAmbos) {
+        novoConteudo = matchAtualizarAmbos[3].trim();
+      } else if (!novoConteudo && matchAtualizar) {
+        novoConteudo = matchAtualizar[2].trim();
+      } else if (!novoConteudo) {
+        novoConteudo = itemExistente.conteudo;
+      }
+
+      const novosApelidos = pendenciaMemoria?.apelidos || (itemExistente.dadosEstruturados as any)?.apelidos;
+
+      const novosDadosEstruturados = {
+        ...(itemExistente.dadosEstruturados || {}),
+        ...(pendenciaMemoria?.dadosEstruturados || {}),
+        ...(novosApelidos ? { apelidos: novosApelidos } : {}),
+        atualizadoPor: contato.nome,
+        dataAtualizacaoIso: new Date().toISOString(),
+      };
+
+      if (itemExistente.tipo === 'contato' && novoTitulo) {
+        novosDadosEstruturados.nome = novoTitulo.replace(/^contato\s*/i, '').trim();
+      }
+
+      const atualizado = await atualizarConhecimento(itemExistente.id, {
+        titulo: novoTitulo,
+        categoria: pendenciaMemoria?.categoria || itemExistente.categoria,
+        conteudo: novoConteudo,
+        tipo: itemExistente.tipo,
+        dadosEstruturados: novosDadosEstruturados,
+      });
+
+      if (atualizado) {
+        indexarConhecimentoBackground(atualizado).catch(() => {});
+      }
+      await limparAcaoConhecimentoPendenteSupabase(contato);
+
+      const tituloExibicao = atualizado?.titulo || novoTitulo;
+      return {
+        textoResposta: `${tituloExibicao} atualizado com sucesso na Base de Conhecimento!`,
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: `Atualizar ${tituloExibicao}`,
+      };
     }
   }
 
@@ -4967,21 +5148,41 @@ export async function detectarConfirmacaoSalvarConhecimento(
     if (ehAfirmativo) {
       const tituloRemover = pendenciaMemoria?.titulo || (matchRemover ? matchRemover[1].trim() : '');
       const todosK = await obterTodosConhecimentos();
-      const itemExistente = pendenciaMemoria?.idExistente
-        ? todosK.find((k) => k.id === pendenciaMemoria.idExistente)
-        : todosK.find((k) => normalizarParaComparacao(k.titulo) === normalizarParaComparacao(tituloRemover));
+      let itemExistente: ItemConhecimento | null = null;
+      if (pendenciaMemoria?.idExistente) {
+        itemExistente = todosK.find((k) => k.id === pendenciaMemoria.idExistente) || null;
+      }
+      if (!itemExistente && tituloRemover) {
+        const tituloPuro = tituloRemover.replace(/\s*\([^)]*\)$/, '').trim();
+        const exatos = todosK.filter(
+          (k) =>
+            normalizarParaComparacao(k.titulo) === normalizarParaComparacao(tituloRemover) ||
+            normalizarParaComparacao(k.titulo) === normalizarParaComparacao(tituloPuro)
+        );
+        if (exatos.length === 1) {
+          itemExistente = exatos[0];
+        }
+      }
 
-      if (itemExistente) {
-        await removerConhecimento(itemExistente.id);
+      if (!itemExistente) {
         await limparAcaoConhecimentoPendenteSupabase(contato);
-
         return {
-          textoResposta: `Item '${itemExistente.titulo}' removido com sucesso da Base de Conhecimento!`,
+          textoResposta: 'Não foi possível localizar o item na Base de Conhecimento para excluir.',
           origem: 'motor',
           intencaoDetectada: 'cadastrar_conhecimento',
-          perguntaReescrita: `Remover ${itemExistente.titulo}`,
+          perguntaReescrita: 'Falha ao localizar item para excluir',
         };
       }
+
+      await removerConhecimento(itemExistente.id);
+      await limparAcaoConhecimentoPendenteSupabase(contato);
+
+      return {
+        textoResposta: `Item '${itemExistente.titulo}' removido com sucesso da Base de Conhecimento!`,
+        origem: 'motor',
+        intencaoDetectada: 'cadastrar_conhecimento',
+        perguntaReescrita: `Remover ${itemExistente.titulo}`,
+      };
     }
   }
 
@@ -5135,9 +5336,14 @@ INSTRUÇÕES MANDATÓRIAS DE CONTINUAÇÃO:
       blocoAcaoPendente = `\n<acao_pendente>
 Existe uma ação na Base de Conhecimento AGUARDANDO CONFIRMAÇÃO do usuário:
 - Operação: ${pendenciaAtivaK.tipoAcao}
-- Item: "${pendenciaAtivaK.titulo}"
+- Item Proposto: "${pendenciaAtivaK.titulo}"
 - Dado: "${pendenciaAtivaK.conteudo}"
-- Resposta esperada: Se o usuário confirmar (ex: "sim", "pode salvar"), a confirmação será processada. Se ele mudar de assunto, responda à nova pergunta normalmente.
+- Resposta esperada:
+  1. Se o usuário confirmar (ex: "sim", "pode salvar", "confirmo"), a confirmação será processada.
+  2. REGRA CRÍTICA DE AJUSTE NA PROPOSTA: Se o usuário pedir qualquer ajuste nos dados propostos (ex: "não precisa salvar como contato X, somente salve como X", "o nome certo é Y", "o telefone é Z", "salve na categoria W"):
+     - NUNCA acione 'atualizar_conhecimento' (o item ainda NÃO foi gravado no banco de dados).
+     - Acione a ferramenta 'salvar_conhecimento' com o título e dado ajustados para atualizar a proposta pendente, gerando nova confirmação: "Vou salvar: [TítuloAjustado], [Dado]. Confirma?".
+  3. Se ele mudar de assunto ou perguntar outra coisa, responda à nova pergunta normalmente.
 </acao_pendente>\n`;
     }
   }

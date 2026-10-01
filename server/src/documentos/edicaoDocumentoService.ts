@@ -137,7 +137,7 @@ export async function atualizarDocumentoConsistente(
   }
 
   const alteracoesHistorico: string[] = [];
-  const titularAnterior = docExistente.titular || 'Delta Plan';
+  const titularAnterior = docExistente.titular || 'Sem titular';
   const pessoaIdAnterior = docExistente.pessoaId || docExistente.pessoa_id || null;
 
   // 1. Determina novo titular e pessoa_id

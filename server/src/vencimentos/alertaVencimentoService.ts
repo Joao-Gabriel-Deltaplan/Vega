@@ -456,7 +456,7 @@ export async function executarRotinaVerificacaoVencimentos(): Promise<{
 
       // Atualiza o alerta existente in-place sem criar outro registro
       alertaExistente.documentoTitulo = doc.titulo;
-      alertaExistente.titular = doc.titular || 'Delta Plan';
+      alertaExistente.titular = doc.titular || 'Não identificado';
       alertaExistente.dataValidade = doc.dataValidade;
       alertaExistente.diasRestantes = diasRestantes;
       alertaExistente.status = status;
@@ -475,7 +475,7 @@ export async function executarRotinaVerificacaoVencimentos(): Promise<{
         id: `alerta-${doc.id}`,
         documentoId: doc.id,
         documentoTitulo: doc.titulo,
-        titular: doc.titular || 'Delta Plan',
+        titular: doc.titular || 'Não identificado',
         dataValidade: doc.dataValidade,
         diasRestantes,
         status,
