@@ -57,6 +57,11 @@ import {
   OpcaoDocumento,
 } from '../types.js';
 import { extrairPrimeiroNome, formatarFraseAcompanhamento, nomesSaoEquivalentesComTolerancia, limparFormaTratamentoNome } from '../utils/nomeUtils.js';
+import {
+  extrairCatalogoPessoas,
+  verificarCorrespondenciaNomePessoa,
+  extrairNomePessoaDaMensagem,
+} from '../utils/correspondenciaPessoaService.js';
 import { criarAnexoParaDocumento, gerarPdfDeMarkdown } from '../pdfService.js';
 import { mascararDadosSensiveis, mascararDocumento, truncarTrecho } from '../utils/segurancaUtils.js';
 import { gerarLinksNavegacao } from '../utils/geoLinks.js';
@@ -3276,6 +3281,8 @@ export async function toolBuscarDocumentos(
   total_fontes_com_dado?: number;
   orientacao_resposta?: string;
   mensagem?: string;
+  tipo_correspondencia?: string;
+  nome_entendido?: string;
 }> {
   const termoNorm = (consulta || '').toLowerCase().trim();
 
@@ -3290,37 +3297,55 @@ export async function toolBuscarDocumentos(
     };
   }
 
-  let titularNorm = (titularNome || '').toLowerCase().trim();
-  // Normalização fonética / transcrição de nomes conhecidos (ex: "Danil Ceia", "Danilceia", "nil ceia" -> "nilceia")
-  if (/^danil\s*ceia$/i.test(titularNorm) || /^nil\s*ceia$/i.test(titularNorm) || titularNorm === 'danilceia') {
-    titularNorm = 'nilceia';
+  const todosTits = await obterTodosTitulares();
+  const catalogoPessoas = extrairCatalogoPessoas(todosTits, todosDocs);
+
+  const titularOriginal = (titularNome || '').trim();
+  let titularNorm = titularOriginal.toLowerCase();
+  let titObj: FichaTitular | null = null;
+  let ehPessoaNaoCadastrada = false;
+
+  // 1. Identifica nome de pessoa pesquisado
+  let nomePessoaPesquisada: string | null = titularOriginal || null;
+  if (!nomePessoaPesquisada && consulta) {
+    nomePessoaPesquisada = extrairNomePessoaDaMensagem(consulta, catalogoPessoas);
   }
 
-  let titObj: FichaTitular | null = null;
-  const todosTits = await obterTodosTitulares();
+  if (nomePessoaPesquisada) {
+    const checkCorr = verificarCorrespondenciaNomePessoa(nomePessoaPesquisada, catalogoPessoas);
 
-  if (titularNorm) {
-    titObj = todosTits.find((t) => titularCorresponde(t.nome, titularNorm)) || null;
-    if (titObj) titularNorm = titObj.nome.toLowerCase();
-  } else if (consulta) {
-    const cLower = consulta.toLowerCase();
-    titObj = todosTits.find((t) => t.nome && cLower.includes(t.nome.toLowerCase())) || null;
-    if (titObj) {
-      titularNorm = titObj.nome.toLowerCase();
-    } else {
-      // Se não encontrou titular cadastrado, checa se há menção a pessoa não cadastrada na consulta
-      const matchPessoa = /(?:d[oa]\s+|de\s+)(danil\s*ceia|danilceia|nilceia(?:\s+[a-zà-öø-ÿ]+)*|[a-zà-öø-ÿ]{3,}(?:\s+[a-zà-öø-ÿ]{3,})*)/i.exec(consulta);
-      if (matchPessoa && matchPessoa[1]) {
-        const extraido = matchPessoa[1].toLowerCase().trim();
-        const palavrasIgnoradas = ['empresa', 'documento', 'sistema', 'pasta', 'cofre', 'arquivo', 'ano', 'mes'];
-        if (!palavrasIgnoradas.includes(extraido)) {
-          titularNorm = extraido === 'danilceia' || extraido === 'danil ceia' ? 'nilceia' : extraido;
-        }
+    // REGRA MANDATÓRIA: Correspondência APROXIMADA
+    // NUNCA revelar nomes do Cofre e NUNCA entregar dados! Apenas pedir confirmação do nome entendido sugerindo digitar.
+    if (checkCorr.tipo === 'aproximada') {
+      return {
+        documentos: [],
+        tipo_correspondencia: 'aproximada',
+        nome_entendido: checkCorr.nomeEntendido,
+        orientacao_resposta: `ATENÇÃO DE PRIVACIDADE E SEGURANÇA: O nome '${checkCorr.nomeEntendido}' possui apenas correspondência aproximada. É TERMINANTEMENTE PROIBIDO revelar qualquer nome existente no Cofre e é TERMINANTEMENTE PROIBIDO entregar dados ou arquivos. Responda ESTRITAMENTE: "${checkCorr.mensagemRespostaObrigatoria}"`,
+        mensagem: checkCorr.mensagemRespostaObrigatoria,
+      };
+    }
+
+    // Nenhuma correspondência (Inexistente)
+    if (checkCorr.tipo === 'inexistente') {
+      return {
+        documentos: [],
+        tipo_correspondencia: 'inexistente',
+        nome_entendido: checkCorr.nomeEntendido,
+        orientacao_resposta: `Não foi encontrado nenhum documento ou informação sobre '${checkCorr.nomeEntendido}' no Cofre. Responda ao usuário que não encontrou informações sobre '${checkCorr.nomeEntendido}' no Cofre.`,
+        mensagem: `Não encontrei informações sobre '${checkCorr.nomeEntendido}' no Cofre.`,
+      };
+    }
+
+    // Correspondência EXATA (Prioridade Máxima)
+    if (checkCorr.tipo === 'exata' && checkCorr.pessoaExata) {
+      if (checkCorr.pessoaExata.ehTitularCadastrado && checkCorr.pessoaExata.titularId) {
+        titObj = todosTits.find((t) => t.id === checkCorr.pessoaExata?.titularId) || null;
       }
+      titularNorm = checkCorr.pessoaExata.nomeOficial.toLowerCase();
+      ehPessoaNaoCadastrada = !checkCorr.pessoaExata.ehTitularCadastrado;
     }
   }
-
-  const ehPessoaNaoCadastrada = Boolean(titularNorm && !titObj);
 
   const ehBuscaEndereco = /(?:endere[cç]|residen|mora|casa|bairro|rua|logradouro|onde ele mora|onde ela mora)/i.test(consulta);
   if (titularNorm && ehBuscaEndereco) {
@@ -3781,16 +3806,39 @@ async function toolConsultarFichaTitular(
     };
   }>;
 }> {
-  let titular = await obterTitularPorNome(nome);
-  if (!titular) {
-    const todosT = await obterTodosTitulares();
-    titular = todosT.find((t) => titularCorresponde(t.nome, nome)) || null;
+  const todosT = await obterTodosTitulares();
+  const catalogoPessoas = extrairCatalogoPessoas(todosT, todosDocs);
+  const checkCorr = verificarCorrespondenciaNomePessoa(nome, catalogoPessoas);
+
+  if (checkCorr.tipo === 'aproximada') {
+    return {
+      encontrado: false,
+      instrucao_resposta: `ATENÇÃO DE PRIVACIDADE E SEGURANÇA: O nome '${checkCorr.nomeEntendido}' possui apenas correspondência aproximada. É TERMINANTEMENTE PROIBIDO revelar qualquer nome existente no Cofre e é PROIBIDO entregar dados cadastrais. Responda ESTRITAMENTE: "${checkCorr.mensagemRespostaObrigatoria}"`,
+      mensagem: checkCorr.mensagemRespostaObrigatoria,
+    };
+  }
+
+  if (checkCorr.tipo === 'inexistente') {
+    return {
+      encontrado: false,
+      instrucao_resposta: `Não foi encontrado nenhum titular cadastrado ou informação sobre '${checkCorr.nomeEntendido}' no Cofre. Responda ao usuário que não encontrou informações sobre '${checkCorr.nomeEntendido}' no Cofre.`,
+      mensagem: `Não encontrei informações sobre '${checkCorr.nomeEntendido}' no Cofre.`,
+    };
+  }
+
+  // Correspondência EXATA
+  let titular = checkCorr.pessoaExata?.titularId
+    ? todosT.find((t) => t.id === checkCorr.pessoaExata?.titularId) || null
+    : null;
+  if (!titular && checkCorr.pessoaExata) {
+    titular = todosT.find((t) => t.nome.toLowerCase() === checkCorr.pessoaExata?.nomeNorm) || null;
   }
 
   if (!titular) {
     return {
       encontrado: false,
-      mensagem: `Nenhum titular cadastrado com o nome "${nome}".`,
+      mensagem: `A pessoa '${checkCorr.nomeEntendido}' possui documentos no Cofre, mas não possui ficha cadastral de titular estruturada. Consulte buscar_documentos para acessar os documentos dela.`,
+      instrucao_resposta: `A pessoa '${checkCorr.nomeEntendido}' possui documentos no Cofre, mas não tem ficha cadastral estruturada. Faça busca nos documentos ou responda com base nos documentos existentes.`,
     };
   }
 
@@ -5102,6 +5150,66 @@ export async function processarMensagemChat(dados: {
         salvarRastro(resultado.rastro).catch(() => {});
       } catch {}
     }
+  }
+
+  // GUARDRAIL (REGRA DE PRIVACIDADE E CORRESPONDÊNCIA DE NOMES):
+  // Se o usuário citou um nome com correspondência aproximada, NUNCA revelar nomes do Cofre e NUNCA entregar dados!
+  try {
+    const todosTits = await obterTodosTitulares();
+    const todosDocs = dados.documentosDisponiveis || (await obterTodosDocumentos());
+    const catalogo = extrairCatalogoPessoas(todosTits, todosDocs);
+    const msgUsuario = dados.mensagemUsuario || (dados as any).mensagem || '';
+    const nomeCitado = extrairNomePessoaDaMensagem(msgUsuario, catalogo);
+
+    if (nomeCitado) {
+      const checkCorr = verificarCorrespondenciaNomePessoa(nomeCitado, catalogo);
+      if (checkCorr.tipo === 'aproximada') {
+        const textoRespLower = resultado.textoResposta.toLowerCase();
+        const revelouNomeOculto = checkCorr.candidatosAproximados?.some((c) => {
+          return (
+            (c.primeiroNomeNorm && c.primeiroNomeNorm.length >= 3 && textoRespLower.includes(c.primeiroNomeNorm)) ||
+            (c.nomeNorm && textoRespLower.includes(c.nomeNorm))
+          );
+        });
+        const entregouDocumento = Boolean(resultado.anexos && resultado.anexos.length > 0);
+        const textoSemConfirmacao = !textoRespLower.includes('confirmar o nome') && !textoRespLower.includes('digite para');
+
+        if (revelouNomeOculto || entregouDocumento || textoSemConfirmacao) {
+          const respostaOriginalIa = resultado.textoResposta;
+          const textoCorreto =
+            checkCorr.mensagemRespostaObrigatoria ||
+            `Não encontrei '${checkCorr.nomeEntendido}'. Pode confirmar o nome? Se possível, digite para eu não entender errado.`;
+          console.warn(
+            `[VEGA Guardrail] Interceptada tentativa de entrega/revelação para nome com correspondência aproximada: "${checkCorr.nomeEntendido}"`
+          );
+          resultado.textoResposta = textoCorreto;
+          resultado.anexos = undefined;
+          resultado.opcoes = undefined;
+          if (resultado.rastro) {
+            resultado.rastro.respostaFinal = textoCorreto;
+            resultado.rastro.enviouAnexo = false;
+            resultado.rastro.anexosDetalhes = [];
+            resultado.rastro.etapas.push({
+              ordem: resultado.rastro.etapas.length + 1,
+              nome: 'Guardrail Ativado: verificarCorrespondenciaNomePessoa (Regra de Privacidade)',
+              descricao: `Correspondência aproximada para "${checkCorr.nomeEntendido}". Bloqueada entrega ou revelação de nomes.`,
+              tempoMs: 1,
+              detalhes: {
+                nomeEntendido: checkCorr.nomeEntendido,
+                candidatosOcultados: checkCorr.candidatosAproximados?.map((c) => c.nomeOficial),
+                respostaOriginalIa,
+                respostaFinalEnviada: textoCorreto,
+              },
+            });
+            try {
+              salvarRastro(resultado.rastro).catch(() => {});
+            } catch {}
+          }
+        }
+      }
+    }
+  } catch (errGuard) {
+    console.warn('[VEGA Guardrail] Falha na checagem de correspondência de nomes:', errGuard);
   }
 
   // SANITIZAÇÃO DUPLA: Garante que NENHUM bloco de código, JSON ou resíduo técnico

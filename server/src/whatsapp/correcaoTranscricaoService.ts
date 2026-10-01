@@ -62,22 +62,6 @@ const REGRAS_DIRETAS_WHISPER: RegraFoneticaDireta[] = [
     substituicao: 'título de eleitor',
     motivo: 'Termo sinônimo formal: "título eleitoral" -> "título de eleitor"',
   },
-  // Aglutinações e variações fonéticas de nomes comuns de pessoas em documentos (ex: "Danil Ceia" -> "da Nilceia")
-  {
-    regex: /\bdanil\s*ceia\b/gi,
-    substituicao: 'da Nilceia',
-    motivo: 'Aglutinação fonética: "Danil Ceia" -> "da Nilceia"',
-  },
-  {
-    regex: /\bdanilceia\b/gi,
-    substituicao: 'da Nilceia',
-    motivo: 'Aglutinação fonética: "Danilceia" -> "da Nilceia"',
-  },
-  {
-    regex: /\bnil\s+ceia\b/gi,
-    substituicao: 'Nilceia',
-    motivo: 'Separação fonética: "nil ceia" -> "Nilceia"',
-  },
   // PIS fonético ("piz", "piss")
   {
     regex: /\bpiz\b/gi,
