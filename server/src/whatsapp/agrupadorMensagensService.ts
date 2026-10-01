@@ -605,12 +605,14 @@ async function processarLoteUnificado(
 
     // 3. Executa o orquestrador da VEGA com o texto unificado
     const origemMensagem: 'audio' | 'texto' = itensAudio.length > 0 ? 'audio' : 'texto';
+    const idsMensagensLote = itens.map((i) => i.id).filter(Boolean);
     const resultadoChat = await processarMensagemChat({
       mensagemUsuario: textoConsolidado,
       historicoRecente,
       contato,
       documentosDisponiveis: docsDisponiveis,
       origemMensagem,
+      idsMensagensLoteAtual: idsMensagensLote,
     });
 
     const textoResposta = sanitizarRespostaTextoFinal(resultadoChat.textoResposta);

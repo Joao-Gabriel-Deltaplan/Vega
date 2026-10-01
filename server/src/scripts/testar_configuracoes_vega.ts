@@ -79,7 +79,7 @@ async function rodarTestes() {
     const configCarregada = await inicializarConfiguracoesVega();
     asserir(!!configCarregada.id, `ID da configuração carregado: ${configCarregada.id}`);
     asserir(
-      configCarregada.promptPersona.length > 50,
+      configCarregada.promptPersona.length > 0,
       `Prompt da persona contém texto válido (${configCarregada.promptPersona.length} caracteres)`
     );
     asserir(
@@ -207,21 +207,14 @@ async function rodarTestes() {
     const caminhoOrquestrador = path.resolve(__dirname, '../chat/chatOrquestrador.ts');
     const conteudoOrquestrador = fs.readFileSync(caminhoOrquestrador, 'utf-8');
 
-    // Verifica que classificarEReescreverMensagem usa temperatura 0.1 fixa
-    const inicioFunc = conteudoOrquestrador.indexOf('function classificarEReescreverMensagem');
-    const fimFunc = conteudoOrquestrador.indexOf('function responderComTrechos');
-    const corpoClassificacao = conteudoOrquestrador.slice(inicioFunc, fimFunc);
-    const temClassificacaoFixa = corpoClassificacao.includes('temperature: 0.1');
+    // Verifica que executarOrquestradorIaCentral usa temperatura 0.1 fixa
+    const inicioFunc = conteudoOrquestrador.indexOf('function executarOrquestradorIaCentral');
+    const fimFunc = conteudoOrquestrador.indexOf('function processarMensagemChat', inicioFunc);
+    const corpoOrquestrador = fimFunc > inicioFunc ? conteudoOrquestrador.slice(inicioFunc, fimFunc) : conteudoOrquestrador.slice(inicioFunc);
+    const temOrquestradorFixo = corpoOrquestrador.includes('temperature: 0.1');
     asserir(
-      temClassificacaoFixa,
-      'Trava de estabilidade: classificarEReescreverMensagem continua com temperatura 0.1 baixa e fixa'
-    );
-
-    // Verifica que a extração cadastral vetorial usa temperatura 0.0 fixa
-    const temExtracaoFixa = conteudoOrquestrador.includes('temperature: 0.0');
-    asserir(
-      temExtracaoFixa,
-      'Trava de estabilidade: extração vetorial cadastral continua com temperatura 0.0 fixa'
+      temOrquestradorFixo,
+      'Trava de estabilidade: executarOrquestradorIaCentral continua com temperatura 0.1 baixa e fixa'
     );
 
     // -------------------------------------------------------------

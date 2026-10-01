@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import OpenAI from 'openai';
-import { processarMensagemChat, classificarEReescreverMensagem } from '../chat/chatOrquestrador.js';
+import { processarMensagemChat } from '../chat/chatOrquestrador.js';
 import { obterTodosDocumentos } from '../storage.js';
 
 const __filename = fileURLToPath(import.meta.url);

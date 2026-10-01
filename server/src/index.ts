@@ -56,10 +56,7 @@ import {
 } from './documentosEsperadosService.js';
 import { classificarIntencao } from './busca/intencao.js';
 import {
-  interpretarComIA,
   isModoSimuladorAtivo,
-  obterDataPacifico,
-  obterDataPacificoDeIso,
 } from './ai/openaiProvider.js';
 import { processarMensagemChat } from './chat/chatOrquestrador.js';
 import {
@@ -2101,6 +2098,7 @@ app.post('/api/mensagens', async (req, res) => {
       documentosDisponiveis: docsDisponiveis,
       documentoIdDireto: documentoId,
       origemMensagem: 'texto',
+      idsMensagensLoteAtual: [msgUsuario.id],
     });
 
     const textoFinal = resultadoChat.textoResposta;

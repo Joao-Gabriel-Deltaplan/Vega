@@ -1,10 +1,9 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import { processarMensagemChat, classificarEReescreverMensagem } from '../chat/chatOrquestrador.js';
+import { processarMensagemChat } from '../chat/chatOrquestrador.js';
 import { obterDocumentosPorNivelAcesso, obterTodosDocumentos, obterTodosTitulares } from '../storage.js';
 import { Contato } from '../types.js';
-import OpenAI from 'openai';
 
 async function rodarTestesMultiplosPedidos() {
   console.log('================================================================');
@@ -16,8 +15,6 @@ async function rodarTestesMultiplosPedidos() {
     console.error('❌ OPENAI_API_KEY ausente.');
     process.exit(1);
   }
-  const openai = new OpenAI({ apiKey });
-
   const contatoTeste: Contato = {
     id: 'ct-teste-multi',
     nome: 'João Gabriel',
@@ -40,14 +37,6 @@ async function rodarTestesMultiplosPedidos() {
   try {
     const msg = 'Eu quero saber onde que fica o escritório da Delta.\nE eu também quero saber o Pix do João Gabriel.';
     
-    // Testa o classificador diretamente
-    const classif = await classificarEReescreverMensagem(msg, [], openai);
-    console.log(`[Classificador] Quantidade de pedidos identificados: ${classif.pedidos?.length || 1}`);
-    for (let i = 0; i < (classif.pedidos?.length || 0); i++) {
-      const p = classif.pedidos![i];
-      console.log(`  Pedido ${i + 1}: [${p.intencao}] - "${p.pergunta_completa}" (termo: "${p.termo_busca}", pessoa: "${p.pessoa || 'n/a'}")`);
-    }
-
     // Testa a execução pelo orquestrador
     const res = await processarMensagemChat({
       mensagemUsuario: msg,
@@ -63,11 +52,11 @@ async function rodarTestesMultiplosPedidos() {
     const contemEndereco = textoLower.includes('endereço') || textoLower.includes('rua') || textoLower.includes('av') || textoLower.includes('maps') || textoLower.includes('localização');
     const contemPix = textoLower.includes('pix') || textoLower.includes('chave');
 
-    if (classif.pedidos && classif.pedidos.length >= 2 && contemEndereco && contemPix) {
+    if (contemEndereco && contemPix) {
       console.log('✅ TESTE 1 PASSOU: Ambos os pedidos (Endereço + PIX) foram atendidos na mesma resposta!\n');
       passou++;
     } else {
-      console.error(`❌ TESTE 1 FALHOU: contemEndereco=${contemEndereco}, contemPix=${contemPix}, pedidos=${classif.pedidos?.length}\n`);
+      console.error(`❌ TESTE 1 FALHOU: contemEndereco=${contemEndereco}, contemPix=${contemPix}\n`);
       falhou++;
     }
   } catch (err: any) {
@@ -82,13 +71,6 @@ async function rodarTestesMultiplosPedidos() {
   try {
     const msg = 'Me manda a CNH do Thomaz e a certidão de casamento dele';
     
-    const classif = await classificarEReescreverMensagem(msg, [], openai);
-    console.log(`[Classificador] Quantidade de pedidos: ${classif.pedidos?.length || 1}`);
-    for (let i = 0; i < (classif.pedidos?.length || 0); i++) {
-      const p = classif.pedidos![i];
-      console.log(`  Pedido ${i + 1}: [${p.intencao}] - "${p.pergunta_completa}" (doc: "${p.documento_citado}")`);
-    }
-
     const res = await processarMensagemChat({
       mensagemUsuario: msg,
       historicoRecente: [],
@@ -127,13 +109,6 @@ async function rodarTestesMultiplosPedidos() {
   try {
     const msg = 'Qual o CPF do Thomaz? E me manda a certidão de casamento dele.';
     
-    const classif = await classificarEReescreverMensagem(msg, [], openai);
-    console.log(`[Classificador] Quantidade de pedidos: ${classif.pedidos?.length || 1}`);
-    for (let i = 0; i < (classif.pedidos?.length || 0); i++) {
-      const p = classif.pedidos![i];
-      console.log(`  Pedido ${i + 1}: [${p.intencao}] - "${p.pergunta_completa}"`);
-    }
-
     const res = await processarMensagemChat({
       mensagemUsuario: msg,
       historicoRecente: [],
@@ -168,9 +143,6 @@ async function rodarTestesMultiplosPedidos() {
   try {
     const msg = 'qual o pix do João Gabriel';
     
-    const classif = await classificarEReescreverMensagem(msg, [], openai);
-    console.log(`[Classificador] Quantidade de pedidos: ${classif.pedidos?.length || 1}`);
-
     const res = await processarMensagemChat({
       mensagemUsuario: msg,
       historicoRecente: [],
@@ -183,11 +155,11 @@ async function rodarTestesMultiplosPedidos() {
 
     const contemPix = res.textoResposta.toLowerCase().includes('pix') || res.textoResposta.toLowerCase().includes('chave');
 
-    if ((classif.pedidos?.length || 1) === 1 && contemPix) {
+    if (contemPix) {
       console.log('✅ TESTE 4 PASSOU: Caso simples preservado com perfeição!\n');
       passou++;
     } else {
-      console.error(`❌ TESTE 4 FALHOU: pedidos=${classif.pedidos?.length}, contemPix=${contemPix}\n`);
+      console.error(`❌ TESTE 4 FALHOU: contemPix=${contemPix}\n`);
       falhou++;
     }
   } catch (err: any) {
@@ -196,9 +168,9 @@ async function rodarTestesMultiplosPedidos() {
   }
 
   // --------------------------------------------------------------------------
-  // TESTE 5: Limite de segurança de 5 pedidos
+  // TESTE 5: Múltiplos pedidos em lote (6 perguntas)
   // --------------------------------------------------------------------------
-  console.log('--- TESTE 5: Limite de segurança (> 5 pedidos) ---');
+  console.log('--- TESTE 5: Múltiplos pedidos em lote (6 perguntas) ---');
   try {
     const msg = '1. Onde fica o escritório?\n2. Qual o Pix do João Gabriel?\n3. Qual o CPF do Thomaz?\n4. Qual o RG do Thomaz?\n5. Qual a profissão do Thomaz?\n6. Qual o estado civil do Thomaz?';
     
@@ -212,13 +184,20 @@ async function rodarTestesMultiplosPedidos() {
     console.log('\n[Resposta VEGA]:');
     console.log(res.textoResposta);
 
-    const contemAvisoLimite = res.textoResposta.toLowerCase().includes('por segurança, atendi os primeiros 5 pedidos');
+    const contemEscritorio = res.textoResposta.toLowerCase().includes('escritório') || res.textoResposta.toLowerCase().includes('escritorio') || res.textoResposta.toLowerCase().includes('ricardo rios');
+    const contemPix = res.textoResposta.includes('14996863115');
+    const contemCpf = res.textoResposta.includes('333.599.518-08');
+    const contemRg = res.textoResposta.includes('12.345.678-9');
+    const contemProfissao = res.textoResposta.toLowerCase().includes('eletro') || res.textoResposta.toLowerCase().includes('fotônica') || res.textoResposta.toLowerCase().includes('fotonica');
+    const contemEstadoCivil = res.textoResposta.toLowerCase().includes('casado');
 
-    if (contemAvisoLimite) {
-      console.log('✅ TESTE 5 PASSOU: Limite de segurança acionado e aviso incluído com sucesso!\n');
+    const atendeuTodos = contemEscritorio && contemPix && contemCpf && contemRg && contemProfissao && contemEstadoCivil;
+
+    if (atendeuTodos) {
+      console.log('✅ TESTE 5 PASSOU: Todos os 6 pedidos em lote atendidos com sucesso!\n');
       passou++;
     } else {
-      console.error(`❌ TESTE 5 FALHOU: Aviso de limite não encontrado.\n`);
+      console.error(`❌ TESTE 5 FALHOU: Nem todos os pedidos foram atendidos. (escritorio=${contemEscritorio}, pix=${contemPix}, cpf=${contemCpf}, rg=${contemRg}, prof=${contemProfissao}, civil=${contemEstadoCivil})\n`);
       falhou++;
     }
   } catch (err: any) {
@@ -245,7 +224,13 @@ async function rodarTestesMultiplosPedidos() {
 
     const textoLower = res.textoResposta.toLowerCase();
     const contemCpf = textoLower.includes('cpf') || /\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/.test(res.textoResposta);
-    const contemNaoEncontrado = textoLower.includes('não encontrei') || textoLower.includes('nao encontrei');
+    const contemNaoEncontrado =
+      textoLower.includes('não encontrei') ||
+      textoLower.includes('nao encontrei') ||
+      textoLower.includes('não localizei') ||
+      textoLower.includes('nao localizei') ||
+      textoLower.includes('não foi encontrada') ||
+      textoLower.includes('nao foi encontrada');
 
     if (contemCpf && contemNaoEncontrado) {
       console.log('✅ TESTE 6 PASSOU: Pedido existente foi respondido e pedido inexistente foi devidamente informado!\n');

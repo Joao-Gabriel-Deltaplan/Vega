@@ -6,15 +6,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
-import { processarMensagemChat, classificarEReescreverMensagem, JANELA_CONTEXTO_MENSAGENS, JANELA_CLASSIFICADOR_MENSAGENS } from '../chat/chatOrquestrador.js';
+import { processarMensagemChat, JANELA_CONTEXTO_MENSAGENS } from '../chat/chatOrquestrador.js';
 import { Mensagem, Contato } from '../chat/types.js';
 import { obterTodosTitulares, obterTodosDocumentos } from '../storage.js';
-import OpenAI from 'openai';
 
 async function executarTestes() {
   console.log('\n============================================================');
   console.log('🧪 TESTE AUTOMATIZADO: VALIDADE DE CONTEXTO POR MENSAGENS (JANELA 30)');
-  console.log(`Constantes ativas: JANELA_CONTEXTO = ${JANELA_CONTEXTO_MENSAGENS}, JANELA_CLASSIFICADOR = ${JANELA_CLASSIFICADOR_MENSAGENS}`);
+  console.log(`Constantes ativas: JANELA_CONTEXTO = ${JANELA_CONTEXTO_MENSAGENS}`);
   console.log('============================================================\n');
 
   const titulares = await obterTodosTitulares();
@@ -176,9 +175,13 @@ async function executarTestes() {
   });
 
   console.log(`Resposta: "${res3.textoResposta}"`);
+  const textoR3 = res3.textoResposta.toLowerCase();
   const passou3 =
-    res3.textoResposta.includes('De quem você precisa do CPF?') &&
-    !res3.textoResposta.includes(cpfEsperado || 'xxx') &&
+    (textoR3.includes('de quem você precisa do cpf') ||
+     textoR3.includes('de quem você precisa') ||
+     textoR3.includes('de qual titular') ||
+     textoR3.includes('de quem você quer o cpf')) &&
+    !res3.textoResposta.includes(cpfEsperado || 'xxx_inexistente') &&
     !res3.textoResposta.toLowerCase().includes(primeiroNomeTitular.toLowerCase());
 
   if (passou3) {
@@ -193,7 +196,11 @@ async function executarTestes() {
   // TESTE 4: Titular citado na mensagem atual -> Prevalece sobre o histórico
   // -------------------------------------------------------------
   console.log('--- Teste 4: Titular citado na mensagem atual substitui o histórico ---');
-  const outroTitular = titulares.find((t) => t.id !== titularTeste.id) || titulares[1] || titularTeste;
+  const outroTitular =
+    titulares.find((t) => t.id !== titularTeste.id && t.campos?.cpf?.valor && t.campos.cpf.valor.trim() !== '') ||
+    titulares.find((t) => t.id !== titularTeste.id) ||
+    titulares[1] ||
+    titulares[0];
   const res4 = await processarMensagemChat({
     mensagemUsuario: `qual o cpf de ${outroTitular.nome}?`,
     historicoRecente: historico10Atras, // tinha titularTeste 10 mensagens atrás
@@ -203,9 +210,9 @@ async function executarTestes() {
 
   console.log(`Resposta: "${res4.textoResposta}"`);
   const outroCpf = outroTitular.campos?.cpf?.valor;
-  const passou4 = outroCpf
-    ? res4.textoResposta.includes(outroCpf)
-    : res4.textoResposta.toLowerCase().includes(outroTitular.nome.split(' ')[0].toLowerCase());
+  const passou4 =
+    (outroCpf ? res4.textoResposta.includes(outroCpf) : res4.textoResposta.toLowerCase().includes(outroTitular.nome.toLowerCase())) &&
+    !res4.textoResposta.includes(cpfEsperado || 'xxx_inexistente');
 
   if (passou4) {
     console.log('✅ APROVADO: Titular na mensagem atual substituiu perfeitamente o contexto.\n');
@@ -249,10 +256,14 @@ async function executarTestes() {
   });
 
   console.log(`Resposta: "${res5.textoResposta}"`);
+  const textoR5 = res5.textoResposta.toLowerCase();
   const passou5 =
-    res5.textoResposta.toLowerCase().includes('qual documento você gostaria que eu envie') ||
-    res5.textoResposta.toLowerCase().includes('qual documento você deseja') ||
-    res5.textoResposta.toLowerCase().includes('não encontrei');
+    (!res5.anexos || res5.anexos.length === 0) &&
+    (textoR5.includes('qual documento') ||
+     textoR5.includes('qual o documento') ||
+     textoR5.includes('qual arquivo') ||
+     textoR5.includes('não encontrei') ||
+     textoR5.includes('qual deles'));
 
   if (passou5) {
     console.log('✅ APROVADO: Documento além de 30 mensagens não é reenviado às cegas; VEGA pergunta qual documento deseja.\n');
@@ -260,57 +271,6 @@ async function executarTestes() {
   } else {
     console.error('❌ FALHOU: VEGA reenviou documento que estava fora da janela de 30 mensagens.\n');
     falhas++;
-  }
-
-  // -------------------------------------------------------------
-  // TESTE 6: MEDIÇÃO DE CONSUMO DE TOKENS DO CLASSIFICADOR (gpt-5.4-mini)
-  // -------------------------------------------------------------
-  console.log('\n============================================================');
-  console.log('📊 MEDIÇÃO DE CONSUMO DE TOKENS DO CLASSIFICADOR COM 12 MENSAGENS');
-  console.log('============================================================\n');
-
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    console.warn('⚠️ OPENAI_API_KEY não configurada para medição de tokens.');
-  } else {
-    const openai = new OpenAI({ apiKey });
-
-    // Mensagens realistas de histórico de chat
-    const historicoRealista: Mensagem[] = [
-      { id: '1', remetente: 'cliente', texto: 'Bom dia, tudo bem?' },
-      { id: '2', remetente: 'assistente', texto: 'Bom dia! Tudo bem e você? Como posso te ajudar hoje?' },
-      { id: '3', remetente: 'cliente', texto: 'Preciso consultar alguns documentos da empresa.' },
-      { id: '4', remetente: 'assistente', texto: 'Claro! Temos contratos, alvarás, certidões e dados dos titulares no Cofre. De qual você precisa?' },
-      { id: '5', remetente: 'cliente', texto: 'Você tem a certidão de casamento do Thomaz?' },
-      { id: '6', remetente: 'assistente', texto: 'Sim! Encontrei a Certidão de Casamento de Thomaz Brandini no Cofre. Deseja que eu envie o arquivo?' },
-      { id: '7', remetente: 'cliente', texto: 'Por favor, me envia' },
-      { id: '8', remetente: 'assistente', texto: 'Aqui está o documento solicitado: Certidão de Casamento.' },
-      { id: '9', remetente: 'cliente', texto: 'Obrigado! E qual o endereço do escritório da Delta Plan?' },
-      { id: '10', remetente: 'assistente', texto: 'O escritório da Delta Plan fica na Rua Exemplo, 123 - Sala 405.' },
-      { id: '11', remetente: 'cliente', texto: 'Perfeito, obrigado pelas informações.' },
-      { id: '12', remetente: 'assistente', texto: 'Disponha! Se precisar de mais alguma coisa, só chamar.' },
-    ];
-
-    console.log('Testando classificação com mensagem atual: "e o CPF dele?" com 12 mensagens no histórico...');
-    const classif12 = await classificarEReescreverMensagem('e o CPF dele?', historicoRealista, openai);
-
-    console.log(`\n--- RESULTADO DE CONSUMO (12 MENSAGENS NO HISTÓRICO) ---`);
-    console.log(`Prompt Tokens:     ${classif12.tokensPrompt}`);
-    console.log(`Completion Tokens: ${classif12.tokensCompletion}`);
-    console.log(`Total Tokens:      ${classif12.tokensTotal}`);
-    console.log(`Tempo de resposta: ${classif12.tempoMs} ms`);
-    console.log(`Intenção:          ${classif12.intencao}`);
-    console.log(`Pessoa resolvida:  ${classif12.pessoa}`);
-    console.log(`Campos:            ${classif12.campos?.join(', ')}`);
-
-    // Testando com 4 mensagens para comparação
-    console.log('\nTestando com 4 mensagens para comparação...');
-    const classif4 = await classificarEReescreverMensagem('e o CPF dele?', historicoRealista.slice(-4), openai);
-    console.log(`--- RESULTADO DE CONSUMO (4 MENSAGENS NO HISTÓRICO) ---`);
-    console.log(`Prompt Tokens:     ${classif4.tokensPrompt}`);
-    console.log(`Completion Tokens: ${classif4.tokensCompletion}`);
-    console.log(`Total Tokens:      ${classif4.tokensTotal}`);
-    console.log(`Diferença de tokens de prompt (+8 msgs): +${classif12.tokensPrompt - classif4.tokensPrompt} tokens`);
   }
 
   console.log('\n============================================================');
