@@ -803,7 +803,8 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
 
     if (!docArrastado) return;
 
-    // Se já pertence ao destino, ignora
+    // Se já pertence formalmente ao destino pelo ID, ignora
+    const pIdAtual = docArrastado.pessoaId || (docArrastado as any).pessoa_id;
     if (destinoId === 'sem_titular' && isDocumentoSemTitular(docArrastado)) {
       return;
     }
@@ -811,8 +812,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
       return;
     }
     if (destinoId !== 'empresa' && destinoId !== 'sem_titular') {
-      const titDestino = titulares.find((t) => t.id === destinoId);
-      if (titDestino && docPertenceAoTitular(docArrastado, titDestino)) {
+      if (pIdAtual && pIdAtual === destinoId) {
         return;
       }
     }
@@ -1103,6 +1103,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
               href={`/arquivos/${encodeURIComponent((doc.arquivo || '').trim())}`}
               target="_blank"
               rel="noopener noreferrer"
+              onMouseDown={(e) => e.stopPropagation()}
               className="p-1.5 rounded-lg bg-[#18202b] hover:bg-[#202937] text-slate-300 hover:text-emerald-400 border border-[#202937] transition-colors"
               title="Visualizar documento em nova aba"
             >
@@ -1110,15 +1111,25 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
             </a>
 
             <button
-              onClick={() => setDocParaEditar(doc)}
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setDocParaEditar(doc);
+              }}
               className="p-1.5 rounded-lg bg-[#18202b] hover:bg-emerald-500/20 text-slate-300 hover:text-emerald-400 border border-[#202937] hover:border-emerald-500/30 transition-colors cursor-pointer"
-              title="Editar documento (título, tipo, titular, validade)"
+              title="Mover documento para outro titular ou editar"
             >
               <Pencil className="w-3.5 h-3.5" />
             </button>
 
             <button
-              onClick={() => handleExcluirDoc(doc.id, doc.titulo)}
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleExcluirDoc(doc.id, doc.titulo);
+              }}
               className="p-1.5 rounded-lg bg-[#18202b] hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 border border-[#202937] hover:border-rose-500/30 transition-colors cursor-pointer"
               title="Excluir documento do cofre"
             >
@@ -1855,6 +1866,23 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                     >
                       <div
                         onClick={() => toggleTitularExpandido(tit.id)}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          e.dataTransfer.dropEffect = 'move';
+                          if (dropTargetId !== tit.id) setDropTargetId(tit.id);
+                        }}
+                        onDragEnter={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDropTargetId(tit.id);
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const id = e.dataTransfer.getData('text/plain') || arrastandoDocId;
+                          handleDropDocumento(tit.id, tit.nome, id);
+                        }}
                         className="p-3.5 sm:p-4 bg-[#121820] hover:bg-[#161e29] border-b border-[#202937]/70 flex items-center justify-between gap-3 cursor-pointer select-none transition-colors"
                       >
                         <div className="flex items-center gap-3 min-w-0">
@@ -1924,8 +1952,43 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                       {aberto && (
                         <div className="p-4 space-y-2.5 animate-fadeIn bg-[#0e131a]/40">
                           {docsDoTitular.length === 0 ? (
-                            <div className="p-5 text-center text-xs text-slate-500 border border-dashed border-[#202937] rounded-lg">
-                              Nenhum documento vinculado a este titular até o momento.
+                            <div
+                              onDragOver={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.dataTransfer.dropEffect = 'move';
+                                if (dropTargetId !== tit.id) setDropTargetId(tit.id);
+                              }}
+                              onDragEnter={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setDropTargetId(tit.id);
+                              }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                const id = e.dataTransfer.getData('text/plain') || arrastandoDocId;
+                                handleDropDocumento(tit.id, tit.nome, id);
+                              }}
+                              className={`p-6 text-center text-xs rounded-xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-1.5 ${
+                                isDropAlvo
+                                  ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200 ring-2 ring-emerald-500/40 shadow-lg animate-pulse'
+                                  : arrastandoDocId
+                                  ? 'border-emerald-500/60 bg-emerald-950/20 text-emerald-300'
+                                  : 'border-[#202937] text-slate-500'
+                              }`}
+                            >
+                              <MoveRight className={`w-5 h-5 ${isDropAlvo ? 'text-emerald-300 animate-bounce' : 'text-slate-500'}`} />
+                              <span className="font-semibold text-slate-200">
+                                {isDropAlvo
+                                  ? `Solte aqui para vincular a ${tit.nome}`
+                                  : arrastandoDocId
+                                  ? `Solte aqui para vincular a ${tit.nome}`
+                                  : 'Nenhum documento vinculado a este titular até o momento.'}
+                              </span>
+                              <span className="text-[11px] text-slate-400">
+                                {arrastandoDocId ? 'Solte o arquivo para confirmar' : 'Arraste documentos aqui para organizar'}
+                              </span>
                             </div>
                           ) : (
                             docsDoTitular.map((doc) => renderItemDocumentoCompacto(doc))
