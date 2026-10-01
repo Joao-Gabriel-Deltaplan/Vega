@@ -604,11 +604,13 @@ async function processarLoteUnificado(
     const historicoRecente = conversa ? conversa.mensagens : [];
 
     // 3. Executa o orquestrador da VEGA com o texto unificado
+    const origemMensagem: 'audio' | 'texto' = itensAudio.length > 0 ? 'audio' : 'texto';
     const resultadoChat = await processarMensagemChat({
       mensagemUsuario: textoConsolidado,
       historicoRecente,
       contato,
       documentosDisponiveis: docsDisponiveis,
+      origemMensagem,
     });
 
     const textoResposta = sanitizarRespostaTextoFinal(resultadoChat.textoResposta);

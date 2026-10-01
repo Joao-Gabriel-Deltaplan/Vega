@@ -2100,6 +2100,7 @@ app.post('/api/mensagens', async (req, res) => {
       contato: conversa.contato,
       documentosDisponiveis: docsDisponiveis,
       documentoIdDireto: documentoId,
+      origemMensagem: 'texto',
     });
 
     const textoFinal = resultadoChat.textoResposta;

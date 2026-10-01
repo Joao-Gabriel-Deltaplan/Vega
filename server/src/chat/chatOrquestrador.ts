@@ -3265,7 +3265,8 @@ export function autoverificarRespostaDadosTitular(params: {
 export async function toolBuscarDocumentos(
   consulta: string,
   titularNome?: string,
-  todosDocs: DocumentoRegistro[] = []
+  todosDocs: DocumentoRegistro[] = [],
+  origemMensagem?: 'audio' | 'texto'
 ): Promise<{
   documentos: Array<{
     doc_id: string;
@@ -3312,7 +3313,7 @@ export async function toolBuscarDocumentos(
   }
 
   if (nomePessoaPesquisada) {
-    const checkCorr = verificarCorrespondenciaNomePessoa(nomePessoaPesquisada, catalogoPessoas);
+    const checkCorr = verificarCorrespondenciaNomePessoa(nomePessoaPesquisada, catalogoPessoas, origemMensagem);
 
     // REGRA MANDATÓRIA: Correspondência APROXIMADA
     // NUNCA revelar nomes do Cofre e NUNCA entregar dados! Apenas pedir confirmação do nome entendido sugerindo digitar.
@@ -3328,12 +3329,16 @@ export async function toolBuscarDocumentos(
 
     // Nenhuma correspondência (Inexistente)
     if (checkCorr.tipo === 'inexistente') {
+      const orientacao = origemMensagem === 'audio'
+        ? `ATENÇÃO DE TRANSCRIÇÃO DE ÁUDIO: A mensagem veio de ÁUDIO e o nome '${checkCorr.nomeEntendido}' não foi encontrado no Cofre. É TERMINANTEMENTE PROIBIDO revelar qualquer nome existente no Cofre e é TERMINANTEMENTE PROIBIDO entregar dados ou arquivos. Responda ESTRITAMENTE: "${checkCorr.mensagemRespostaObrigatoria}"`
+        : `Não foi encontrado nenhum documento ou informação sobre '${checkCorr.nomeEntendido}' no Cofre. Responda ao usuário que não encontrou informações sobre '${checkCorr.nomeEntendido}' no Cofre.`;
+
       return {
         documentos: [],
         tipo_correspondencia: 'inexistente',
         nome_entendido: checkCorr.nomeEntendido,
-        orientacao_resposta: `Não foi encontrado nenhum documento ou informação sobre '${checkCorr.nomeEntendido}' no Cofre. Responda ao usuário que não encontrou informações sobre '${checkCorr.nomeEntendido}' no Cofre.`,
-        mensagem: `Não encontrei informações sobre '${checkCorr.nomeEntendido}' no Cofre.`,
+        orientacao_resposta: orientacao,
+        mensagem: checkCorr.mensagemRespostaObrigatoria,
       };
     }
 
@@ -3779,7 +3784,8 @@ export async function toolBuscarDocumentos(
  */
 async function toolConsultarFichaTitular(
   nome: string,
-  todosDocs: DocumentoRegistro[] = []
+  todosDocs: DocumentoRegistro[] = [],
+  origemMensagem?: 'audio' | 'texto'
 ): Promise<{
   encontrado: boolean;
   titular?: string;
@@ -3808,7 +3814,7 @@ async function toolConsultarFichaTitular(
 }> {
   const todosT = await obterTodosTitulares();
   const catalogoPessoas = extrairCatalogoPessoas(todosT, todosDocs);
-  const checkCorr = verificarCorrespondenciaNomePessoa(nome, catalogoPessoas);
+  const checkCorr = verificarCorrespondenciaNomePessoa(nome, catalogoPessoas, origemMensagem);
 
   if (checkCorr.tipo === 'aproximada') {
     return {
@@ -3819,10 +3825,14 @@ async function toolConsultarFichaTitular(
   }
 
   if (checkCorr.tipo === 'inexistente') {
+    const instrucao = origemMensagem === 'audio'
+      ? `ATENÇÃO DE TRANSCRIÇÃO DE ÁUDIO: A mensagem veio de ÁUDIO e o nome '${checkCorr.nomeEntendido}' não foi encontrado no Cofre. É TERMINANTEMENTE PROIBIDO revelar qualquer nome existente no Cofre e é TERMINANTEMENTE PROIBIDO entregar dados cadastrais. Responda ESTRITAMENTE: "${checkCorr.mensagemRespostaObrigatoria}"`
+      : `Não foi encontrado nenhum titular cadastrado ou informação sobre '${checkCorr.nomeEntendido}' no Cofre. Responda ao usuário que não encontrou informações sobre '${checkCorr.nomeEntendido}' no Cofre.`;
+
     return {
       encontrado: false,
-      instrucao_resposta: `Não foi encontrado nenhum titular cadastrado ou informação sobre '${checkCorr.nomeEntendido}' no Cofre. Responda ao usuário que não encontrou informações sobre '${checkCorr.nomeEntendido}' no Cofre.`,
-      mensagem: `Não encontrei informações sobre '${checkCorr.nomeEntendido}' no Cofre.`,
+      instrucao_resposta: instrucao,
+      mensagem: checkCorr.mensagemRespostaObrigatoria,
     };
   }
 
@@ -4543,6 +4553,7 @@ export async function executarOrquestradorIaCentral(dados: {
   contato: Contato;
   documentosDisponiveis?: DocumentoRegistro[];
   documentoIdDireto?: string;
+  origemMensagem?: 'audio' | 'texto';
 }): Promise<ResultadoChatOrquestrador> {
   const inicioTotal = Date.now();
   const mensagemUsuario = dados.mensagemUsuario || (dados as any).mensagem || '';
@@ -4793,7 +4804,7 @@ ${statusSaudacao}
 
         if (nomeTool === 'buscar_documentos') {
           const titularEfetivo = args.titular || ultimoTitularFoco;
-          resultadoTool = await toolBuscarDocumentos(args.consulta, titularEfetivo, todosDocs);
+          resultadoTool = await toolBuscarDocumentos(args.consulta, titularEfetivo, todosDocs, dados.origemMensagem);
           if (resultadoTool.opcoes_lista && resultadoTool.opcoes_lista.length > 0) {
             opcoesGeradasNestaResposta = resultadoTool.opcoes_lista;
           }
@@ -4827,7 +4838,7 @@ ${statusSaudacao}
           if (args.nome) {
             ultimoTitularFoco = args.nome;
           }
-          resultadoTool = await toolConsultarFichaTitular(args.nome, todosDocs);
+          resultadoTool = await toolConsultarFichaTitular(args.nome, todosDocs, dados.origemMensagem);
           if (resultadoTool.mensagem) {
             dadosRetornadosTools.push(resultadoTool.mensagem);
           }
@@ -5079,6 +5090,7 @@ export async function processarMensagemChat(dados: {
   contato: Contato;
   documentosDisponiveis?: DocumentoRegistro[];
   documentoIdDireto?: string;
+  origemMensagem?: 'audio' | 'texto';
 }): Promise<ResultadoChatOrquestrador> {
   // 1. VERIFICAÇÃO DE ESTOURO DE LIMITE MENSAL DE CONSUMO (100%)
   try {
@@ -5153,7 +5165,11 @@ export async function processarMensagemChat(dados: {
   }
 
   // GUARDRAIL (REGRA DE PRIVACIDADE E CORRESPONDÊNCIA DE NOMES):
-  // Se o usuário citou um nome com correspondência aproximada, NUNCA revelar nomes do Cofre e NUNCA entregar dados!
+  // Regra Oficial da VEGA:
+  // - ÁUDIO: se o nome não tiver correspondência exata (seja aproximada ou nenhuma),
+  //   a resposta deve sempre pedir confirmação, sem revelar nomes existentes:
+  //   "Não encontrei '[Nome]'. Pode confirmar o nome? Se possível, digite para eu não entender errado."
+  // - TEXTO: mantém como está (aproximada pede confirmação; nenhuma responde só "não encontrei").
   try {
     const todosTits = await obterTodosTitulares();
     const todosDocs = dados.documentosDisponiveis || (await obterTodosDocumentos());
@@ -5162,8 +5178,11 @@ export async function processarMensagemChat(dados: {
     const nomeCitado = extrairNomePessoaDaMensagem(msgUsuario, catalogo);
 
     if (nomeCitado) {
-      const checkCorr = verificarCorrespondenciaNomePessoa(nomeCitado, catalogo);
-      if (checkCorr.tipo === 'aproximada') {
+      const checkCorr = verificarCorrespondenciaNomePessoa(nomeCitado, catalogo, dados.origemMensagem);
+      const ehAudioSemExata = dados.origemMensagem === 'audio' && checkCorr.tipo !== 'exata';
+      const ehAproximada = checkCorr.tipo === 'aproximada';
+
+      if (ehAproximada || ehAudioSemExata) {
         const textoRespLower = resultado.textoResposta.toLowerCase();
         const revelouNomeOculto = checkCorr.candidatosAproximados?.some((c) => {
           return (
@@ -5180,7 +5199,7 @@ export async function processarMensagemChat(dados: {
             checkCorr.mensagemRespostaObrigatoria ||
             `Não encontrei '${checkCorr.nomeEntendido}'. Pode confirmar o nome? Se possível, digite para eu não entender errado.`;
           console.warn(
-            `[VEGA Guardrail] Interceptada tentativa de entrega/revelação para nome com correspondência aproximada: "${checkCorr.nomeEntendido}"`
+            `[VEGA Guardrail] Interceptada resposta para nome sem correspondência exata (${checkCorr.tipo}, origem: ${dados.origemMensagem || 'texto'}): "${checkCorr.nomeEntendido}"`
           );
           resultado.textoResposta = textoCorreto;
           resultado.anexos = undefined;
@@ -5191,11 +5210,13 @@ export async function processarMensagemChat(dados: {
             resultado.rastro.anexosDetalhes = [];
             resultado.rastro.etapas.push({
               ordem: resultado.rastro.etapas.length + 1,
-              nome: 'Guardrail Ativado: verificarCorrespondenciaNomePessoa (Regra de Privacidade)',
-              descricao: `Correspondência aproximada para "${checkCorr.nomeEntendido}". Bloqueada entrega ou revelação de nomes.`,
+              nome: 'Guardrail Ativado: verificarCorrespondenciaNomePessoa (Regra de Privacidade/Áudio)',
+              descricao: `Nome "${checkCorr.nomeEntendido}" sem correspondência exata (tipo: ${checkCorr.tipo}, origem: ${dados.origemMensagem || 'texto'}). Bloqueada entrega ou revelação de nomes.`,
               tempoMs: 1,
               detalhes: {
                 nomeEntendido: checkCorr.nomeEntendido,
+                origemMensagem: dados.origemMensagem || 'texto',
+                tipoCorrespondencia: checkCorr.tipo,
                 candidatosOcultados: checkCorr.candidatosAproximados?.map((c) => c.nomeOficial),
                 respostaOriginalIa,
                 respostaFinalEnviada: textoCorreto,
@@ -5204,6 +5225,23 @@ export async function processarMensagemChat(dados: {
             try {
               salvarRastro(resultado.rastro).catch(() => {});
             } catch {}
+          }
+        }
+      } else if (checkCorr.tipo === 'inexistente') {
+        // Para mensagens de TEXTO com pessoa inexistente: bloquear qualquer entrega indevida de documento
+        const entregouDocumento = Boolean(resultado.anexos && resultado.anexos.length > 0);
+        if (entregouDocumento) {
+          const respostaOriginalIa = resultado.textoResposta;
+          const textoCorreto =
+            checkCorr.mensagemRespostaObrigatoria ||
+            `Não encontrei informações sobre '${checkCorr.nomeEntendido}' no Cofre.`;
+          resultado.textoResposta = textoCorreto;
+          resultado.anexos = undefined;
+          resultado.opcoes = undefined;
+          if (resultado.rastro) {
+            resultado.rastro.respostaFinal = textoCorreto;
+            resultado.rastro.enviouAnexo = false;
+            resultado.rastro.anexosDetalhes = [];
           }
         }
       }

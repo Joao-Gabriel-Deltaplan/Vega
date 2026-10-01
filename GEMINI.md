@@ -187,11 +187,15 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
 
 ---
 
-## 23. Correspondência de Nomes de Pessoas (Exata vs. Aproximada vs. Inexistente)
+## 23. Correspondência de Nomes de Pessoas (Exata vs. Aproximada vs. Inexistente / Áudio vs. Texto)
 - **Correspondência Exata:** Se o nome pedido corresponder exatamente a uma pessoa (titular cadastrado, apelido oficial cadastrado na tabela `titulares`, ou pessoa física identificada em documentos do Cofre, ignorando acentos e maiúsculas), responder direto. Apelidos cadastrados são variações confirmadas pelo usuário e SEMPRE contam como correspondência exata com prioridade absoluta.
-- **Correspondência Aproximada (Erro de Transcrição ou Digitação):** Aplica-se estritamente quando o nome informado NÃO corresponder a nenhum nome nem apelido cadastrado, mas houver semelhança fonética ou ortográfica (ex.: *"Danil Ceia"*, *"Tomás Lustre"*). Nesses casos, é TERMINANTEMENTE PROIBIDO revelar qualquer nome existente no Cofre e é TERMINANTEMENTE PROIBIDO entregar dados ou arquivos. Apenas pedir confirmação do nome entendido, sugerindo digitar: `"Não encontrei '[Nome Entendido]'. Pode confirmar o nome? Se possível, digite para eu não entender errado."`.
+- **Mensagens originadas de ÁUDIO transcrito:**
+  - Se o nome **não tiver correspondência exata** (seja aproximação fonética/ortográfica OU nenhuma correspondência no Cofre), a resposta deve **sempre pedir confirmação, sem revelar nomes existentes**: `"Não encontrei '[Nome Entendido]'. Pode confirmar o nome? Se possível, digite para eu não entender errado."`.
+  - É TERMINANTEMENTE PROIBIDO revelar qualquer nome existente no Cofre e é TERMINANTEMENTE PROIBIDO entregar dados ou arquivos quando o nome veio de áudio e não tem correspondência exata.
+- **Mensagens originadas de TEXTO digitado:**
+  - **Correspondência Aproximada (Erro de digitação):** Aplica-se quando o nome informado NÃO corresponder a nenhum nome nem apelido cadastrado, mas houver semelhança fonética ou ortográfica (ex.: *"Danil Ceia"*, *"Tomás Lustre"*). Pede confirmação do nome entendido sugerindo digitar: `"Não encontrei '[Nome Entendido]'. Pode confirmar o nome? Se possível, digite para eu não entender errado."`.
+  - **Nenhuma Correspondência (Inexistente):** Responde apenas que não encontrou informações sobre a pessoa no Cofre, repetindo o nome como foi entendido (ex.: `"Não encontrei informações sobre '[Nome Entendido]' no Cofre."`).
 - **Múltiplas Pessoas Aproximadas:** Quando houver mais de uma pessoa aproximada, NUNCA listar opções nem revelar nomes existentes; manter estritamente o pedido de confirmação do nome entendido, sugerindo digitar.
-- **Nenhuma Correspondência (Inexistente):** Se não houver nenhuma correspondência no Cofre, responder que não encontrou informações sobre a pessoa no Cofre, repetindo o nome como foi entendido (ex.: `"Não encontrei informações sobre '[Nome Entendido]' no Cofre."`).
 
 ---
 

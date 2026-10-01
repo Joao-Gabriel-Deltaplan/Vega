@@ -156,13 +156,17 @@ export function formatarNomeExibicao(nome: string): string {
  */
 export function verificarCorrespondenciaNomePessoa(
   nomeInformado: string,
-  pessoasConhecidas: PessoaConhecida[]
+  pessoasConhecidas: PessoaConhecida[],
+  origemMensagem?: 'audio' | 'texto'
 ): ResultadoCorrespondenciaNome {
   if (!nomeInformado || !nomeInformado.trim()) {
+    const msgVazio = origemMensagem === 'audio'
+      ? 'Não encontrei esse nome. Pode confirmar o nome? Se possível, digite para eu não entender errado.'
+      : 'Não encontrei esse nome no Cofre.';
     return {
       tipo: 'inexistente',
       nomeEntendido: '',
-      mensagemRespostaObrigatoria: 'Não encontrei esse nome no Cofre.',
+      mensagemRespostaObrigatoria: msgVazio,
     };
   }
 
@@ -280,10 +284,18 @@ export function verificarCorrespondenciaNomePessoa(
   // -------------------------------------------------------------
   // 3. NENHUMA CORRESPONDÊNCIA (Inexistente)
   // -------------------------------------------------------------
+  // Regra Oficial da VEGA:
+  // - ÁUDIO: se o nome não tiver correspondência exata (seja aproximada ou nenhuma),
+  //   a resposta deve sempre pedir confirmação, sem revelar nomes existentes.
+  // - TEXTO: mantém como está (aproximada pede confirmação; nenhuma responde só "não encontrei").
+  const msgInexistente = origemMensagem === 'audio'
+    ? `Não encontrei '${nomeExibicao}'. Pode confirmar o nome? Se possível, digite para eu não entender errado.`
+    : `Não encontrei informações sobre '${nomeExibicao}' no Cofre.`;
+
   return {
     tipo: 'inexistente',
     nomeEntendido: nomeExibicao,
-    mensagemRespostaObrigatoria: `Não encontrei informações sobre '${nomeExibicao}' no Cofre.`,
+    mensagemRespostaObrigatoria: msgInexistente,
   };
 }
 
