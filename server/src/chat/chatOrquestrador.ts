@@ -1890,7 +1890,7 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'listar_documentos_cofre',
-      description: 'Devolve um panorama geral e resumido do acervo do Cofre Delta: total de documentos cadastrados, agrupados por titular (incluindo "Documentos da Empresa (Delta Plan)"), com a contagem e os tipos principais de cada grupo. Use SEMPRE que o usuário fizer perguntas gerais ou amplas sobre o catálogo ou acervo (ex.: "liste todos os documentos", "o que tem no cofre?", "quais documentos você tem acesso?", "o que você tem arquivado?", "quais documentos existem?"). NUNCA use o nome do remetente como titular para perguntas gerais. Opcionalmente aceita filtro por tipo de documento.',
+      description: 'Devolve um panorama geral e resumido do acervo do Cofre Delta: total de documentos cadastrados, agrupados por titular (incluindo "Documentos da Empresa (Delta Plan)"), com a contagem e os tipos principais de cada grupo. Use SEMPRE que o usuário fizer perguntas gerais ou amplas sobre o catálogo ou acervo (ex.: "liste todos os documentos", "o que tem no cofre?", "quais documentos você tem acesso?", "o que você tem arquivado?", "quais documentos existem?"). NUNCA use o nome do remetente como titular para perguntas gerais. NUNCA use para perguntas sobre sites, portais, links web, páginas da internet ou itens da Base de Conhecimento (para links e sites, use buscar_conhecimento). Opcionalmente aceita filtro por tipo de documento.',
       parameters: {
         type: 'object',
         properties: {
@@ -1961,17 +1961,17 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'buscar_conhecimento',
-      description: 'Consulta a Base de Conhecimento interna da Delta Plan (chaves PIX, links de sistemas, regras de negócio, telefones e procedimentos).',
+      description: 'Consulta a Base de Conhecimento interna da Delta Plan (chaves PIX, links de sistemas e sites web como o Portfólio das Máquinas, regras de negócio, telefones e procedimentos). Acione SEMPRE que o usuário perguntar sobre sites, portais, links web ou sistemas corporativos para verificar se o link correspondente está salvo na base.',
       parameters: {
         type: 'object',
         properties: {
           termo: {
             type: 'string',
-            description: 'Termo de busca na base de conhecimento (ex: "pix do Thomaz", "link do ERP")',
+            description: 'Termo de busca na base de conhecimento (ex: "pix do Thomaz", "link do ERP", "portfólio das máquinas")',
           },
           categoria: {
             type: 'string',
-            description: 'Categoria opcional (Financeiro, RH, TI, Geral)',
+            description: 'Categoria opcional (Financeiro, RH, TI, Geral, Sistemas/ Site)',
           },
         },
         required: ['termo'],
@@ -2153,10 +2153,17 @@ export function verificarSeEhPrimeiroContatoDoDia(historico: Mensagem[]): boolea
  */
 export function carregarPromptAssistente(): string {
   try {
-    const caminho = path.resolve(process.cwd(), 'prompts/assistente.md');
-    if (fs.existsSync(caminho)) {
-      const c = fs.readFileSync(caminho, 'utf-8').trim();
-      if (c) return c;
+    const caminhosPossiveis = [
+      path.resolve(process.cwd(), 'prompts/assistente.md'),
+      path.resolve(process.cwd(), '../prompts/assistente.md'),
+      path.resolve(__dirname, '../../../prompts/assistente.md'),
+      path.resolve(__dirname, '../../prompts/assistente.md'),
+    ];
+    for (const c of caminhosPossiveis) {
+      if (fs.existsSync(c)) {
+        const conteudo = fs.readFileSync(c, 'utf-8').trim();
+        if (conteudo) return conteudo;
+      }
     }
   } catch {}
   return obterConfiguracoesVegaSync().promptPersona || 'Você é a assistente corporativa VEGA da Delta Plan.';
@@ -4813,6 +4820,200 @@ export function detectarAcaoSemFerramenta(mensagemUsuario: string): string | nul
 }
 
 /**
+ * Verifica se um item de conhecimento é do tipo link ou contém uma URL web.
+ */
+export function ehItemDeLink(k: ItemConhecimento): boolean {
+  if (k.tipo === 'link') return true;
+  if (/https?:\/\//i.test(k.conteudo)) return true;
+  const d = k.dadosEstruturados as any;
+  if (/https?:\/\//i.test(d?.link || '') || /https?:\/\//i.test(d?.url || '')) return true;
+  if (k.categoria && /site|sistema|portal|link/i.test(k.categoria)) return true;
+  return false;
+}
+
+/**
+ * Verifica se o item de link corresponde ao que foi citado na mensagem do usuário.
+ */
+export function itemCorrespondeAoPedidoSite(item: ItemConhecimento, mensagemUsuario: string): boolean {
+  const msgNorm = normalizarParaComparacao(mensagemUsuario);
+  const titNorm = normalizarParaComparacao(item.titulo);
+
+  // 1. Título completo contido na mensagem (ex: "portfolio das maquinas" ou "portfolio de maquinas")
+  if (msgNorm.includes(titNorm)) return true;
+
+  // 2. Extrai termos significativos do título (ex: "portfolio", "maquinas")
+  const stopWords = ['de', 'do', 'da', 'dos', 'das', 'e', 'em', 'um', 'uma', 'o', 'a', 'os', 'as', 'para', 'com', 'que'];
+  const palavrasTit = titNorm.split(/\s+/).filter((w) => w.length >= 3 && !stopWords.includes(w));
+
+  if (palavrasTit.length > 0 && palavrasTit.every((p) => msgNorm.includes(p))) {
+    return true;
+  }
+
+  // 3. Checa apelidos se houver
+  const apelidos: string[] = (item.dadosEstruturados as any)?.apelidos || [];
+  for (const ap of apelidos) {
+    const apNorm = normalizarParaComparacao(ap);
+    if (msgNorm.includes(apNorm)) return true;
+  }
+
+  // 4. Checa domínio da URL se citado
+  const d = item.dadosEstruturados as any;
+  const url = d?.link || d?.url || item.conteudo;
+  if (url && typeof url === 'string') {
+    const dominio = url.replace(/^https?:\/\/(?:www\.)?/i, '').split('/')[0].toLowerCase();
+    if (dominio && msgNorm.includes(dominio)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Detecta se a mensagem é um pedido para ler, resumir, ver o que tem de importante, extrair dados ou analisar um site/página web.
+ */
+export function ehPedidoAnaliseOuLeituraSite(mensagemUsuario: string): boolean {
+  const msgNorm = normalizarParaComparacao(mensagemUsuario);
+
+  // Não deve ser pedido explícito apenas de obter/passar o link (ex: "qual o link", "me passa o link")
+  const ehPedidoDiretoLink =
+    /\b(qual\s+(?:é\s+|e\s+)?(?:o\s+)?link|me\s+(?:passa|manda|envia)\s+(?:o\s+)?link|onde\s+(?:acho|fica|está|esta)\s+o\s+link|quero\s+o\s+link)\b/i.test(msgNorm);
+  if (ehPedidoDiretoLink) return false;
+
+  // Não deve ser pedido de cadastro/salvamento de link
+  const ehCadastro =
+    /\b(salva|salvar|cadastra|cadastrar|anota|anotar|guarda|guardar|adiciona|adicionar)\b/i.test(msgNorm);
+  if (ehCadastro) return false;
+
+  // Deve mencionar explicitamente site, página, portal, web ou URL
+  const mencionaSite =
+    /\b(site|portal|pagina|página|web|website)\b/i.test(msgNorm) ||
+    /https?:\/\//i.test(mensagemUsuario);
+
+  if (!mencionaSite) return false;
+
+  // Expressões claras de pedido para ler, resumir, ver conteúdo, ver o que tem de importante, etc.
+  const acaoLeitura =
+    /\b(o que tem de importante|o que tem nesse site|o que tem no site|o que tem na pagina|o que tem na página|o que diz no site|o que diz na pagina|o que diz na página|o que consta no site|o que consta na pagina|o que há no site|o que ha no site|leia|ler|resuma|resumo|resumir|analise|analisa|analisar|abrir o site|abrir o link|leitura do site|conteudo do site|conteúdo do site|conteudo dessa pagina|conteúdo dessa página|conteudo desta pagina|conteúdo desta página)\b/i.test(
+      msgNorm
+    ) ||
+    /já que você tem acesso ao .*o que tem de importante nesse site/i.test(msgNorm) ||
+    /ja que voce tem acesso ao .*o que tem de importante nesse site/i.test(msgNorm) ||
+    /o que tem de importante nesse site/i.test(msgNorm) ||
+    /o que tem de importante no site/i.test(msgNorm) ||
+    /me resuma o conteúdo/i.test(msgNorm) ||
+    /me resuma o conteudo/i.test(msgNorm) ||
+    /me resuma a página/i.test(msgNorm) ||
+    /me resuma a pagina/i.test(msgNorm) ||
+    /resuma esse site/i.test(msgNorm) ||
+    /resuma o site/i.test(msgNorm);
+
+  return acaoLeitura;
+}
+
+/**
+ * Trata o aceite ou recusa do usuário após a VEGA ofertar o envio de um link salvo.
+ */
+export async function processarOfertaLinkSite(
+  historicoRecente: Mensagem[],
+  mensagemUsuarioAtual: string
+): Promise<ResultadoChatOrquestrador | null> {
+  if (!historicoRecente || historicoRecente.length === 0) return null;
+
+  const ultimaMsgAssistente = [...historicoRecente].reverse().find((m) => m.remetente === 'assistente');
+  const txtAssistente = (ultimaMsgAssistente?.texto || '').trim();
+
+  const matchOferta = txtAssistente.match(
+    /Tenho o link d[oe]\s+(.+?)\s+salvo,\s*mas não consigo abrir sites para ler o conteúdo\.\s*Quer o link\?/i
+  );
+
+  if (!matchOferta) return null;
+
+  const nomeItemOferta = matchOferta[1].trim();
+  const msgNorm = normalizarParaComparacao(mensagemUsuarioAtual);
+
+  const ehAfirmativo =
+    isConfirmacaoSimples(mensagemUsuarioAtual) ||
+    /^(sim|s|quero|manda|pode mandar|mande|envie|envia|manda aí|manda ai|por favor|claro|com certeza|ok|manda esse)\b/i.test(msgNorm);
+
+  const ehNegativo =
+    /^(n[aã]o|n|n[aã]o precisa|deixa|deixa pra l[aá]|esquece|n[aã]o quero)\b/i.test(msgNorm);
+
+  if (ehAfirmativo) {
+    const todosK = await obterTodosConhecimentos();
+    const item =
+      todosK.find((k) => normalizarParaComparacao(k.titulo) === normalizarParaComparacao(nomeItemOferta)) ||
+      todosK.find((k) => itemCorrespondeAoPedidoSite(k, nomeItemOferta)) ||
+      todosK.find((k) => k.tipo === 'link');
+
+    const d = item?.dadosEstruturados as any;
+    const url =
+      d?.link ||
+      d?.url ||
+      (item?.conteudo.match(/https?:\/\/[^\s]+/i)?.[0]) ||
+      item?.conteudo ||
+      '';
+
+    const tituloExibicao = item?.titulo || nomeItemOferta;
+    return {
+      textoResposta: `Aqui está o link do ${tituloExibicao}: ${url}`,
+      origem: 'motor',
+      intencaoDetectada: 'pergunta_conteudo',
+      perguntaReescrita: `Envio do link do ${tituloExibicao}`,
+      dadosEstruturados: item ? extrairDadosEstruturadosDeItemConhecimento(item) : undefined,
+    };
+  }
+
+  if (ehNegativo) {
+    return {
+      textoResposta: 'Tudo bem! Se precisar de mais alguma coisa, estou à disposição.',
+      origem: 'motor',
+      intencaoDetectada: 'saudacao_ou_vago',
+      perguntaReescrita: 'Recusa do envio do link',
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Trata pedidos de ler, resumir ou analisar sites / páginas web.
+ * Se o link estiver cadastrado na Base de Conhecimento:
+ *   "Tenho o link do [nome] salvo, mas não consigo abrir sites para ler o conteúdo. Quer o link?"
+ * Se não estiver cadastrado:
+ *   "Não consigo abrir sites para ler o conteúdo, e não tenho esse link salvo na Base de Conhecimento."
+ */
+export async function processarPedidoSiteWeb(
+  mensagemUsuario: string
+): Promise<ResultadoChatOrquestrador | null> {
+  if (!ehPedidoAnaliseOuLeituraSite(mensagemUsuario)) {
+    return null;
+  }
+
+  const todosK = await obterTodosConhecimentos();
+  const itensLink = todosK.filter(ehItemDeLink);
+
+  const itemEncontrado = itensLink.find((item) => itemCorrespondeAoPedidoSite(item, mensagemUsuario));
+
+  if (itemEncontrado) {
+    const texto = `Tenho o link do ${itemEncontrado.titulo} salvo, mas não consigo abrir sites para ler o conteúdo. Quer o link?`;
+    return {
+      textoResposta: texto,
+      origem: 'motor',
+      intencaoDetectada: 'pergunta_conteudo',
+      perguntaReescrita: `Consulta sobre link de site: ${itemEncontrado.titulo}`,
+      dadosEstruturados: extrairDadosEstruturadosDeItemConhecimento(itemEncontrado),
+    };
+  }
+
+  // Não cadastrado
+  return {
+    textoResposta: 'Não consigo abrir sites para ler o conteúdo, e não tenho esse link salvo na Base de Conhecimento.',
+    origem: 'motor',
+    intencaoDetectada: 'pergunta_conteudo',
+    perguntaReescrita: `Pedido de leitura de site não cadastrado: ${mensagemUsuario}`,
+  };
+}
+
+/**
  * RESOLUÇÃO DE CONFIRMAÇÃO DE SALVAMENTO / ATUALIZAÇÃO / EXCLUSÃO NA BASE DE CONHECIMENTO
  * (Garante estritamente que nada seja gravado sem a confirmação explícita do usuário numa mensagem seguinte)
  */
@@ -5283,6 +5484,18 @@ export async function executarOrquestradorIaCentral(dados: {
         perguntaReescrita: `Exclusão cancelada: ${docTitulo}`,
       };
     }
+  }
+
+  // 3.0. RESOLUÇÃO DE RESPOSTA A OFERTA DE LINK DE SITE ("Quer o link?")
+  const resOfertaLink = await processarOfertaLinkSite(historicoPassado, mensagemUsuario);
+  if (resOfertaLink) {
+    return resOfertaLink;
+  }
+
+  // 3.0.1. PEDIDOS DE LER, RESUMIR OU ANALISAR SITES / PÁGINAS WEB
+  const resPedidoSite = await processarPedidoSiteWeb(mensagemUsuario);
+  if (resPedidoSite) {
+    return resPedidoSite;
   }
 
   // 3.1. VERIFICAÇÃO DE AÇÃO SEM FERRAMENTA (Regra: Não prometer o que não pode fazer)
