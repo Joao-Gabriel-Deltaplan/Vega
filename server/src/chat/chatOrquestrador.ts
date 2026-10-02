@@ -63,7 +63,6 @@ import { extrairPrimeiroNome, formatarFraseAcompanhamento, nomesSaoEquivalentesC
 import {
   extrairCatalogoPessoas,
   verificarCorrespondenciaNomePessoa,
-  extrairNomePessoaDaMensagem,
 } from '../utils/correspondenciaPessoaService.js';
 import { criarAnexoParaDocumento, gerarPdfDeMarkdown } from '../pdfService.js';
 import { mascararDadosSensiveis, mascararDocumento, truncarTrecho } from '../utils/segurancaUtils.js';
@@ -1884,11 +1883,20 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
         properties: {
           consulta: {
             type: 'string',
-            description: 'Termo de busca, assunto, tipo ou trecho procurado (ex: "Declaração de IR", "contrato social", "certidão de casamento", "comprovante de endereço", "endereço do Carlos")',
+            description: 'Termo de busca, assunto, tipo ou trecho procurado (ex: "Declaração de IR", "contrato social", "documento da Frontier", "comprovante de endereço", "endereço do Carlos")',
           },
           titular: {
             type: 'string',
-            description: 'Nome do titular para restringir a busca aos documentos dele (opcional)',
+            description: 'Nome da pessoa física titular para restringir a busca aos documentos dela (opcional)',
+          },
+          tipo_referencia: {
+            type: 'string',
+            enum: ['pessoa', 'veiculo', 'imovel', 'empresa', 'obra', 'outro'],
+            description: 'Classificação da referência pela IA: "pessoa" (titular pessoa física), "veiculo" (carro, caminhonete, caminhão, moto), "imovel" (casa, fazenda, terreno, endereço), "empresa", "obra" ou "outro".',
+          },
+          identificador_referencia: {
+            type: 'string',
+            description: 'Identificador do bem ou entidade (ex.: modelo do veículo como "Nissan Frontier", "Strada", "Volvo FH"; endereço/nome do imóvel como "Fazenda Santa Rita", "Rua X"; nome da empresa como "Delta Plan").',
           },
         },
         required: ['consulta'],
@@ -1988,7 +1996,16 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
         properties: {
           doc_id: {
             type: 'string',
-            description: 'ID do documento no Cofre (UUID) OU nome/tipo do documento (ex: "Certidão de Casamento", "CNH") caso ainda não tenha o ID.',
+            description: 'ID do documento no Cofre (UUID) OU nome/tipo do documento (ex: "Certidão de Casamento", "CNH", "Documento da Frontier") caso ainda não tenha o ID.',
+          },
+          tipo_referencia: {
+            type: 'string',
+            enum: ['pessoa', 'veiculo', 'imovel', 'empresa', 'obra', 'outro'],
+            description: 'Classificação da referência pela IA: "pessoa", "veiculo", "imovel", "empresa", "obra" ou "outro".',
+          },
+          identificador_referencia: {
+            type: 'string',
+            description: 'Identificador do bem, pessoa ou entidade vinculada (ex: "Nissan Frontier", "Strada", "Fazenda Santa Rita").',
           },
         },
         required: ['doc_id'],
@@ -2199,21 +2216,30 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'registrar_documento_faltante',
-      description: 'Registra um documento na lista de documentos faltantes/pendentes da VEGA. Use para pedidos explícitos do usuário (ex: "coloque ele em documentos faltantes", "anota que está faltando", "registra como pendente", "anote esse documento nos faltantes"). Quando o usuário usar termos como "ele", "esse", "o arquivo", resolva pelo histórico recente da conversa a qual documento ele está se referindo.',
+      description: 'Registra um documento na lista de documentos faltantes/pendentes da VEGA. Use para pedidos explícitos do usuário (ex: "coloque ele em documentos faltantes", "anota que está faltando", "registra como pendente", "anote esse documento nos faltantes"). Você DEVE ler o histórico da conversa e passar a descrição completa do documento (ex: "documento da Nissan Frontier", "documento da Strada", "documento do caminhão Volvo FH", "escritura da Fazenda Santa Rita"). NUNCA passe pronomes como "ele" ou "esse".',
       parameters: {
         type: 'object',
         properties: {
           descricao: {
             type: 'string',
-            description: 'Descrição clara e objetiva do documento faltante (ex: "documento da Nissan Frontier", "comprovante de residência da Rua X", "CNH do Carlos Silva").',
+            description: 'Descrição completa e detalhada do documento faltante, formulada por você a partir da mensagem e do histórico da conversa (ex: "documento da Nissan Frontier", "documento da Strada", "documento do caminhão Volvo FH", "escritura da Fazenda Santa Rita", "CNH do Carlos Silva").',
           },
           tipo_documento: {
             type: 'string',
-            description: 'Tipo do documento se identificado (ex: "Documento de Veículo", "Comprovante de Residência", "CNH"). Opcional.',
+            description: 'Tipo do documento (ex: "Documento de Veículo", "Escritura", "Comprovante de Residência", "CNH"). Opcional.',
+          },
+          tipo_referencia: {
+            type: 'string',
+            enum: ['pessoa', 'veiculo', 'imovel', 'empresa', 'obra', 'outro'],
+            description: 'Tipo da entidade ou bem ao qual o documento pertence: "pessoa", "veiculo", "imovel", "empresa", "obra" ou "outro".',
+          },
+          identificador_referencia: {
+            type: 'string',
+            description: 'Identificador do bem, pessoa ou entidade vinculado (ex: "Nissan Frontier", "Strada", "Volvo FH", "Fazenda Santa Rita").',
           },
           titular: {
             type: 'string',
-            description: 'Nome da pessoa física titular ou da empresa proprietária vinculada ao documento, se houver ou for informada. Deixar vazio se não houver titular identificado.',
+            description: 'Nome da pessoa física titular ou da empresa proprietária vinculada, se informada. Deixar vazio se for veículo/imóvel sem titular de pessoa física informado.',
           },
         },
         required: ['descricao'],
@@ -2784,149 +2810,90 @@ export function autoverificarRespostaDadosTitular(params: {
 }
 
 /**
- * Identifica o atributo do documento faltante (veículo, imóvel, obra, pessoa ou genérico)
+ * Identifica o atributo do documento faltante baseado na classificação da IA (Regra 25)
  */
 export function identificarAtributoDocumentoFaltante(
   texto: string,
-  titularParam?: string | null
+  titularParam?: string | null,
+  tipoReferencia?: 'pessoa' | 'veiculo' | 'imovel' | 'empresa' | 'obra' | 'outro',
+  identificadorReferencia?: string
 ): {
-  tipoAtributo: 'veiculo' | 'imovel' | 'obra' | 'pessoa' | 'generico';
+  tipoAtributo: 'veiculo' | 'imovel' | 'obra' | 'empresa' | 'pessoa' | 'outro' | 'generico';
   descricaoItem: string;
   tipoDocumento: string;
   titularFinal: string | null;
   ehAmbiguo: boolean;
 } {
-  const norm = (texto || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .trim();
+  const norm = (texto || '').trim();
 
-  // 1. Veículo (marca, modelo, categoria ou placa)
-  const marcasEModelos: Record<string, string> = {
-    frontier: 'Nissan Frontier',
-    nissan: 'Nissan',
-    amarok: 'Volkswagen Amarok',
-    volkswagen: 'Volkswagen',
-    hilux: 'Toyota Hilux',
-    toyota: 'Toyota',
-    s10: 'Chevrolet S10',
-    chevrolet: 'Chevrolet',
-    ranger: 'Ford Ranger',
-    ford: 'Ford',
-    toro: 'Fiat Toro',
-    strada: 'Fiat Strada',
-    saveiro: 'Volkswagen Saveiro',
-    l200: 'Mitsubishi L200',
-    corolla: 'Toyota Corolla',
-    civic: 'Honda Civic',
-  };
-
-  for (const [chave, nomeOficial] of Object.entries(marcasEModelos)) {
-    if (new RegExp(`\\b${chave}\\b`, 'i').test(norm)) {
-      return {
-        tipoAtributo: 'veiculo',
-        descricaoItem: `Documento do veículo ${nomeOficial}`,
-        tipoDocumento: 'Documento de Veículo',
-        titularFinal: titularParam || null,
-        ehAmbiguo: false,
-      };
-    }
-  }
-
-  // Placa de veículo (ex: ABC-1234 ou ABC1D23)
-  const matchPlaca = texto.match(/\b([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})\b/i);
-  if (matchPlaca) {
+  // 1. Classificação explícita vinda da IA (Regra 25: a IA classifica)
+  if (tipoReferencia === 'veiculo') {
+    const ident = (identificadorReferencia || norm || '').replace(/^(?:me\s+)?(?:envie|manda|enviar|quero|o|a|de|da|do|um|uma|documento\s+d[eoa]?)\s+/i, '').trim();
     return {
       tipoAtributo: 'veiculo',
-      descricaoItem: `Documento do veículo placa ${matchPlaca[1].toUpperCase()}`,
+      descricaoItem: ident ? `Documento do veículo ${ident}` : 'Documento de veículo',
       tipoDocumento: 'Documento de Veículo',
       titularFinal: titularParam || null,
-      ehAmbiguo: false,
+      ehAmbiguo: !ident,
     };
   }
 
-  // Termo explícito de veículo com especificação
-  if (/\b(caminhonete|ve[ií]culo|carro|caminh[aã]o|moto)\b/i.test(norm)) {
-    const limpo = texto.replace(/^(?:me\s+)?(?:envie|manda|enviar|quero|o|a|de|da|do|um|uma)\s+/i, '').trim();
-    return {
-      tipoAtributo: 'veiculo',
-      descricaoItem: `Documento do veículo ${limpo}`,
-      tipoDocumento: 'Documento de Veículo',
-      titularFinal: titularParam || null,
-      ehAmbiguo: false,
-    };
-  }
-
-  // 2. Imóvel / Residência / Logradouro
-  const matchImovel = texto.match(/\b(?:rua|av(?:enida)?|alameda|rodovia|fazenda|lote|terreno)\s+([A-Za-z0-9ÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç\s]+)/i);
-  if (matchImovel) {
-    const nomeLogradouro = matchImovel[0].trim();
+  if (tipoReferencia === 'imovel') {
+    const ident = (identificadorReferencia || norm || '').replace(/^(?:me\s+)?(?:envie|manda|enviar|quero|o|a|de|da|do|um|uma|documento\s+d[eoa]?|comprovante\s+d[eoa]?)\s+/i, '').trim();
     return {
       tipoAtributo: 'imovel',
-      descricaoItem: `Comprovante de residência da ${nomeLogradouro}`,
+      descricaoItem: ident ? `Documento do imóvel ${ident}` : 'Documento de imóvel',
       tipoDocumento: 'Comprovante de Residência',
       titularFinal: titularParam || null,
-      ehAmbiguo: false,
+      ehAmbiguo: !ident,
     };
   }
 
-  // 3. Obra / Projeto
-  const matchObra = texto.match(/\bobra\s+([A-Za-z0-9ÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç\s]+)/i);
-  if (matchObra) {
+  if (tipoReferencia === 'empresa') {
+    const ident = (identificadorReferencia || titularParam || norm || '').trim();
+    return {
+      tipoAtributo: 'empresa',
+      descricaoItem: ident ? `Documento da empresa ${ident}` : 'Documento de empresa',
+      tipoDocumento: 'Documento de Empresa',
+      titularFinal: ident || null,
+      ehAmbiguo: !ident,
+    };
+  }
+
+  if (tipoReferencia === 'obra') {
+    const ident = (identificadorReferencia || norm || '').replace(/^(?:me\s+)?(?:envie|manda|enviar|quero|o|a|de|da|do|um|uma|documento\s+d[eoa]?)\s+/i, '').trim();
     return {
       tipoAtributo: 'obra',
-      descricaoItem: `Documento da obra ${matchObra[1].trim()}`,
+      descricaoItem: ident ? `Documento da obra ${ident}` : 'Documento de obra',
       tipoDocumento: 'Documento de Obra',
       titularFinal: titularParam || null,
-      ehAmbiguo: false,
+      ehAmbiguo: !ident,
     };
   }
 
-  // 4. Pessoa / Titular
-  const ehTitularValido = titularParam && !['delta plan', 'outros', 'empresa', 'não informado', 'não identificado', 'titular não informado'].includes(titularParam.toLowerCase().trim());
-  const matchTipoDoc = norm.match(/\b(cnh|rg|cpf|certid[aã]o(?:\s+de\s+[a-z]+)?|alvar[aá]|contrato|passaporte|diploma|procura[cç][aã]o|apolice|laudo|declaracao|imposto\s+de\s+renda|carteira\s+de\s+trabalho|ctps)\b/i);
-
-  if (ehTitularValido && matchTipoDoc) {
-    const tipoFmt = formatarTipoDocumentoLegivel(matchTipoDoc[0]);
-    const prep = obterPreposicaoTitular(titularParam);
+  if (tipoReferencia === 'pessoa') {
+    const ident = (titularParam || identificadorReferencia || '').trim();
+    const ehTitularValido = ident && !['delta plan', 'outros', 'empresa', 'não informado', 'não identificado', 'titular não informado'].includes(ident.toLowerCase());
     return {
       tipoAtributo: 'pessoa',
-      descricaoItem: `${tipoFmt} d${prep} ${titularParam}`,
-      tipoDocumento: tipoFmt,
-      titularFinal: titularParam,
-      ehAmbiguo: false,
+      descricaoItem: ehTitularValido ? `Documento de ${ident}` : 'Documento pessoal',
+      tipoDocumento: 'Documento Pessoal',
+      titularFinal: ehTitularValido ? ident : null,
+      ehAmbiguo: !ehTitularValido,
     };
   }
 
-  if (ehTitularValido && !matchTipoDoc) {
-    return {
-      tipoAtributo: 'pessoa',
-      descricaoItem: `Documento de ${titularParam}`,
-      tipoDocumento: 'Documento',
-      titularFinal: titularParam,
-      ehAmbiguo: true,
-    };
-  }
+  // 2. Se a IA não especificou tipo_referencia, avalia se o texto é ambíguo
+  const textoLimpo = norm.replace(/^(?:me\s+)?(?:envie|manda|enviar|quero|tem|buscar|achar|solta|libera)\s+(?:o|a|os|as|um|uma)?\s*/i, '').trim();
+  const termosGenericos = ['documento', 'arquivo', 'pdf', 'foto', 'imagem', 'comprovante'];
+  const ehGenerico = !textoLimpo || termosGenericos.includes(textoLimpo.toLowerCase()) || textoLimpo.length < 3;
 
-  if (!ehTitularValido && matchTipoDoc) {
-    const tipoFmt = formatarTipoDocumentoLegivel(matchTipoDoc[0]);
-    return {
-      tipoAtributo: 'pessoa',
-      descricaoItem: `${tipoFmt}`,
-      tipoDocumento: tipoFmt,
-      titularFinal: null,
-      ehAmbiguo: true,
-    };
-  }
-
-  // 5. Genérico
   return {
     tipoAtributo: 'generico',
-    descricaoItem: 'Documento',
+    descricaoItem: ehGenerico ? 'Documento' : textoLimpo,
     tipoDocumento: 'Documento',
-    titularFinal: null,
-    ehAmbiguo: true,
+    titularFinal: titularParam || null,
+    ehAmbiguo: ehGenerico,
   };
 }
 
@@ -2938,7 +2905,9 @@ export async function toolBuscarDocumentos(
   titularNome?: string,
   todosDocs: DocumentoRegistro[] = [],
   origemMensagem?: 'audio' | 'texto',
-  contato?: Contato
+  contato?: Contato,
+  tipoReferencia?: 'pessoa' | 'veiculo' | 'imovel' | 'empresa' | 'obra' | 'outro',
+  identificadorReferencia?: string
 ): Promise<{
   documentos: Array<{
     doc_id: string;
@@ -2978,24 +2947,11 @@ export async function toolBuscarDocumentos(
   let titObj: FichaTitular | null = null;
   let ehPessoaNaoCadastrada = false;
 
-  // 1. Identifica nome de pessoa pesquisado
-  let nomePessoaPesquisada: string | null = titularOriginal || null;
-  if (!nomePessoaPesquisada && consulta) {
-    nomePessoaPesquisada = extrairNomePessoaDaMensagem(consulta, catalogoPessoas);
-  }
-
-  // Se o termo for veículo, imóvel, obra ou bem, NUNCA é pessoa física!
-  if (nomePessoaPesquisada) {
-    const infoAtrib = identificarAtributoDocumentoFaltante(nomePessoaPesquisada);
-    if (infoAtrib.tipoAtributo === 'veiculo' || infoAtrib.tipoAtributo === 'imovel' || infoAtrib.tipoAtributo === 'obra') {
-      nomePessoaPesquisada = null;
-    }
-  }
-  if (consulta) {
-    const infoAtribConsulta = identificarAtributoDocumentoFaltante(consulta);
-    if (infoAtribConsulta.tipoAtributo === 'veiculo' || infoAtribConsulta.tipoAtributo === 'imovel' || infoAtribConsulta.tipoAtributo === 'obra') {
-      nomePessoaPesquisada = null;
-    }
+  // 1. Identifica nome de pessoa pesquisado: SÓ RODA SE tipo_referencia === 'pessoa' (Regra 25)
+  // NUNCA tenta inferir nome de pessoa no texto livre por padrão!
+  let nomePessoaPesquisada: string | null = null;
+  if (tipoReferencia === 'pessoa') {
+    nomePessoaPesquisada = titularOriginal || identificadorReferencia || null;
   }
 
   if (nomePessoaPesquisada) {
@@ -3462,19 +3418,25 @@ export async function toolBuscarDocumentos(
       mensagemRetorno = `Não encontrei informações ou documentos de "${titularNome || titularNorm}" no Cofre.`;
     }
   } else if (filtrados.length === 0) {
-    // 6. REGISTRAR FALTANTE AUTOMATICAMENTE (AMPLIADO)
-    // Documentos podem ser identificados por atributo de pessoa, veículo, imóvel, obra ou empresa.
+    // 6. REGISTRAR FALTANTE AUTOMATICAMENTE (AMPLIADO - REGRA 25)
+    // Documentos podem ser identificados por atributo de pessoa, veículo, imóvel, obra ou empresa pela IA.
     const titularFinal = titObj?.nome || titularOriginal;
     const termoCompleto = `${consulta || ''} ${termoNorm || ''}`.trim();
-    const infoAtributo = identificarAtributoDocumentoFaltante(termoCompleto, titularFinal);
+    const infoAtributo = identificarAtributoDocumentoFaltante(
+      termoCompleto,
+      titularFinal,
+      tipoReferencia,
+      identificadorReferencia
+    );
 
     if (!infoAtributo.ehAmbiguo) {
       try {
+        const nomeContatoReal = (contato?.nome || contato?.telefone || 'Contato').trim();
         await registrarOuIncrementarDocumentoFaltante({
           tipoDocumento: infoAtributo.tipoDocumento,
           descricaoItem: infoAtributo.descricaoItem,
           titularInformado: infoAtributo.titularFinal,
-          solicitanteNome: contato?.nome || 'Usuário WhatsApp',
+          solicitanteNome: nomeContatoReal,
           solicitanteContato: contato?.telefone,
           textoDoPedido: termoCompleto,
           forcarRegistro: true,
@@ -3483,20 +3445,23 @@ export async function toolBuscarDocumentos(
         console.warn('[VEGA Faltantes ⚠️] Falha ao registrar documento faltante automático:', errFalt);
       }
 
-      // Se for veículo, checa se há alternativa no Cofre (ex.: Amarok quando pediu Frontier)
+      // Se for veículo, checa se há alternativa no Cofre (sem lista fixa de modelos)
       let complementoAlternativa = '';
-      if (infoAtributo.tipoAtributo === 'veiculo') {
+      if (tipoReferencia === 'veiculo') {
         const outroVeiculo = todosDocs.find((d) => {
-          const t = (d.titulo || '').toLowerCase();
-          return t.includes('amarok') || t.includes('caminhonete') || t.includes('veiculo') || t.includes('hilux');
+          const t = (d.tipo || '').toLowerCase();
+          const tit = (d.titulo || '').toLowerCase();
+          const idRefNorm = (identificadorReferencia || '').toLowerCase();
+          const ehDiferente = !idRefNorm || !tit.includes(idRefNorm);
+          return ehDiferente && (t.includes('veiculo') || tit.includes('veiculo') || tit.includes('caminhonete') || tit.includes('carro') || tit.includes('caminhao'));
         });
         if (outroVeiculo) {
-          complementoAlternativa = ` Tenho o da caminhonete Amarok, quer esse?`;
+          complementoAlternativa = ` Tenho o da ${outroVeiculo.titulo}, quer esse?`;
         }
       }
 
       let textoNomeDoc = infoAtributo.descricaoItem;
-      if (!textoNomeDoc.toLowerCase().startsWith('documento') && !textoNomeDoc.toLowerCase().startsWith('comprovante')) {
+      if (!textoNomeDoc.toLowerCase().startsWith('documento') && !textoNomeDoc.toLowerCase().startsWith('comprovante') && !textoNomeDoc.toLowerCase().startsWith('escritura')) {
         const art = obterArtigoDefinido(infoAtributo.tipoDocumento);
         textoNomeDoc = `${art} ${infoAtributo.descricaoItem}`;
       } else {
@@ -4038,73 +4003,8 @@ export async function toolListarDocumentosFaltantes(
 }
 
 /**
- * Resolve a descrição e atributos de documento faltante caso o usuário use pronomes anafóricos ("ele", "esse", etc.)
- */
-export function resolverDescricaoFaltantePeloHistorico(
-  descricaoAtual: string,
-  historico?: Mensagem[],
-  mensagemUsuario?: string
-): { descricao: string; tipo?: string; titular?: string } {
-  let desc = (descricaoAtual || '').trim();
-  const termosAnaforicos = [
-    'ele', 'esse', 'este', 'aquele', 'esse documento', 'este documento',
-    'o documento', 'o arquivo', 'ele mesmo', 'ele em faltantes', 'o pdf', 'ele faltante'
-  ];
-  const ehAnaforico = !desc || termosAnaforicos.includes(desc.toLowerCase().replace(/[.,!]/g, ''));
-
-  if (!ehAnaforico && desc.length > 5 && !desc.toLowerCase().startsWith('ele ') && !desc.toLowerCase().startsWith('esse ')) {
-    const attr = identificarAtributoDocumentoFaltante(desc);
-    if (!attr.ehAmbiguo) {
-      return {
-        descricao: attr.descricaoItem,
-        tipo: attr.tipoDocumento,
-        titular: attr.titularFinal || undefined,
-      };
-    }
-    return { descricao: desc };
-  }
-
-  // Se for anafórico, busca nas mensagens anteriores do histórico
-  if (historico && historico.length > 0) {
-    for (let i = historico.length - 1; i >= 0; i--) {
-      const msg = historico[i];
-      const texto = msg.texto || '';
-
-      // 1. Resposta de documento não encontrado da VEGA: "Não encontrei documento do veículo Nissan Frontier no Cofre..."
-      const matchNaoEncontrei = texto.match(/não encontrei\s+([*a-zA-Z0-9À-ÖØ-öø-ÿ\s\-_]+?)\s+(?:no cofre|nos documentos)/i);
-      if (matchNaoEncontrei && matchNaoEncontrei[1]) {
-        const itemLimpo = matchNaoEncontrei[1].replace(/[*_]/g, '').trim();
-        const attr = identificarAtributoDocumentoFaltante(itemLimpo);
-        return {
-          descricao: attr.ehAmbiguo ? itemLimpo : attr.descricaoItem,
-          tipo: attr.tipoDocumento,
-          titular: attr.titularFinal || undefined,
-        };
-      }
-
-      // 2. Pedido anterior do cliente: "Me envie o documento da Frontier"
-      if (msg.remetente === 'cliente') {
-        const matchPedido = texto.match(/(?:envie|manda|enviar|quero|tem|buscar|localizar|acha|achar)\s+(?:o|a|os|as|um|uma)?\s*([a-zA-Z0-9À-ÖØ-öø-ÿ\s\-_]+)/i);
-        if (matchPedido && matchPedido[1]) {
-          const itemPedido = matchPedido[1].trim();
-          const attr = identificarAtributoDocumentoFaltante(itemPedido);
-          if (!attr.ehAmbiguo) {
-            return {
-              descricao: attr.descricaoItem,
-              tipo: attr.tipoDocumento,
-              titular: attr.titularFinal || undefined,
-            };
-          }
-        }
-      }
-    }
-  }
-
-  return { descricao: desc || 'documento solicitado' };
-}
-
-/**
- * Tool: registrar_documento_faltante(descricao, tipo_documento?, titular?)
+ * Tool: registrar_documento_faltante(descricao, tipo_documento?, titular?, tipo_referencia?, identificador_referencia?)
+ * A IA lê o histórico recente e formula a descrição completa do documento faltante (Regra 25).
  */
 export async function toolRegistrarDocumentoFaltante(
   descricao: string,
@@ -4112,7 +4012,8 @@ export async function toolRegistrarDocumentoFaltante(
   titular?: string,
   contato?: Contato,
   mensagemUsuario?: string,
-  historico?: Mensagem[]
+  tipoReferencia?: 'pessoa' | 'veiculo' | 'imovel' | 'empresa' | 'obra' | 'outro',
+  identificadorReferencia?: string
 ): Promise<{
   sucesso: boolean;
   mensagem: string;
@@ -4123,35 +4024,38 @@ export async function toolRegistrarDocumentoFaltante(
     quantidade_pedidos: number;
   };
 }> {
-  const resolucao = resolverDescricaoFaltantePeloHistorico(descricao, historico, mensagemUsuario);
-  const descLimpa = resolucao.descricao || (descricao || '').trim();
-  const tipoFinal = tipo_documento?.trim() || resolucao.tipo || descLimpa || 'Documento';
-  const titularFinal = titular?.trim() || resolucao.titular || '';
+  const descLimpa = (descricao || '').trim();
+  let tipoFinal = tipo_documento?.trim();
+  if (!tipoFinal) {
+    if (tipoReferencia === 'veiculo') tipoFinal = 'Documento de Veículo';
+    else if (tipoReferencia === 'imovel') tipoFinal = 'Comprovante de Residência';
+    else if (tipoReferencia === 'obra') tipoFinal = 'Documento de Obra';
+    else if (tipoReferencia === 'empresa') tipoFinal = 'Documento de Empresa';
+    else tipoFinal = descLimpa || 'Documento';
+  }
+
+  const titularFinal = titular?.trim() || (tipoReferencia === 'empresa' ? identificadorReferencia : '') || '';
+  const nomeSolicitante = (contato?.nome || contato?.telefone || 'Contato').trim();
 
   const reg = await registrarOuIncrementarDocumentoFaltante({
     tipoDocumento: tipoFinal,
     descricaoItem: descLimpa,
     titularInformado: titularFinal || null,
-    solicitanteNome: contato?.nome || 'Usuário WhatsApp',
+    solicitanteNome: nomeSolicitante,
     solicitanteContato: contato?.telefone,
     textoDoPedido: mensagemUsuario || descLimpa,
     forcarRegistro: true,
   });
 
-  let textoFormatado = descLimpa;
-  if (/frontier/i.test(textoFormatado)) {
-    textoFormatado = 'documento da Nissan Frontier';
-  } else if (/amarok/i.test(textoFormatado)) {
-    textoFormatado = 'documento da Amarok';
-  } else if (/hilux/i.test(textoFormatado)) {
-    textoFormatado = 'documento da Hilux';
-  } else if (textoFormatado.toLowerCase().startsWith('documento') || textoFormatado.toLowerCase().startsWith('comprovante')) {
-    textoFormatado = textoFormatado.toLowerCase();
-  } else {
-    textoFormatado = `documento ${textoFormatado.toLowerCase()}`;
-  }
+  const textoAviso = descLimpa.toLowerCase().startsWith('documento') ||
+    descLimpa.toLowerCase().startsWith('comprovante') ||
+    descLimpa.toLowerCase().startsWith('escritura') ||
+    descLimpa.toLowerCase().startsWith('certidão') ||
+    descLimpa.toLowerCase().startsWith('cnh')
+    ? descLimpa
+    : `documento ${descLimpa}`;
 
-  const aviso = `Registrei como faltante: ${textoFormatado}.`;
+  const aviso = `Registrei como faltante: ${textoAviso}.`;
 
   return {
     sucesso: true,
@@ -4173,7 +4077,10 @@ export async function toolRegistrarDocumentoFaltante(
 async function toolEnviarDocumento(
   docId: string,
   todosDocs: DocumentoRegistro[] = [],
-  anexosAcumulados: Anexo[]
+  anexosAcumulados: Anexo[],
+  contato?: Contato,
+  tipoReferencia?: 'pessoa' | 'veiculo' | 'imovel' | 'empresa' | 'obra' | 'outro',
+  identificadorReferencia?: string
 ): Promise<{
   sucesso: boolean;
   doc_id?: string;
@@ -4255,14 +4162,22 @@ async function toolEnviarDocumento(
   }
 
   if (!doc) {
-    const infoAtributo = identificarAtributoDocumentoFaltante(idLimpo);
+    const infoAtributo = identificarAtributoDocumentoFaltante(
+      idLimpo,
+      null,
+      tipoReferencia,
+      identificadorReferencia
+    );
+    const nomeSolicitante = (contato?.nome || contato?.telefone || 'Contato').trim();
+
     if (!infoAtributo.ehAmbiguo) {
       try {
         await registrarOuIncrementarDocumentoFaltante({
           tipoDocumento: infoAtributo.tipoDocumento,
           descricaoItem: infoAtributo.descricaoItem,
           titularInformado: infoAtributo.titularFinal,
-          solicitanteNome: 'Usuário WhatsApp',
+          solicitanteNome: nomeSolicitante,
+          solicitanteContato: contato?.telefone,
           textoDoPedido: idLimpo,
           forcarRegistro: true,
         });
@@ -6282,7 +6197,15 @@ ${statusSaudacao}
 
         if (nomeTool === 'buscar_documentos') {
           const titularEfetivo = args.titular || ultimoTitularFoco;
-          resultadoTool = await toolBuscarDocumentos(args.consulta, titularEfetivo, todosDocs, dados.origemMensagem, contato);
+          resultadoTool = await toolBuscarDocumentos(
+            args.consulta,
+            titularEfetivo,
+            todosDocs,
+            dados.origemMensagem,
+            contato,
+            args.tipo_referencia,
+            args.identificador_referencia
+          );
           if (resultadoTool.tipo_correspondencia) {
             etapasRastro.push({
               ordem: ordemEtapa++,
@@ -6440,7 +6363,14 @@ ${statusSaudacao}
             }
           }
         } else if (nomeTool === 'enviar_documento') {
-          resultadoTool = await toolEnviarDocumento(args.doc_id, todosDocs, anexosAcumulados);
+          resultadoTool = await toolEnviarDocumento(
+            args.doc_id,
+            todosDocs,
+            anexosAcumulados,
+            contato,
+            args.tipo_referencia,
+            args.identificador_referencia
+          );
           if (resultadoTool.doc_id) {
             fontesRetornadasRastro.push({
               id: resultadoTool.doc_id,
@@ -6515,7 +6445,8 @@ ${statusSaudacao}
             args.titular,
             contato,
             mensagemUsuario,
-            historicoLimitado
+            args.tipo_referencia,
+            args.identificador_referencia
           );
           if (resultadoTool.mensagem) {
             dadosRetornadosTools.push(resultadoTool.mensagem);

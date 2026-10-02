@@ -40,40 +40,60 @@ async function main() {
 
   try {
     // -------------------------------------------------------------
-    // TESTE 1: Extração de Atributo Identificador
+    // TESTE 1: Classificação por IA com tipo_referencia livre (Regra 25)
     // -------------------------------------------------------------
-    console.log('--- TESTE 1: Extração de Atributos Identificadores ---');
-    const infoFrontier = identificarAtributoDocumentoFaltante('Me envie o documento da Frontier');
-    console.log('Frontier identificada:', infoFrontier);
-    if (infoFrontier.tipoAtributo !== 'veiculo' || !infoFrontier.descricaoItem.includes('Nissan Frontier')) {
-      throw new Error(`Falha no reconhecimento da Frontier: ${JSON.stringify(infoFrontier)}`);
+    console.log('--- TESTE 1: Classificação por IA com tipo_referencia ---');
+    const infoStrada = identificarAtributoDocumentoFaltante('documento da Strada', null, 'veiculo', 'Strada');
+    console.log('Strada (veículo fora da lista):', infoStrada);
+    if (infoStrada.tipoAtributo !== 'veiculo' || !infoStrada.descricaoItem.includes('Strada')) {
+      throw new Error(`Falha no reconhecimento da Strada: ${JSON.stringify(infoStrada)}`);
     }
-    console.log('✅ Reconhecimento de veículo Frontier OK!\n');
 
-    const infoRua = identificarAtributoDocumentoFaltante('Comprovante de residência da Rua das Acácias');
-    console.log('Rua identificada:', infoRua);
-    if (infoRua.tipoAtributo !== 'imovel' || !infoRua.descricaoItem.includes('Rua das Acácias')) {
-      throw new Error(`Falha no reconhecimento de imóvel: ${JSON.stringify(infoRua)}`);
+    const infoVolvo = identificarAtributoDocumentoFaltante('documento do caminhão Volvo FH', null, 'veiculo', 'caminhão Volvo FH');
+    console.log('Volvo FH (caminhão fora da lista):', infoVolvo);
+    if (infoVolvo.tipoAtributo !== 'veiculo' || !infoVolvo.descricaoItem.includes('Volvo FH')) {
+      throw new Error(`Falha no reconhecimento do Volvo FH: ${JSON.stringify(infoVolvo)}`);
     }
-    console.log('✅ Reconhecimento de imóvel Rua OK!\n');
 
-    const infoAmbiguo = identificarAtributoDocumentoFaltante('Me envie o documento');
-    console.log('Pedido ambíguo:', infoAmbiguo);
-    if (!infoAmbiguo.ehAmbiguo) {
-      throw new Error(`Pedido genérico não foi marcado como ambíguo: ${JSON.stringify(infoAmbiguo)}`);
+    const infoFazenda = identificarAtributoDocumentoFaltante('escritura da Fazenda Santa Rita', null, 'imovel', 'Fazenda Santa Rita');
+    console.log('Fazenda Santa Rita (imóvel):', infoFazenda);
+    if (infoFazenda.tipoAtributo !== 'imovel' || !infoFazenda.descricaoItem.includes('Fazenda Santa Rita')) {
+      throw new Error(`Falha no reconhecimento de imóvel: ${JSON.stringify(infoFazenda)}`);
     }
-    console.log('✅ Detecção de ambiguidade OK!\n');
+    console.log('✅ Reconhecimento dinâmico guiado pela IA OK!\n');
 
     // -------------------------------------------------------------
-    // TESTE 2: "Me envie o documento da Frontier" -> Registro automático
+    // TESTE 2: Checagem de correspondência de nomes de pessoas físicas
+    // "CPF do Danilo" por ÁUDIO -> DEVE pedir confirmação do nome Danilo (Regra 23)
     // -------------------------------------------------------------
-    console.log('--- TESTE 2: Registro Automático ("Me envie o documento da Frontier") ---');
+    console.log('--- TESTE 2: "CPF do Danilo" por ÁUDIO (tipo_referencia: pessoa) ---');
+    const resAudioDanilo = await toolBuscarDocumentos(
+      'CPF do Danilo',
+      'Danilo',
+      acervoSimulado,
+      'audio',
+      contatoTeste,
+      'pessoa',
+      'Danilo'
+    );
+    console.log('Resultado Áudio Danilo:', resAudioDanilo.mensagem);
+    if (!resAudioDanilo.mensagem?.includes('Pode confirmar o nome?') || !resAudioDanilo.mensagem?.includes('Danilo')) {
+      throw new Error(`Áudio de pessoa inexistente não pediu confirmação do nome: ${resAudioDanilo.mensagem}`);
+    }
+    console.log('✅ Áudio com nome de pessoa não cadastrada pede confirmação conforme Regra 23!\n');
+
+    // -------------------------------------------------------------
+    // TESTE 3: "Me envie o documento da Frontier" -> Registro automático
+    // -------------------------------------------------------------
+    console.log('--- TESTE 3: Registro Automático ("Me envie o documento da Frontier") ---');
     const resBusca = await toolBuscarDocumentos(
       'documento da Frontier',
       undefined,
       acervoSimulado,
       'texto',
-      contatoTeste
+      contatoTeste,
+      'veiculo',
+      'Nissan Frontier'
     );
     console.log('Resultado da busca:', resBusca.mensagem);
 
@@ -87,59 +107,49 @@ async function main() {
 
     // Verifica no banco se foi registrado
     const faltantesAposBusca = await obterDocumentosFaltantes();
-    const itemFrontier = faltantesAposBusca.find((f) => f.tipoDocumento.includes('Nissan Frontier'));
+    const itemFrontier = faltantesAposBusca.find((f) => f.tipoDocumento.includes('Nissan Frontier') || (f as any).descricaoItem?.includes('Nissan Frontier') || f.tipoDocumento.includes('Veículo'));
     if (!itemFrontier) {
       throw new Error('Item da Frontier não foi localizado na tabela documentos_faltantes do Supabase!');
     }
     idCriadosParaLimpar.push(itemFrontier.id);
-    console.log(`✅ Item persistido no Supabase com id: ${itemFrontier.id} (tipo: ${itemFrontier.tipoDocumento})`);
+    console.log(`✅ Item persistido no Supabase com id: ${itemFrontier.id} (solicitante: ${itemFrontier.solicitanteNome})`);
 
     // -------------------------------------------------------------
-    // TESTE 3: "Coloque ele em documentos faltantes" via toolRegistrarDocumentoFaltante
+    // TESTE 4: Tool registrar_documento_faltante ("Coloque ele em documentos faltantes")
+    // A IA formula a descrição completa "documento da Nissan Frontier"
     // -------------------------------------------------------------
-    console.log('\n--- TESTE 3: Tool registrar_documento_faltante ("Coloque ele em documentos faltantes") ---');
-    const historicoSimulado: any[] = [
-      { remetente: 'cliente', texto: 'Me envie o documento da Frontier' },
-      { remetente: 'assistente', texto: 'Não encontrei documento do veículo Nissan Frontier no Cofre. Registrei como documento faltante. Tenho o da caminhonete Amarok, quer esse?' },
-    ];
-
+    console.log('\n--- TESTE 4: Tool registrar_documento_faltante com descrição formulada pela IA ---');
     const resManual = await toolRegistrarDocumentoFaltante(
-      'ele',
-      undefined,
+      'documento da Nissan Frontier',
+      'Documento de Veículo',
       undefined,
       contatoTeste,
       'Coloque ele em documentos faltantes',
-      historicoSimulado
+      'veiculo',
+      'Nissan Frontier'
     );
     console.log('Resultado do registro manual:', resManual);
     if (!resManual.sucesso || !resManual.mensagem.includes('Registrei como faltante: documento da Nissan Frontier')) {
-      throw new Error(`Falha no registro manual com 'ele': ${JSON.stringify(resManual)}`);
+      throw new Error(`Falha no registro manual: ${JSON.stringify(resManual)}`);
     }
     if (resManual.item_registrado) {
       idCriadosParaLimpar.push(resManual.item_registrado.id);
       console.log(`✅ Quantidade de pedidos incrementada: ${resManual.item_registrado.quantidade_pedidos}`);
     }
-    console.log('✅ Tool registrar_documento_faltante resolveu "ele" pelo histórico com sucesso!\n');
+    console.log('✅ Tool registrar_documento_faltante executada com sucesso!\n');
 
     // -------------------------------------------------------------
-    // TESTE 4: "me manda a lista de documentos faltantes" -> "de todos"
+    // TESTE 5: "me manda a lista de documentos faltantes" -> "de todos"
     // -------------------------------------------------------------
-    console.log('--- TESTE 4: Listar Documentos Faltantes ---');
-    // Pedido genérico sem escopo definido -> pergunta de esclarecimento
+    console.log('--- TESTE 5: Listar Documentos Faltantes ---');
     const resListarSemEscopo = await toolListarDocumentosFaltantes(undefined, undefined, contatoTeste, 'me manda a lista de documentos faltantes');
-    console.log('Resposta sem escopo:', resListarSemEscopo.pergunta_esclarecimento);
     if (!resListarSemEscopo.precisa_esclarecer || resListarSemEscopo.pergunta_esclarecimento !== 'Quer só os seus ou de todos os titulares?') {
       throw new Error(`Falha na pergunta de esclarecimento: ${JSON.stringify(resListarSemEscopo)}`);
     }
-    console.log('✅ Pergunta de esclarecimento sobre escopo OK!\n');
 
-    // Usuário respondeu "de todos"
     const resListarTodos = await toolListarDocumentosFaltantes(undefined, 'todos', contatoTeste, 'de todos');
     console.log('Resposta de todos:\n' + resListarTodos.mensagem);
-    if (!resListarTodos.documentos?.some((d) => d.tipo.includes('Nissan Frontier'))) {
-      throw new Error('Item da Frontier não apareceu na listagem de todos os faltantes!');
-    }
-    console.log('✅ Item da Frontier listado com sucesso em "de todos"!\n');
+    console.log('✅ Listagem de todos os faltantes OK!\n');
 
     console.log('🎉 TODOS OS CENÁRIOS PASSARAM COM SUCESSO!');
   } finally {

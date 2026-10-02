@@ -202,7 +202,9 @@ export async function registrarOuIncrementarDocumentoFaltante(params: {
       tipo_documento: tipoFormatado,
       titular: titularFinal || '',
       pessoa_id: pessoaIdFinal,
-      solicitante_nome: params.solicitanteNome || 'Usuário WhatsApp',
+      solicitante_nome: (params.solicitanteNome && params.solicitanteNome.trim())
+        ? params.solicitanteNome.trim()
+        : (params.solicitanteContato || 'Contato'),
       solicitante_contato: params.solicitanteContato || null,
       quantidade_pedidos: 1,
       data_primeiro_pedido: agoraIso,
