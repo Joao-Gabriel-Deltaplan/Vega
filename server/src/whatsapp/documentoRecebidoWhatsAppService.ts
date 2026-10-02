@@ -13,6 +13,7 @@ export const RESPOSTA_DOCUMENTO_SEM_PERMISSAO =
 export interface InfoDocumentoMensagem {
   isDocumento: boolean;
   isImagem: boolean;
+  isLocalizacao?: boolean;
   isNaoSuportado: boolean;
   tipoDetectado: string;
   nomeArquivo?: string;
@@ -21,6 +22,11 @@ export interface InfoDocumentoMensagem {
   base64Direto?: string;
   campoBase64?: string;
   legenda?: string;
+  latitude?: number;
+  longitude?: number;
+  nomeLocal?: string;
+  enderecoLocal?: string;
+  linkMaps?: string;
 }
 
 // Flag para inspecionar no terminal a estrutura completa do primeiro documento/mídia recebido
@@ -313,11 +319,32 @@ export function extrairInfoDocumentoWhatsApp(evento: any): InfoDocumentoMensagem
   }
 
   if (locationMsg) {
+    const lat = Number(locationMsg.degreesLatitude ?? locationMsg.latitude);
+    const lng = Number(locationMsg.degreesLongitude ?? locationMsg.longitude);
+    const nome = locationMsg.name || locationMsg.title || '';
+    const endereco = locationMsg.address || '';
+    if (!isNaN(lat) && !isNaN(lng) && (lat !== 0 || lng !== 0)) {
+      const linkMaps = `https://www.google.com/maps?q=${lat},${lng}`;
+      return {
+        isDocumento: false,
+        isImagem: false,
+        isLocalizacao: true,
+        isNaoSuportado: false,
+        tipoDetectado: 'localizacao',
+        latitude: lat,
+        longitude: lng,
+        nomeLocal: nome,
+        enderecoLocal: endereco,
+        linkMaps,
+        legenda: [nome, endereco].filter(Boolean).join(' - '),
+      };
+    }
     return {
       isDocumento: false,
       isImagem: false,
+      isLocalizacao: false,
       isNaoSuportado: true,
-      tipoDetectado: 'localização',
+      tipoDetectado: 'localização (sem coordenadas)',
     };
   }
 

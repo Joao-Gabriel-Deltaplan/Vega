@@ -32,6 +32,7 @@ import {
 } from '../busca/motor.js';
 import {
   registrarOuIncrementarDocumentoFaltante,
+  obterDocumentosFaltantes,
   formatarTipoDocumentoLegivel,
   validarTipoDocumentoReconhecivel,
 } from '../documentosFaltantesService.js';
@@ -274,9 +275,11 @@ export function resolverEscolhaDocumentosOferecidos(
 
   const matches = docsOferecidos.filter((d) => {
     const tNorm = d.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    const arqNorm = d.arquivo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const titularNorm = (d.titular || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const partesTitular = titularNorm.split(/\s+/).filter((p) => p.length >= 2);
+    const stopWordsDoc = new Set(['documento', 'delta', 'plan', 'para', 'com', ...partesTitular]);
     const palavrasTitulo = tNorm.split(/\s+/).filter(
-      (w) => w.length >= 3 && !['documento', 'thomaz', 'lustri', 'fabre', 'delta', 'plan', 'para', 'com'].includes(w)
+      (w) => w.length >= 3 && !stopWordsDoc.has(w)
     );
     return (
       msgLimpa.includes(tNorm) ||
@@ -803,6 +806,13 @@ export interface ResultadoChatOrquestrador {
   correcaoPendente?: CorrecaoPendenteFicha;
   rastro?: RastroRegistro;
   dadosEstruturados?: DadosEstruturadosMensagem;
+  localizacao?: {
+    latitude: number;
+    longitude: number;
+    nome?: string;
+    endereco?: string;
+    linkMaps?: string;
+  };
 }
 
 export function extrairDadosEstruturadosDeItemConhecimento(item: ItemConhecimento): DadosEstruturadosMensagem | undefined {
@@ -1516,7 +1526,7 @@ export async function executarBuscaVetorial(
 
 /**
  * 2.1. BUSCA DE TRECHOS NO COFRE POR NOME DE PESSOA NÃO CADASTRADA COMO TITULAR
- * Permite localizar ocorrências de cônjuges (ex: Nilceia na Certidão de Casamento),
+ * Permite localizar ocorrências de cônjuges (ex: cônjuge na Certidão de Casamento),
  * testemunhas, sócios em contratos e terceiros citados em qualquer documento.
  */
 export async function buscarTrechosPorNomePessoaNoCofre(
@@ -1631,13 +1641,13 @@ REGRAS OBRIGATÓRIAS:
    - Negrito só quando ajudar a leitura (nomes de documentos, valores, datas ou prazos-chave).
 8. ATENÇÃO MÁXIMA AO DADO EXATO PERGUNTADO (REGRA 17):
    - REGRA ABSOLUTA DE DADO ESPECÍFICO: A VEGA só pode responder estritamente o campo ou informação solicitada na pergunta.
-   - Se a pergunta for sobre um campo ou dado específico (ex: título de eleitor, PIS, carteira de reservista, certidão de nascimento, passaporte, etc.) e esse dado NÃO constar de forma inequívoca nos trechos para a pessoa em questão, responda OBRIGATORIAMENTE que não encontrou o dado nos documentos (ex: "Não encontrei o título de eleitor do Thomaz nos documentos.").
+   - Se a pergunta for sobre um campo ou dado específico (ex: título de eleitor, PIS, carteira de reservista, certidão de nascimento, passaporte, etc.) e esse dado NÃO constar de forma inequívoca nos trechos para a pessoa em questão, responda OBRIGATORIAMENTE que não encontrou o dado nos documentos (ex: "Não encontrei o título de eleitor do Titular Exemplo nos documentos.").
    - NUNCA responda com outro campo ou dado presente no documento (como filiação, CPF, RG ou nascimento) como substituto!
    - Se a pergunta for sobre data de DISPENSA DO SERVIÇO MILITAR, responda rigorosamente a data em que foi dispensado do serviço militar (ex.: 23 de agosto de 2005), e NUNCA a data de nascimento!
    - Se a pergunta for sobre data do REGISTRO DO CASAMENTO, responda rigorosamente a data do registro do casamento (ex.: 12 de abril de 2010), e NUNCA a data de nascimento!
    - Se a pergunta for sobre VACINAS ou DOSES TOMADAS, responda listando com clareza o nome da vacina, a dose e a data exata em que foi aplicada conforme constar no documento.
    - Se a pergunta for sobre uma PESSOA ESPECÍFICA citada na mensagem (mesmo que não seja o titular principal do documento, como cônjuge, parente, sócio, testemunha ou terceiro citado no texto), responda estritamente sobre a pessoa perguntada! NUNCA responda dados de outra pessoa.
-   - Deixe SEMPRE explícito de quem é a informação respondida e cite o documento (exemplo: "A mãe da Nilceia, conforme a *Certidão de Casamento*, é Celucia Fanha Ramos.").
+   - Deixe SEMPRE explícito de quem é a informação respondida e cite o documento (exemplo: "A mãe da Mariana, conforme a *Certidão de Casamento*, é Sandra Silva.").
    - Se o trecho contiver múltiplas datas ou múltiplas pessoas, leia atentamente o contexto para responder EXATAMENTE a pessoa e o dado solicitados pelo usuário.
 9. DISTINÇÃO USUÁRIO VS TITULAR: NUNCA chame o usuário que está conversando pelo nome do titular do documento. Trate o titular do documento na terceira pessoa.
 10. PROIBIÇÃO ABSOLUTA DE BLOCOS TÉCNICOS: NUNCA emita blocos markdown como \`\`\`documento, \`\`\`json, \`\`\`pdf ou qualquer estrutura de código/JSON. Toda a resposta deve ser em texto natural formatado exclusivamente para WhatsApp.`;
@@ -1692,7 +1702,8 @@ REGRAS OBRIGATÓRIAS:
  */
 export function validarCorrespondenciaCampoResposta(
   mensagemUsuario: string,
-  textoResposta: string
+  textoResposta: string,
+  contato?: Contato
 ): { textoValidado: string; interceptado: boolean; motivo?: string } {
   const msgNorm = normalizarParaBusca(mensagemUsuario);
   const respNorm = normalizarParaBusca(textoResposta);
@@ -1792,15 +1803,63 @@ export function validarCorrespondenciaCampoResposta(
     }
   }
 
-  // 7. PESSOA ESPECÍFICA CITADA VS TITULAR DO CONTEXTO (ex: Nilceia vs Thomaz)
-  if (msgNorm.includes('nilceia') && !msgNorm.includes('thomaz')) {
-    const atribuiAoThomaz = /\b(m[aã]e\s+do\s+thomaz|pai\s+do\s+thomaz|cpf\s+do\s+thomaz|nascimento\s+do\s+thomaz|nascid[oa]\s+do\s+thomaz|aqui\s+est[aá].*do\s+thomaz|passaporte\s+thomaz)\b/i.test(respNorm);
-    const naoMencionaNilceia = !respNorm.includes('nilceia');
-    if (atribuiAoThomaz || (naoMencionaNilceia && /\b(thomaz|lustri|fabre)\b/i.test(respNorm))) {
+  // 7. PESSOA ESPECÍFICA CITADA VS DADOS DE OUTRA PESSOA
+  if (nomePessoa && nomePessoa.length >= 3) {
+    const nomeNorm = nomePessoa.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const primeiroNomeRemetente = (extrairPrimeiroNome(contato?.nome || '') || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const naoMencionaPessoaPedida = !respNorm.includes(nomeNorm);
+    const atribuiAoRemetente = primeiroNomeRemetente && primeiroNomeRemetente !== nomeNorm && respNorm.includes(primeiroNomeRemetente);
+    if (naoMencionaPessoaPedida && atribuiAoRemetente) {
       return {
-        textoValidado: `Não encontrei esse documento da *Nilceia* no Cofre.`,
+        textoValidado: `Não encontrei esse documento${pessoaFormatada} no Cofre.`,
         interceptado: true,
-        motivo: 'Usuário perguntou sobre Nilceia, mas a resposta atribuiu dados/documento ao Thomaz.',
+        motivo: `Usuário perguntou sobre ${nomePessoa}, mas a resposta atribuiu dados ao remetente (${contato?.nome}).`,
+      };
+    }
+  }
+
+  // 8. PARENTESCO: "meu pai", "minha esposa", etc. NUNCA entregar os dados do próprio remetente!
+  const pedePai = /\b(meu\s+pai|do\s+meu\s+pai|da\s+casa\s+do\s+meu\s+pai)\b/i.test(msgNorm);
+  if (pedePai) {
+    const primeiroNomeRemetente = (extrairPrimeiroNome(contato?.nome || '') || '').toLowerCase();
+    const atribuiAoRemetente = primeiroNomeRemetente && respNorm.includes(primeiroNomeRemetente) && !respNorm.includes('pai');
+    const afirmaEnderecoDireto = /\bo\s+endere[cç]o\s+d[oe]\s+[a-z]+\s+[eé]\b/i.test(respNorm);
+    if (atribuiAoRemetente || (afirmaEnderecoDireto && !respNorm.includes('pai'))) {
+      return {
+        textoValidado: 'Não encontrei o endereço da casa do seu pai nos documentos.',
+        interceptado: true,
+        motivo: 'Usuário pediu o endereço da casa do pai, mas a resposta entregou endereço do próprio remetente.',
+      };
+    }
+  }
+
+  // 9. LOGRADOURO / RUA ESPECÍFICA NO PEDIDO (ex: "comprovante de residência da rua X")
+  const matchRuaPedido = mensagemUsuario.match(/\brua\s+([A-Za-z0-9ÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç]+(?:\s+[A-Za-z0-9ÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç]+)?)/i);
+  if (matchRuaPedido) {
+    const nomeRuaNorm = matchRuaPedido[1].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    if (!['de', 'da', 'do', 'e'].includes(nomeRuaNorm) && nomeRuaNorm.length >= 2) {
+      const respClean = respNorm.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const entregouComprovanteOuEndereco = /\b(aqui\s+est[aá]|segue\s+o|comprovante\s+de\s+resid[eê]ncia|em\s+anexo)\b/i.test(respNorm);
+      if (entregouComprovanteOuEndereco && !respClean.includes(nomeRuaNorm)) {
+        return {
+          textoValidado: `Não encontrei comprovante de residência da ${matchRuaPedido[0]} no Cofre.`,
+          interceptado: true,
+          motivo: `Usuário pediu comprovante da ${matchRuaPedido[0]}, mas o documento ou endereço entregue é de outra rua.`,
+        };
+      }
+    }
+  }
+
+  // 10. MODELO DE VEÍCULO ESPECÍFICO (ex: Nissan Frontier vs Amarok)
+  const pedeFrontier = /\b(frontier|nissan)\b/i.test(msgNorm);
+  if (pedeFrontier) {
+    const mencionaAmarok = /\bamarok\b/i.test(respNorm);
+    const mencionaFrontier = /\bfrontier\b/i.test(respNorm);
+    if (mencionaAmarok && !mencionaFrontier) {
+      return {
+        textoValidado: 'Não encontrei o documento da Nissan Frontier no Cofre. Tenho o da caminhonete Amarok, quer esse?',
+        interceptado: true,
+        motivo: 'Usuário pediu documento da Nissan Frontier, mas a resposta entregou a Amarok.',
       };
     }
   }
@@ -1825,7 +1884,7 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
         properties: {
           consulta: {
             type: 'string',
-            description: 'Termo de busca, assunto, tipo ou trecho procurado (ex: "Declaração de IR", "contrato social", "certidão de casamento", "comprovante de endereço", "endereço do Thomaz")',
+            description: 'Termo de busca, assunto, tipo ou trecho procurado (ex: "Declaração de IR", "contrato social", "certidão de casamento", "comprovante de endereço", "endereço do Carlos")',
           },
           titular: {
             type: 'string',
@@ -1846,7 +1905,7 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
         properties: {
           nome: {
             type: 'string',
-            description: 'Nome completo, primeiro nome ou apelido do titular cadastrado (ex: "Thomaz")',
+            description: 'Nome completo, primeiro nome ou apelido do titular cadastrado (ex: "Carlos")',
           },
         },
         required: ['nome'],
@@ -1863,7 +1922,7 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
         properties: {
           titular: {
             type: 'string',
-            description: 'Nome do titular (ex: "Thomaz", "Dario Divergente")',
+            description: 'Nome do titular (ex: "Carlos Silva", "Roberto")',
           },
           campo: {
             type: 'string',
@@ -1906,13 +1965,13 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'listar_documentos_titular',
-      description: 'Lista todos os documentos oficiais salvos no Cofre pertencentes a um titular específico. Use quando o usuário perguntar expressamente sobre os documentos de uma pessoa específica (ex: "quais documentos o Thomaz tem?") OU quando usar primeira pessoa para os seus próprios documentos (ex: "quais são os meus documentos?", "o que você tem sobre mim?"). NUNCA use para perguntas gerais sobre o acervo do Cofre.',
+      description: 'Lista todos os documentos oficiais salvos no Cofre pertencentes a um titular específico. Use quando o usuário perguntar expressamente sobre os documentos de uma pessoa específica (ex: "quais documentos o Carlos tem?") OU quando usar primeira pessoa para os seus próprios documentos (ex: "quais são os meus documentos?", "o que você tem sobre mim?"). NUNCA use para perguntas gerais sobre o acervo do Cofre.',
       parameters: {
         type: 'object',
         properties: {
           titular: {
             type: 'string',
-            description: 'Nome do titular cadastrado (ex: "Thomaz") ou nome do próprio contato caso ele peça "meus documentos"',
+            description: 'Nome do titular cadastrado (ex: "Carlos") ou nome do próprio contato caso ele peça "meus documentos"',
           },
         },
         required: ['titular'],
@@ -1961,13 +2020,13 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'buscar_conhecimento',
-      description: 'Consulta a Base de Conhecimento interna da Delta Plan (chaves PIX, links de sistemas e sites web como o Portfólio das Máquinas, regras de negócio, telefones e procedimentos). Acione SEMPRE que o usuário perguntar sobre sites, portais, links web ou sistemas corporativos para verificar se o link correspondente está salvo na base.',
+      description: 'Consulta a Base de Conhecimento interna da Delta Plan (chaves PIX, links de sistemas e sites web como o Portfólio das根Máquinas, regras de negócio, telefones e procedimentos). Acione SEMPRE que o usuário perguntar sobre sites, portais, links web ou sistemas corporativos para verificar se o link correspondente está salvo na base.',
       parameters: {
         type: 'object',
         properties: {
           termo: {
             type: 'string',
-            description: 'Termo de busca na base de conhecimento (ex: "pix do Thomaz", "link do ERP", "portfólio das máquinas")',
+            description: 'Termo de busca na base de conhecimento (ex: "pix do Carlos", "link do ERP", "portfólio das máquinas")',
           },
           categoria: {
             type: 'string',
@@ -1992,7 +2051,7 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
           },
           termo_documento: {
             type: 'string',
-            description: 'Nome, título ou tipo do documento caso o doc_id exato ainda não seja conhecido (ex: "IR Thomaz", "Declaração de Ajuste Anual")',
+            description: 'Nome, título ou tipo do documento caso o doc_id exato ainda não seja conhecido (ex: "IR Carlos", "Declaração de Ajuste Anual")',
           },
           titular: {
             type: 'string',
@@ -2112,6 +2171,27 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
           },
         },
         required: ['titulo'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'listar_documentos_faltantes',
+      description: 'Consulta a lista de documentos faltantes/pendentes registrada na VEGA. Use quando o usuário perguntar sobre documentos pendentes ou faltantes (ex: "quais documentos estão faltando?", "me manda a lista de documentos faltantes", "meus documentos faltantes"). Se o usuário não especificar de quem deseja ver os faltantes ("me manda a lista de documentos faltantes"), você DEVE perguntar: "Quer só os seus ou de todos os titulares?". Se o usuário disser "meus documentos faltantes", consulte filtrando pelo remetente.',
+      parameters: {
+        type: 'object',
+        properties: {
+          titular: {
+            type: 'string',
+            description: 'Nome do titular para filtrar os faltantes (ex: "Carlos", ou nome do remetente se pediu "meus"). Deixar vazio se o pedido for genérico ou de todos.',
+          },
+          escopo: {
+            type: 'string',
+            enum: ['meus', 'todos'],
+            description: 'Define se a busca é estritamente dos documentos do remetente ("meus") ou de todos os titulares ("todos").',
+          },
+        },
       },
     },
   },
@@ -2443,7 +2523,7 @@ export function limparENormalizarEndereco(raw: string): string {
 
   // 1. Trunca quando começam outros campos do documento/cartório/certidão
   const delimitadoresCorte = [
-    /\b(?:Nilceia|Nomes completos|Filho de|Filha de|Nascid[oa]|Natural de|Data do registro|Regime de bens|Observações|Casamento celebrado|O conteúdo da certidão|Expedido em|Número de registro|Registro Nacional|Título\(s\)|Decreto Federal|Diploma\/Certificado|A presente certidão|Esta certidão|Eletrônico|Telefone|E-mail|Email|Natureza da Ocupação|Ocupação Principal|Tipo de declaração|Nº do recibo|DEPENDENTES|ALIMENTANDOS|RENDIMENTOS)\b/i,
+    /\b(?:Nomes completos|Filho de|Filha de|Nascid[oa]|Natural de|Data do registro|Regime de bens|Observações|Casamento celebrado|O conteúdo da certidão|Expedido em|Número de registro|Registro Nacional|Título\(s\)|Decreto Federal|Diploma\/Certificado|A presente certidão|Esta certidão|Eletrônico|Telefone|E-mail|Email|Natureza da Ocupação|Ocupação Principal|Tipo de declaração|Nº do recibo|DEPENDENTES|ALIMENTANDOS|RENDIMENTOS)\b/i,
     /\b(?:CPF|RG|CNPJ)\s*[:\s]*\d/i,
   ];
   for (const delim of delimitadoresCorte) {
@@ -2685,7 +2765,8 @@ export async function toolBuscarDocumentos(
   consulta: string,
   titularNome?: string,
   todosDocs: DocumentoRegistro[] = [],
-  origemMensagem?: 'audio' | 'texto'
+  origemMensagem?: 'audio' | 'texto',
+  contato?: Contato
 ): Promise<{
   documentos: Array<{
     doc_id: string;
@@ -3037,9 +3118,7 @@ export async function toolBuscarDocumentos(
 
       const coincidePessoa =
         (termoSemAcento.length >= 3 && (titDocNorm.includes(termoSemAcento) || arqDocNorm.includes(termoSemAcento) || descDocNorm.includes(termoSemAcento) || donoProvavelNorm.includes(termoSemAcento))) ||
-        (primeiroNomeSemAcento.length >= 3 && (titDocNorm.includes(primeiroNomeSemAcento) || arqDocNorm.includes(primeiroNomeSemAcento) || descDocNorm.includes(primeiroNomeSemAcento) || donoProvavelNorm.includes(primeiroNomeSemAcento))) ||
-        // Caso específico de nomes com abreviação no arquivo (ex.: "CNH ONLINE NIL.pdf" para Nilceia)
-        (primeiroNomeSemAcento === 'nilceia' && (arqDocNorm.includes('nil') || titDocNorm.includes('nil')));
+        (primeiroNomeSemAcento.length >= 3 && (titDocNorm.includes(primeiroNomeSemAcento) || arqDocNorm.includes(primeiroNomeSemAcento) || descDocNorm.includes(primeiroNomeSemAcento) || donoProvavelNorm.includes(primeiroNomeSemAcento)));
 
       if (coincidePessoa) {
         const dataEmissao = extrairDataEmissaoDocumento(d, [d.descricao || '']);
@@ -3190,7 +3269,48 @@ export async function toolBuscarDocumentos(
       mensagemRetorno = `Não encontrei informações ou documentos de "${titularNome || titularNorm}" no Cofre.`;
     }
   } else if (filtrados.length === 0) {
-    mensagemRetorno = 'Nenhum documento encontrado no Cofre para a consulta informada.';
+    // 6. REGISTRAR FALTANTE AUTOMATICAMENTE
+    // Quando um documento for pedido e não existir no Cofre, registrar na aba de documentos faltantes,
+    // desde que estejam claros o titular e o tipo do documento. Avisar na resposta:
+    // ("Não encontrei a CNH do Mauro. Registrei como documento faltante.").
+    // Não duplicar se já estiver registrado. Se o titular ou o tipo estiver ambíguo, não registrar.
+    const titularFinal = titObj?.nome || titularOriginal;
+    const ehTitularValido = titularFinal && !['delta plan', 'outros', 'empresa'].includes(titularFinal.toLowerCase().trim());
+
+    let tipoDetectado: string | null = null;
+    const termoCompleto = `${consulta || ''} ${termoNorm || ''}`.trim();
+    if (validarTipoDocumentoReconhecivel(consulta)) {
+      tipoDetectado = consulta;
+    } else {
+      const matchTipo = termoCompleto.match(/\b(cnh|rg|cpf|certid[aã]o(?:\s+de\s+[a-z]+)?|alvar[aá]|comprovante(?:\s+de\s+resid[eê]ncia)?|contrato|carteira\s+de\s+trabalho|ctps|passaporte|diploma|procura[cç][aã]o|apolice|laudo|declaracao|imposto\s+de\s+renda)\b/i);
+      if (matchTipo && validarTipoDocumentoReconhecivel(matchTipo[0])) {
+        tipoDetectado = matchTipo[0];
+      }
+    }
+
+    if (ehTitularValido && tipoDetectado && validarTipoDocumentoReconhecivel(tipoDetectado)) {
+      const tipoFormatado = formatarTipoDocumentoLegivel(tipoDetectado);
+      const art = obterArtigoDefinido(tipoFormatado);
+      const prep = obterPreposicaoTitular(titularFinal);
+      const avisoOficial = `Não encontrei ${art} ${tipoFormatado} d${prep} ${titularFinal}. Registrei como documento faltante.`;
+
+      try {
+        await registrarOuIncrementarDocumentoFaltante({
+          tipoDocumento: tipoFormatado,
+          titularInformado: titularFinal,
+          solicitanteNome: contato?.nome || 'Usuário WhatsApp',
+          solicitanteContato: contato?.telefone,
+          textoDoPedido: `${tipoFormatado} de ${titularFinal}`,
+        });
+      } catch (errFalt) {
+        console.warn('[VEGA Faltantes ⚠️] Falha ao registrar documento faltante automático:', errFalt);
+      }
+
+      mensagemRetorno = avisoOficial;
+      orientacaoResposta = `ATENÇÃO: O documento não existe no Cofre e foi registrado na aba de documentos faltantes. Responda ESTRITAMENTE ao usuário com a confirmação: "${avisoOficial}"`;
+    } else {
+      mensagemRetorno = 'Nenhum documento encontrado no Cofre para a consulta informada.';
+    }
   }
 
   return {
@@ -3602,6 +3722,119 @@ async function toolListarDocumentosTitular(
 }
 
 /**
+ * Validação rigorosa de correspondência por atributos identificadores (marca, modelo de veículo, logradouro/rua, etc.)
+ * Impede que a caminhonete Amarok seja enviada quando o usuário pediu Nissan Frontier, ou comprovante de outra rua.
+ */
+export function documentoEhCompativelComTermo(doc: DocumentoRegistro, termoBusca: string): boolean {
+  if (!termoBusca || !doc) return true;
+  const termoNorm = termoBusca.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  const titNorm = (doc.titulo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  const arqNorm = (doc.arquivo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  const descNorm = (doc.descricao || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+
+  // Modelos e marcas de veículos
+  const marcasEModelos = [
+    'frontier', 'nissan', 'amarok', 'volkswagen', 'hilux', 'toyota',
+    's10', 'chevrolet', 'ranger', 'ford', 'toro', 'fiat', 'strada',
+    'saveiro', 'l200', 'mitsubishi', 'corolla', 'civic', 'honda'
+  ];
+
+  // Se o pedido cita um modelo/marca específico
+  const modeloCitado = marcasEModelos.find((m) => new RegExp(`\\b${m}\\b`, 'i').test(termoNorm));
+  if (modeloCitado) {
+    const docTemModelo = titNorm.includes(modeloCitado) || arqNorm.includes(modeloCitado) || descNorm.includes(modeloCitado);
+    if (!docTemModelo) {
+      return false; // Incompatível!
+    }
+  }
+
+  // Se o pedido cita uma rua específica (ex: "rua x")
+  const matchRua = termoNorm.match(/\brua\s+([a-z0-9]+)/i);
+  if (matchRua) {
+    const ruaNome = matchRua[1];
+    if (!['de', 'da', 'do', 'e'].includes(ruaNome) && ruaNome.length >= 2) {
+      const docTemRua = titNorm.includes(ruaNome) || descNorm.includes(ruaNome);
+      if (!docTemRua) {
+        return false; // Incompatível!
+      }
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Tool: listar_documentos_faltantes(titular?, escopo?)
+ */
+export async function toolListarDocumentosFaltantes(
+  titular?: string,
+  escopo?: string,
+  contato?: Contato,
+  mensagemUsuario?: string
+): Promise<{
+  total: number;
+  precisa_esclarecer?: boolean;
+  pergunta_esclarecimento?: string;
+  documentos?: Array<{
+    id: string;
+    tipo: string;
+    titular: string;
+    quantidade_pedidos: number;
+    data_ultimo_pedido: string;
+    status: string;
+  }>;
+  mensagem: string;
+}> {
+  const msgNorm = normalizarParaComparacao(mensagemUsuario || '');
+  const pedeMeus = escopo === 'meus' || /\b(meus?|minhas?|pra mim|meu)\b/i.test(msgNorm);
+  const pedeTodos = escopo === 'todos' || /\b(todos?|geral|completa|tudo)\b/i.test(msgNorm);
+
+  // Se o pedido não deixar claro de quem, perguntar: "Quer só os seus ou de todos os titulares?"
+  if (!titular && !pedeMeus && !pedeTodos) {
+    return {
+      total: 0,
+      precisa_esclarecer: true,
+      pergunta_esclarecimento: 'Quer só os seus ou de todos os titulares?',
+      mensagem: 'O usuário não especificou se deseja apenas os seus documentos faltantes ou de todos os titulares. Você DEVE responder ESTRITAMENTE: "Quer só os seus ou de todos os titulares?"',
+    };
+  }
+
+  const faltantes = await obterDocumentosFaltantes();
+  let pendentes = faltantes.filter((f) => f.status === 'pendente');
+
+  if (pedeMeus && contato) {
+    const nomeRemetente = contato.titularVinculado || contato.nome;
+    pendentes = pendentes.filter((f) => titularCorresponde(f.titular, nomeRemetente));
+  } else if (titular && !pedeTodos) {
+    pendentes = pendentes.filter((f) => titularCorresponde(f.titular, titular));
+  }
+
+  const listaFormatada = pendentes.map((f) => ({
+    id: f.id,
+    tipo: f.tipoDocumento,
+    titular: f.titular,
+    quantidade_pedidos: f.quantidadePedidos,
+    data_ultimo_pedido: f.dataUltimoPedido,
+    status: f.status,
+  }));
+
+  let msg = '';
+  if (listaFormatada.length === 0) {
+    const alvo = titular ? `do titular ${titular}` : pedeMeus ? 'seus' : 'no Cofre';
+    msg = `Não constam documentos faltantes pendentes ${alvo} na lista da VEGA.`;
+  } else {
+    msg = `Documentos faltantes registrados na VEGA (${listaFormatada.length}):\n` +
+      listaFormatada.map((d, i) => `${i + 1}. *${d.tipo}* - Titular: *${d.titular}* (solicitado ${d.quantidade_pedidos}x)`).join('\n');
+  }
+
+  return {
+    total: listaFormatada.length,
+    documentos: listaFormatada,
+    mensagem: msg,
+  };
+}
+
+/**
  * Tool 4: enviar_documento(doc_id)
  */
 async function toolEnviarDocumento(
@@ -3621,11 +3854,17 @@ async function toolEnviarDocumento(
   let doc = docs.find(
     (d) => d.id === idLimpo || d.metadata?.id_legado === idLimpo
   );
+  if (doc && !documentoEhCompativelComTermo(doc, idLimpo)) {
+    doc = undefined;
+  }
+
   if (!doc) {
     const idNorm = idLimpo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const candidatos = docs.filter((d) => {
       const titNorm = d.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
       const arqNorm = (d.arquivo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const comp = documentoEhCompativelComTermo(d, idNorm);
+      if (!comp) return false;
       return titNorm.includes(idNorm) || idNorm.includes(titNorm) || arqNorm.includes(idNorm);
     });
     if (candidatos.length === 1) {
@@ -3640,17 +3879,25 @@ async function toolEnviarDocumento(
     }
   }
   if (!doc) {
-    doc = localizarDocumentoCitadoNoCofre(idLimpo, docs) || undefined;
+    const docLoc = localizarDocumentoCitadoNoCofre(idLimpo, docs);
+    if (docLoc && documentoEhCompativelComTermo(docLoc, idLimpo)) {
+      doc = docLoc;
+    }
   }
   if (!doc) {
     const idSemPrefixo = idLimpo.replace(/^(?:o\s+|a\s+)?(?:pdf|arquivo|documento|cópia|copia)\s+(?:d[oea]\s+)?/i, '').trim();
     if (idSemPrefixo && idSemPrefixo !== idLimpo) {
-      doc = localizarDocumentoCitadoNoCofre(idSemPrefixo, docs) || undefined;
+      const docLocPref = localizarDocumentoCitadoNoCofre(idSemPrefixo, docs);
+      if (docLocPref && documentoEhCompativelComTermo(docLocPref, idSemPrefixo)) {
+        doc = docLocPref;
+      }
       if (!doc) {
         const idSemPrefNorm = idSemPrefixo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
         const candidatosPref = docs.filter((d) => {
           const titNorm = d.titulo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
           const arqNorm = (d.arquivo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+          const comp = documentoEhCompativelComTermo(d, idSemPrefNorm);
+          if (!comp) return false;
           return titNorm.includes(idSemPrefNorm) || idSemPrefNorm.includes(titNorm) || arqNorm.includes(idSemPrefNorm);
         });
         if (candidatosPref.length === 1) {
@@ -4029,6 +4276,94 @@ export function extrairDadoPrincipalItemConhecimento(item: ItemConhecimento): st
 }
 
 /**
+ * Extrai dados de localização geográfica (latitude, longitude, linkMaps, nome, endereço)
+ * de argumentos estruturados, conteúdo textual, mensagem atual ou histórico recente da conversa.
+ */
+export function extrairLocalizacaoDeTextoOuHistorico(
+  argsConteudo?: string,
+  argsDados?: any,
+  msgAtual?: string,
+  historico: Mensagem[] = []
+): { latitude: number; longitude: number; linkMaps: string; nome?: string; endereco?: string } | null {
+  // 1. Inspeciona argumentos estruturados
+  if (argsDados && typeof argsDados === 'object') {
+    const lat = Number(argsDados.latitude ?? argsDados.lat);
+    const lng = Number(argsDados.longitude ?? argsDados.lng ?? argsDados.lon);
+    if (!isNaN(lat) && !isNaN(lng) && (lat !== 0 || lng !== 0)) {
+      const link = argsDados.linkMaps || argsDados.link || `https://www.google.com/maps?q=${lat},${lng}`;
+      return {
+        latitude: lat,
+        longitude: lng,
+        linkMaps: link,
+        nome: argsDados.nomeLocal || argsDados.nome,
+        endereco: argsDados.endereco,
+      };
+    }
+  }
+
+  // 2. Textos candidatos ordenados da mensagem atual para as mais recentes do histórico
+  const textosCandidatos = [
+    argsConteudo || '',
+    msgAtual || '',
+    ...historico.slice(-15).reverse().map((m) => m.texto || ''),
+  ];
+
+  for (const txt of textosCandidatos) {
+    if (!txt) continue;
+
+    // Formato padrão gerado pelo webhook: [Localização recebida: latitude -22.3145, longitude -49.0587 ...]
+    const matchWebhook = txt.match(/latitude\s*[:\s]?\s*(-?\d+(?:\.\d+)?)[,\s]+longitude\s*[:\s]?\s*(-?\d+(?:\.\d+)?)/i);
+    if (matchWebhook) {
+      const lat = parseFloat(matchWebhook[1]);
+      const lng = parseFloat(matchWebhook[2]);
+      if (!isNaN(lat) && !isNaN(lng)) {
+        const matchNome = txt.match(/Local:\s*([^|)\n]+)/i);
+        const matchEnd = txt.match(/Endereço:\s*([^|)\n]+)/i);
+        const matchLink = txt.match(/Link:\s*(https?:\/\/[^\s\]\n]+)/i);
+        return {
+          latitude: lat,
+          longitude: lng,
+          linkMaps: matchLink ? matchLink[1].trim() : `https://www.google.com/maps?q=${lat},${lng}`,
+          nome: matchNome ? matchNome[1].trim() : undefined,
+          endereco: matchEnd ? matchEnd[1].trim() : undefined,
+        };
+      }
+    }
+
+    // Link do Google Maps
+    const matchMaps = txt.match(/google\.com\/maps\?q=(-?\d+\.\d+),(-?\d+\.\d+)/i) ||
+                      txt.match(/maps\.(?:google\.com|app\.goo\.gl)\/.*?(?:[?&]q=|\/dir\/\/)(-?\d+\.\d+),(-?\d+\.\d+)/i);
+    if (matchMaps) {
+      const lat = parseFloat(matchMaps[1]);
+      const lng = parseFloat(matchMaps[2]);
+      if (!isNaN(lat) && !isNaN(lng)) {
+        return {
+          latitude: lat,
+          longitude: lng,
+          linkMaps: `https://www.google.com/maps?q=${lat},${lng}`,
+        };
+      }
+    }
+
+    // Par de coordenadas decimais: -22.3145, -49.0587
+    const matchCoords = txt.match(/(-?\d{1,2}\.\d{3,8})[,\s]+(-?\d{1,3}\.\d{3,8})/);
+    if (matchCoords) {
+      const lat = parseFloat(matchCoords[1]);
+      const lng = parseFloat(matchCoords[2]);
+      if (!isNaN(lat) && !isNaN(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+        return {
+          latitude: lat,
+          longitude: lng,
+          linkMaps: `https://www.google.com/maps?q=${lat},${lng}`,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Tool: salvar_conhecimento
  */
 export async function toolSalvarConhecimento(
@@ -4102,6 +4437,13 @@ export async function toolSalvarConhecimento(
   const ehContato = catNorm.includes('contato') || tipoNorm === 'contato' || /\bcontato\b/i.test(tituloLimpo);
   const ehPix = catNorm.includes('financeiro') || tipoNorm === 'pix' || /\bpix\b/i.test(tituloLimpo);
   const ehLink = catNorm.includes('sistema') || tipoNorm === 'link' || /\blink|url\b/i.test(tituloLimpo);
+  const ehLocal =
+    catNorm.includes('local') ||
+    tipoNorm === 'local' ||
+    tipoNorm === 'localizacao' ||
+    /\b(localiza[cç][aã]o|rancho|ch[aá]cara|fazenda|s[ií]tio|ponto|coordenadas?)\b/i.test(tituloLimpo) ||
+    /\b(localiza[cç][aã]o|rancho|ch[aá]cara|fazenda|s[ií]tio|ponto|coordenadas?)\b/i.test(args.categoria || '') ||
+    /\b(localiza[cç][aã]o|rancho|ch[aá]cara|fazenda|s[ií]tio)\b/i.test(mensagemUsuarioAtual);
 
   // 2. RECUSAR GRAVAR SE FALTAR DADO PRINCIPAL E SALVAR PENDÊNCIA PARCIAL
   if (ehContato) {
@@ -4217,6 +4559,37 @@ export async function toolSalvarConhecimento(
     }
   }
 
+  if (ehLocal) {
+    const loc = extrairLocalizacaoDeTextoOuHistorico(
+      args.conteudo,
+      args.dados_estruturados,
+      mensagemUsuarioAtual,
+      historicoRecente
+    );
+
+    if (!loc) {
+      return {
+        sucesso: false,
+        status: 'dado_faltante',
+        campo_faltante: 'coordenadas',
+        mensagem: 'Não é possível salvar localização sem as coordenadas geográficas (latitude e longitude). Peça o envio da localização ou as coordenadas ao usuário.',
+        instrucao_resposta: `Falta a localização com coordenadas geográficas para "${tituloLimpo}". Peça ao usuário que envie a localização pelo WhatsApp. NÃO afirme que salvou e NÃO grave nada.`,
+      };
+    }
+
+    args.categoria = 'Locais';
+    args.tipo = 'local';
+    args.dados_estruturados = {
+      ...args.dados_estruturados,
+      latitude: loc.latitude,
+      longitude: loc.longitude,
+      linkMaps: loc.linkMaps,
+      nomeLocal: loc.nome || tituloLimpo,
+      endereco: loc.endereco || undefined,
+    };
+    args.conteudo = `Latitude: ${loc.latitude}, Longitude: ${loc.longitude}\nGoogle Maps: ${loc.linkMaps}${loc.nome ? `\nLocal: ${loc.nome}` : ''}${loc.endereco ? `\nEndereço: ${loc.endereco}` : ''}`;
+  }
+
   const conteudoLimpo = (args.conteudo || '').trim();
   if (!conteudoLimpo || normalizarParaComparacao(conteudoLimpo) === tituloNorm) {
     return {
@@ -4277,6 +4650,8 @@ export async function toolSalvarConhecimento(
     resumoDado = `telefone ${resumoDado}`;
   } else if (ehPix && !resumoDado.toLowerCase().includes('chave') && !resumoDado.toLowerCase().includes('pix')) {
     resumoDado = `chave ${resumoDado}`;
+  } else if (ehLocal && args.dados_estruturados?.latitude && args.dados_estruturados?.longitude) {
+    resumoDado = `localização (${args.dados_estruturados.latitude}, ${args.dados_estruturados.longitude})`;
   }
 
   const fraseConfirmacao = `Vou salvar: ${tituloLimpo}, ${resumoDado}. Confirma?`;
@@ -4799,7 +5174,7 @@ export function detectarReferenciaItemLista(
 export function detectarAcaoSemFerramenta(mensagemUsuario: string): string | null {
   const msgNorm = normalizarParaComparacao(mensagemUsuario);
 
-  // 1. Envio de e-mail (ex: "manda um e-mail pro Thomaz", "envie um email", "manda email para fulano", "escreva um email")
+  // 1. Envio de e-mail (ex: "manda um e-mail pro fulano", "envie um email", "manda email para fulano", "escreva um email")
   const ehEnvioEmail =
     /\b(manda|mande|envia|enviar|envie|disparar|dispara|escrever|escreva|mandar)\s+(um\s+|uma\s+)?(e-?mail|mensagem por e-?mail)\b/i.test(msgNorm);
 
@@ -4807,7 +5182,7 @@ export function detectarAcaoSemFerramenta(mensagemUsuario: string): string | nul
     return 'Não consigo enviar e-mails pelo chat. Como assistente da VEGA, posso consultar e cadastrar informações na Base de Conhecimento, buscar documentos e dados de titulares no Cofre.';
   }
 
-  // 2. Fazer ligação telefônica (ex: "liga pro Thomaz", "faça uma ligação", "telefona pro fulano")
+  // 2. Fazer ligação telefônica (ex: "liga pro fulano", "faça uma ligação", "telefona pro fulano")
   const ehLigacao =
     /\b(liga|ligar|ligue|telefona|telefonar|fazer uma ligacao|faca uma ligacao)\s+(para|pro|pra|a)\b/i.test(msgNorm);
 
@@ -4909,7 +5284,7 @@ export async function detectarConfirmacaoSalvarConhecimento(
     }
   }
 
-  // MUDANÇA DE ASSUNTO NO MEIO ("deixa pra lá, qual o CPF do Thomaz?")
+  // MUDANÇA DE ASSUNTO NO MEIO ("deixa pra lá, qual o CPF do Carlos?")
   const ehPerguntaOuNovaConsulta =
     /[?]/i.test(mensagemUsuarioAtual) ||
     /\b(qual|quais|quem|onde|quando|quanto|como|por que|porque|cade|cadê|mostra|me fala|me diga|cpf|rg|contrato|documento|certid[aã]o|deixa pra l[aá]|esquece isso)\b/i.test(msgNorm);
@@ -5029,8 +5404,21 @@ export async function detectarConfirmacaoSalvarConhecimento(
           categoria = 'Sistemas';
           tipo = 'link';
           const urlLimpa = dado.replace(/^url\s*[:\s]*/i, '').trim();
-          conteudo = urlLimpa;
-          dadosEstruturados = { url: urlLimpa, nomeSistema: titulo.replace(/^link\s*/i, '').trim() };
+        } else if (dado.toLowerCase().startsWith('localização') || dado.toLowerCase().startsWith('localizacao') || dado.toLowerCase().startsWith('coordenadas')) {
+          categoria = 'Locais';
+          tipo = 'local';
+          const matchCoord = dado.match(/(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)/);
+          if (matchCoord) {
+            const lat = parseFloat(matchCoord[1]);
+            const lng = parseFloat(matchCoord[2]);
+            dadosEstruturados = {
+              latitude: lat,
+              longitude: lng,
+              linkMaps: `https://www.google.com/maps?q=${lat},${lng}`,
+              nomeLocal: titulo,
+            };
+            conteudo = `Latitude: ${lat}, Longitude: ${lng}\nGoogle Maps: https://www.google.com/maps?q=${lat},${lng}`;
+          }
         }
       }
 
@@ -5484,6 +5872,7 @@ ${statusSaudacao}
   const MAX_VOLTAS = 6;
   let volta = 0;
 
+  let localizacaoParaEnvio: { latitude: number; longitude: number; nome?: string; endereco?: string } | undefined = undefined;
   let opcoesGeradasNestaResposta: OpcaoDocumento[] | undefined = undefined;
   const docsEncontradosParaVerificacao: Array<{
     nome_documento: string;
@@ -5539,7 +5928,7 @@ ${statusSaudacao}
 
         if (nomeTool === 'buscar_documentos') {
           const titularEfetivo = args.titular || ultimoTitularFoco;
-          resultadoTool = await toolBuscarDocumentos(args.consulta, titularEfetivo, todosDocs, dados.origemMensagem);
+          resultadoTool = await toolBuscarDocumentos(args.consulta, titularEfetivo, todosDocs, dados.origemMensagem, contato);
           if (resultadoTool.tipo_correspondencia) {
             etapasRastro.push({
               ordem: ordemEtapa++,
@@ -5713,6 +6102,56 @@ ${statusSaudacao}
           if (resultadoTool.itens) {
             for (const it of resultadoTool.itens) {
               dadosRetornadosTools.push(`${it.titulo}: ${it.conteudo}`);
+
+              // Se o item retornado for uma localização salva, capturar para envio nativo no WhatsApp
+              if (
+                it.tipo === 'local' ||
+                it.categoria?.toLowerCase() === 'locais' ||
+                (it.dadosEstruturados?.latitude && it.dadosEstruturados?.longitude) ||
+                /latitude:\s*(-?\d+(?:\.\d+)?).*longitude:\s*(-?\d+(?:\.\d+)?)/i.test(it.conteudo)
+              ) {
+                let lat = Number(it.dadosEstruturados?.latitude);
+                let lng = Number(it.dadosEstruturados?.longitude);
+                const nomeLocal = it.dadosEstruturados?.nomeLocal || it.dadosEstruturados?.nome || it.titulo;
+                const endLocal = it.dadosEstruturados?.endereco || it.dadosEstruturados?.linkMaps;
+
+                if (isNaN(lat) || isNaN(lng) || (lat === 0 && lng === 0)) {
+                  const mCoord = it.conteudo.match(/latitude:\s*(-?\d+(?:\.\d+)?)[,\s]+longitude:\s*(-?\d+(?:\.\d+)?)/i);
+                  if (mCoord) {
+                    lat = parseFloat(mCoord[1]);
+                    lng = parseFloat(mCoord[2]);
+                  }
+                }
+
+                if (!isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0) {
+                  localizacaoParaEnvio = {
+                    latitude: lat,
+                    longitude: lng,
+                    nome: nomeLocal,
+                    endereco: endLocal,
+                  };
+                }
+              }
+            }
+          }
+        } else if (nomeTool === 'listar_documentos_faltantes') {
+          resultadoTool = await toolListarDocumentosFaltantes(
+            args.titular,
+            args.escopo,
+            contato,
+            mensagemUsuario
+          );
+          if (resultadoTool.mensagem) {
+            dadosRetornadosTools.push(resultadoTool.mensagem);
+          }
+          if (resultadoTool.documentos) {
+            for (const doc of resultadoTool.documentos) {
+              fontesRetornadasRastro.push({
+                id: doc.id,
+                titulo: `${doc.tipo} (${doc.titular}) - Faltante`,
+                similaridade: 100,
+                usadoNaResposta: true,
+              });
             }
           }
         } else if (nomeTool === 'salvar_conhecimento') {
@@ -5876,6 +6315,7 @@ ${statusSaudacao}
     textoResposta: textoLimpoFinal,
     anexos: anexosAcumulados.length > 0 ? anexosAcumulados : undefined,
     opcoes: opcoesGeradasNestaResposta && opcoesGeradasNestaResposta.length > 0 ? opcoesGeradasNestaResposta : undefined,
+    localizacao: localizacaoParaEnvio,
     origem: 'ia',
     intencaoDetectada: 'pergunta_conteudo',
     perguntaReescrita: mensagemUsuario,
@@ -5937,7 +6377,7 @@ export async function processarMensagemChat(dados: {
   }
 
   // GUARDRAIL FINAL (REGRA 17): Validação estrita de correspondência de campo
-  const checagemCampo = validarCorrespondenciaCampoResposta(dados.mensagemUsuario, resultado.textoResposta);
+  const checagemCampo = validarCorrespondenciaCampoResposta(dados.mensagemUsuario, resultado.textoResposta, dados.contato);
   if (checagemCampo.interceptado) {
     const respostaOriginalIa = resultado.textoResposta;
     console.warn(`[VEGA Guardrail] Resposta interceptada pela Regra 17: ${checagemCampo.motivo}`);

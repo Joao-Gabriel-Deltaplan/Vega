@@ -42,6 +42,8 @@ export interface DadosContato {
 export interface DadosLocal {
   nomeLocal: string;
   endereco: string;
+  latitude?: number;
+  longitude?: number;
   pontoReferencia?: string;
   cidade?: string;
   linkMaps?: string;

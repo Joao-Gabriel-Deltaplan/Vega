@@ -685,8 +685,8 @@ async function processarLoteUnificado(
       eventosPainel.emitirNovaMensagem(conversaId, msgAssistente, conversaAtualizada);
     }
 
-    // 6. Envia resposta para o WhatsApp
-    await enviarRespostaCompletaWhatsApp(destinatario, textoResposta, resultadoChat.anexos);
+    // 6. Envia resposta para o WhatsApp (texto, anexos e localização se houver)
+    await enviarRespostaCompletaWhatsApp(destinatario, textoResposta, resultadoChat.anexos, resultadoChat.localizacao);
 
     const tempoTotal = Date.now() - inicioProcessamento;
     console.log(

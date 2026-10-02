@@ -290,6 +290,11 @@ export function identificarTipoPedido(textoOriginal: string): string | null {
  * Identifica se a mensagem tem marcador de posse pessoal ("meu", "minha", "pra mim")
  */
 export function temMarcadorPessoal(texto: string): boolean {
+  if (!texto) return false;
+  // Parentesco ("meu pai", "minha mãe", "minha esposa", etc.) refere-se a OUTRA pessoa, NUNCA ao próprio remetente!
+  if (/\b(meu|minha)\s+(pai|m[aã]e|esposo|esposa|marido|mulher|filho|filha|irm[aã]o|irm[aã]|s[oó]cio|s[oó]cia|primo|prima|tio|tia|sogro|sogra|cunhad[oa])\b/i.test(texto)) {
+    return false;
+  }
   return /\b(meu|minha|meus|minhas|pra mim|para mim)\b/i.test(texto);
 }
 

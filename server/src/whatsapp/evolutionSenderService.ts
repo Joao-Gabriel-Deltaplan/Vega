@@ -327,20 +327,117 @@ export async function enviarMediaEvolution(
 }
 
 /**
+ * Envia uma localização nativa do WhatsApp via Evolution API.
+ * Endpoint: POST {EVOLUTION_API_URL}/message/sendLocation/{EVOLUTION_INSTANCE}
+ */
+export async function enviarLocalizacaoEvolution(
+  destinatario: string,
+  dados: {
+    latitude: number;
+    longitude: number;
+    nome?: string;
+    endereco?: string;
+  }
+): Promise<ResultadoEnvioEvolution> {
+  const config = obterConfigEvolution();
+  const numeroNormalizado = normalizarDestinatarioEvolution(destinatario);
+
+  if (!config) {
+    const dataHora = new Date().toLocaleString('pt-BR');
+    console.warn(
+      `[Evolution API ⚠️ (Modo Simulação)] ${dataHora} | Variáveis EVOLUTION_API_* não configuradas. Localização (${dados.latitude}, ${dados.longitude}) não enviada para "${numeroNormalizado}".`
+    );
+    return {
+      sucesso: false,
+      motivoFalha: 'Variaveis de ambiente da Evolution API nao configuradas',
+    };
+  }
+
+  const url = `${config.apiUrl}/message/sendLocation/${encodeURIComponent(config.instance)}`;
+
+  try {
+    const body = {
+      number: numeroNormalizado,
+      name: dados.nome || 'Localização',
+      address: dados.endereco || '',
+      latitude: dados.latitude,
+      longitude: dados.longitude,
+      degreesLatitude: dados.latitude,
+      degreesLongitude: dados.longitude,
+    };
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: config.apiKey,
+      },
+      body: JSON.stringify(body),
+    });
+
+    const textoResposta = await response.text();
+    let dadosJson: any = null;
+    try {
+      dadosJson = JSON.parse(textoResposta);
+    } catch {
+      dadosJson = textoResposta;
+    }
+
+    if (response.ok) {
+      console.log(
+        `[Evolution API 📍] Localização enviada com sucesso para ${numeroNormalizado} | Status: ${response.status}`
+      );
+      notificarRecuperacaoServico('evolution').catch(() => {});
+      return {
+        sucesso: true,
+        statusHttp: response.status,
+        resposta: dadosJson,
+      };
+    } else {
+      const dataHora = new Date().toLocaleString('pt-BR');
+      const motivo = typeof dadosJson === 'object' ? JSON.stringify(dadosJson) : String(dadosJson);
+      console.error(
+        `\n❌ [Evolution API FALHA NO ENVIO DE LOCALIZAÇÃO] ${dataHora}\n` +
+          `- Destinatário: ${numeroNormalizado} (Original: ${destinatario})\n` +
+          `- Status HTTP: ${response.status} ${response.statusText}\n` +
+          `- URL: ${url}\n` +
+          `- Motivo retornado pela Evolution: ${motivo}\n`
+      );
+
+      return {
+        sucesso: false,
+        statusHttp: response.status,
+        motivoFalha: motivo,
+        resposta: dadosJson,
+      };
+    }
+  } catch (erro: any) {
+    const msgErro = erro?.message || String(erro);
+    console.error(`[Evolution API ❌] Erro ao enviar localização para ${numeroNormalizado}:`, msgErro);
+    return {
+      sucesso: false,
+      motivoFalha: msgErro,
+    };
+  }
+}
+
+/**
  * Orquestra o envio completo da resposta gerada pela VEGA para o WhatsApp via Evolution API.
  * 
  * Regra de entrega:
  * 1. Envia a resposta de texto primeiro.
- * 2. Se houver anexos (documentos PDF):
+ * 2. Se houver localização nativa (latitude e longitude), envia a localização pelo WhatsApp.
+ * 3. Se houver anexos (documentos PDF):
  *    - Se tamanho <= 1.5 MB: tenta via Base64; com fallback para Signed URL caso a Evolution falhe.
  *    - Se tamanho > 1.5 MB: envia diretamente via Signed URL do Supabase Storage (evita estouro de pilha).
- * 3. Se o envio de qualquer documento falhar após todas as tentativas:
+ * 4. Se o envio de qualquer documento falhar após todas as tentativas:
  *    - A VEGA avisa imediatamente no WhatsApp qual documento não foi enviado, não ficando em silêncio.
  */
 export async function enviarRespostaCompletaWhatsApp(
   destinatario: string,
   textoResposta: string,
-  anexos?: Anexo[]
+  anexos?: Anexo[],
+  localizacao?: { latitude: number; longitude: number; nome?: string; endereco?: string; linkMaps?: string }
 ): Promise<void> {
   if (!destinatario) {
     console.warn('[Evolution API ⚠️] Destinatário não informado para envio.');
@@ -352,7 +449,17 @@ export async function enviarRespostaCompletaWhatsApp(
     await enviarTextoEvolution(destinatario, textoResposta.trim());
   }
 
-  // 2. Envio de anexos (documentos PDF)
+  // 2. Envio de localização nativa (se fornecida)
+  if (localizacao && typeof localizacao.latitude === 'number' && typeof localizacao.longitude === 'number') {
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      await enviarLocalizacaoEvolution(destinatario, localizacao);
+    } catch (errLoc: any) {
+      console.error('[Evolution API ⚠️] Erro ao enviar localização nativa:', errLoc?.message || errLoc);
+    }
+  }
+
+  // 3. Envio de anexos (documentos PDF)
   if (anexos && Array.isArray(anexos) && anexos.length > 0) {
     for (const anexo of anexos) {
       const nomeDoc = anexo.nome || 'documento.pdf';

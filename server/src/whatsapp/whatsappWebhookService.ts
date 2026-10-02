@@ -11,7 +11,7 @@ import {
   normalizarNumeroCanonica,
   normalizarLid,
 } from './usuarioWhatsAppService.js';
-import { enviarRespostaCompletaWhatsApp, obterConfigEvolution } from './evolutionSenderService.js';
+import { enviarRespostaCompletaWhatsApp, enviarTextoEvolution, obterConfigEvolution } from './evolutionSenderService.js';
 import {
   extrairInfoAudio,
   obterAudioBufferEvolution,
@@ -945,6 +945,53 @@ export async function processarEventoEvolution(
           usuario: usuarioAutorizado,
         };
       }
+    } else if (infoDoc.isLocalizacao) {
+      // Ponto 1: Mensagem de localização recebida nativamente do WhatsApp (locationMessage)
+      const lat = infoDoc.latitude;
+      const lng = infoDoc.longitude;
+      const nomeLoc = infoDoc.nomeLocal ? `, nome: "${infoDoc.nomeLocal}"` : '';
+      const endLoc = infoDoc.enderecoLocal ? `, endereço: "${infoDoc.enderecoLocal}"` : '';
+      const linkMaps = infoDoc.linkMaps || `https://www.google.com/maps?q=${lat},${lng}`;
+
+      const textoRegistroUsuario = `[Localização recebida: latitude ${lat}, longitude ${lng}${nomeLoc}${endLoc} | Link: ${linkMaps}]`;
+      const respostaVega = `Recebi a localização${infoDoc.nomeLocal ? ` de *${infoDoc.nomeLocal}*` : ''}! 📍\nCoordenadas: ${lat}, ${lng}\nLink: ${linkMaps}\n\nSe quiser salvar na Base de Conhecimento, basta me dizer com qual nome deseja salvar (ex: _"Salve essa localização como Rancho Advir"_).`;
+
+      console.log(`[Webhook WhatsApp 📍] Localização recebida de "${usuarioAutorizado.nome}": ${lat}, ${lng}`);
+
+      try {
+        await garantirConversaWhatsApp(conversaId, contato);
+        await registrarMensagemETransmitir(conversaId, {
+          id: mensagemId || `wa-msg-${Date.now()}-user-loc`,
+          remetente: 'cliente',
+          nomeRemetente: contato.nome,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: textoRegistroUsuario,
+          tipoMensagem: 'texto',
+        });
+        await registrarMensagemETransmitir(conversaId, {
+          id: `wa-msg-${Date.now()}-vega-loc`,
+          remetente: 'assistente',
+          nomeRemetente: ASSISTENTE.nomeExibicao,
+          horario: formatarHorarioBrasilia(),
+          timestamp: obterAgoraIsoUtc(),
+          texto: respostaVega,
+          origem: 'motor',
+        });
+      } catch (errPersist) {
+        console.warn('[Webhook WhatsApp ⚠️] Falha ao registrar mensagem de localização na conversa:', errPersist);
+      }
+
+      await enviarTextoEvolution(remoteJid, respostaVega);
+
+      return {
+        sucesso: true,
+        status: 'processado',
+        resposta: respostaVega,
+        destinatario: remoteJid,
+        mensagemId,
+        usuario: usuarioAutorizado,
+      };
     } else if (infoDoc.isNaoSuportado) {
       // Ponto 4: Se o arquivo vier de um tipo não suportado, a VEGA responde explicando o que aceita!
       const msgNaoSuportado = `Olá, ${usuarioAutorizado.nome}! No momento, o Cofre da VEGA aceita documentos em formato PDF e imagens (JPG, PNG e WEBP), além de mensagens de texto e áudio. Não consigo processar arquivos do tipo ${infoDoc.tipoDetectado}.`;
