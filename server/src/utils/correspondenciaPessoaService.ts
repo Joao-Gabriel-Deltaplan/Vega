@@ -327,9 +327,22 @@ export function extrairNomePessoaDaMensagem(
     const ignorar = [
       'empresa', 'delta plan', 'cofre', 'sistema', 'documento', 'documentos',
       'pasta', 'arquivo', 'ano', 'mes', 'dia', 'hoje', 'ontem', 'amanha',
-      'pdf', 'foto', 'imagem', 'cartao', 'certidao', 'contrato', 'comprovante'
+      'pdf', 'foto', 'imagem', 'cartao', 'certidao', 'contrato', 'comprovante',
+      'frontier', 'nissan', 'amarok', 'volkswagen', 'hilux', 'toyota', 's10',
+      'chevrolet', 'ranger', 'ford', 'toro', 'strada', 'saveiro', 'l200',
+      'mitsubishi', 'corolla', 'civic', 'honda', 'veiculo', 'carro',
+      'caminhonete', 'caminhao', 'moto', 'placa', 'crlv', 'renavam',
+      'rua', 'avenida', 'alameda', 'rodovia', 'fazenda', 'sitio', 'rancho',
+      'chacara', 'lote', 'terreno', 'casa', 'apartamento', 'apto', 'imovel',
+      'obra', 'reforma', 'barracao', 'galpao', 'predio',
+      'pendente', 'pendentes', 'faltante', 'faltantes', 'lista', 'catalogo', 'relatorio'
     ];
-    if (!ignorar.includes(extraidoNorm) && extraido.length >= 3) {
+    const ehAtributoNaoPessoa = ignorar.some((termo) => {
+      const regexTermo = new RegExp(`\\b${termo}\\b`, 'i');
+      return regexTermo.test(extraidoNorm);
+    });
+
+    if (!ehAtributoNaoPessoa && extraido.length >= 3) {
       return extraido;
     }
   }
@@ -337,8 +350,13 @@ export function extrairNomePessoaDaMensagem(
   // 3. Mensagem curta contendo apenas o nome: "Danil Ceia", "Nilceia", "Thomas"
   const palavras = msgLimpa.split(/\s+/);
   if (palavras.length <= 4) {
-    const candidatosIgnorados = ['ola', 'oi', 'bom dia', 'boa tarde', 'boa noite', 'sim', 'nao', 'ok', 'obrigado'];
-    if (!candidatosIgnorados.includes(normalizarParaComparacao(msgLimpa))) {
+    const candidatosIgnorados = [
+      'ola', 'oi', 'bom dia', 'boa tarde', 'boa noite', 'sim', 'nao', 'ok', 'obrigado',
+      'frontier', 'nissan frontier', 'amarok', 'hilux', 'ranger', 's10', 'toro', 'strada',
+      'lista', 'faltantes', 'pendentes', 'documentos'
+    ];
+    const normCurto = normalizarParaComparacao(msgLimpa);
+    if (!candidatosIgnorados.includes(normCurto)) {
       return msgLimpa;
     }
   }

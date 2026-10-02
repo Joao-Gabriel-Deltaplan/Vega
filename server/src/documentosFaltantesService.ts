@@ -46,9 +46,9 @@ export function validarTipoDocumentoReconhecivel(tipo?: string | null): boolean 
     /^(pdf|o pdf|um pdf|arquivo|o arquivo|documento|o documento|anexo|o anexo|outros|desconhecido|indefinido|nenhum|texto)$/i;
   if (REGEX_GENERICOS.test(semPrefixo)) return false;
 
-  // 4. Exige que contenha uma raiz ou sigla de tipo documental reconhecível
+  // 4. Exige que contenha uma raiz ou sigla de tipo documental reconhecível (ou bem/veículo/imóvel/obra)
   const REGEX_TIPO_VALIDO =
-    /\b(certidao|contrato|alvara|cnh|carteira|habilitacao|rg|identidade|cpf|passaporte|crea|crt|cau|oab|ctps|art|rrt|diploma|certificado|historico|comprovante|procuracao|termo|recibo|declaracao|estatuto|licenca|apolice|seguro|escritura|habite|cartao|vacinas?|vacinacao|imunizacao|covid|atestado|laudo|exame|nota\s*fiscal|nf|dre|balanco|proposta|orcamento|holerite|contracheque|requerimento|reservista|titulo)\b/i;
+    /\b(certidao|contrato|alvara|cnh|carteira|habilitacao|rg|identidade|cpf|passaporte|crea|crt|cau|oab|ctps|art|rrt|diploma|certificado|historico|comprovante|procuracao|termo|recibo|declaracao|estatuto|licenca|apolice|seguro|escritura|habite|cartao|vacinas?|vacinacao|imunizacao|covid|atestado|laudo|exame|nota\s*fiscal|nf|dre|balanco|proposta|orcamento|holerite|contracheque|requerimento|reservista|titulo|veiculo|ve[ií]culo|crlv|renavam|placa|caminhonete|carro|caminh[aã]o|moto|frontier|amarok|hilux|ranger|s10|corolla|civic|nissan|toyota|chevrolet|volkswagen|imovel|im[oó]vel|residencia|resid[eê]ncia|rua|fazenda|terreno|lote|obra|projeto)\b/i;
 
   return REGEX_TIPO_VALIDO.test(semPrefixo);
 }
@@ -60,7 +60,7 @@ export function formatarTipoDocumentoLegivel(tipo: string): string {
   if (!tipo) return 'Documento';
   const t = tipo.trim();
   // Siglas conhecidas mantidas em maiúsculas
-  const siglas = ['cnh', 'rg', 'cpf', 'crea', 'crt', 'art', 'rrt', 'ctps', 'cnpj', 'dre', 'nf'];
+  const siglas = ['cnh', 'rg', 'cpf', 'crea', 'crt', 'art', 'rrt', 'ctps', 'cnpj', 'dre', 'nf', 'crlv'];
   if (siglas.includes(t.toLowerCase())) {
     return t.toUpperCase();
   }
@@ -76,19 +76,21 @@ export function formatarTipoDocumentoLegivel(tipo: string): string {
 
 /**
  * Registra uma solicitação de documento não encontrado no Cofre.
- * Se o pedido já existir para o mesmo titular e tipo, soma a contagem sem duplicar.
- * Só registra se o tipo de documento for reconhecível e válido.
+ * Se o pedido já existir para o mesmo titular e tipo (ou para o mesmo tipo/bem sem titular),
+ * soma a contagem sem duplicar.
  */
 export async function registrarOuIncrementarDocumentoFaltante(params: {
   tipoDocumento: string;
   titularInformado?: string | null;
+  descricaoItem?: string | null;
   solicitanteNome: string;
   solicitanteContato?: string | null;
   dadosEquivalentesOferecidos?: string | null;
   textoDoPedido?: string;
+  forcarRegistro?: boolean;
 }): Promise<DocumentoFaltanteRegistro | null> {
-  // Validação estrita: só registra se for um tipo documental reconhecido
-  if (!validarTipoDocumentoReconhecivel(params.tipoDocumento)) {
+  // Validação estrita: só registra se for um tipo documental reconhecido ou forçado pelo usuário
+  if (!params.forcarRegistro && !validarTipoDocumentoReconhecivel(params.tipoDocumento)) {
     console.warn(
       `[Documentos Faltantes ⚠️] Termo "${params.tipoDocumento}" ignorado por não ser um tipo documental reconhecível.`
     );
@@ -101,9 +103,11 @@ export async function registrarOuIncrementarDocumentoFaltante(params: {
     ? resolverTitularCadastrado(params.titularInformado, todosTitulares)
     : null;
 
-  const titularFinal = titularResolvido ? titularResolvido.nome : (params.titularInformado?.trim() || 'Titular Não Informado');
+  const titularFinal = titularResolvido
+    ? titularResolvido.nome
+    : (params.titularInformado?.trim() || '');
   const pessoaIdFinal = titularResolvido ? titularResolvido.id : null;
-  const tipoFormatado = formatarTipoDocumentoLegivel(params.tipoDocumento || 'Documento');
+  const tipoFormatado = formatarTipoDocumentoLegivel(params.descricaoItem || params.tipoDocumento || 'Documento');
   const tipoNorm = normalizar(tipoFormatado);
 
   const agoraIso = new Date().toISOString();
@@ -113,8 +117,10 @@ export async function registrarOuIncrementarDocumentoFaltante(params: {
     let query = supabase.from('documentos_faltantes').select('*');
     if (pessoaIdFinal) {
       query = query.eq('pessoa_id', pessoaIdFinal);
-    } else {
+    } else if (titularFinal && titularFinal !== 'Não identificado' && titularFinal !== 'Titular Não Informado') {
       query = query.ilike('titular', titularFinal);
+    } else {
+      query = query.or('titular.eq.,titular.is.null,titular.eq.Não identificado');
     }
 
     const { data: existentes, error: errBusca } = await query;
@@ -123,7 +129,8 @@ export async function registrarOuIncrementarDocumentoFaltante(params: {
     }
 
     const matchExistente = (existentes || []).find((reg: any) => {
-      return normalizar(reg.tipo_documento) === tipoNorm;
+      const regTipoNorm = normalizar(reg.tipo_documento);
+      return regTipoNorm === tipoNorm || regTipoNorm.includes(tipoNorm) || tipoNorm.includes(regTipoNorm);
     });
 
     if (matchExistente) {
@@ -193,9 +200,9 @@ export async function registrarOuIncrementarDocumentoFaltante(params: {
     const novoRegistro = {
       id: novoId,
       tipo_documento: tipoFormatado,
-      titular: titularFinal,
+      titular: titularFinal || '',
       pessoa_id: pessoaIdFinal,
-      solicitante_nome: params.solicitanteNome,
+      solicitante_nome: params.solicitanteNome || 'Usuário WhatsApp',
       solicitante_contato: params.solicitanteContato || null,
       quantidade_pedidos: 1,
       data_primeiro_pedido: agoraIso,
@@ -207,7 +214,11 @@ export async function registrarOuIncrementarDocumentoFaltante(params: {
       atualizado_em: agoraIso,
     };
 
-    await supabase.from('documentos_faltantes').insert(novoRegistro);
+    const { error: errInsert } = await supabase.from('documentos_faltantes').insert(novoRegistro);
+    if (errInsert) {
+      console.error('[Documentos Faltantes ❌] Erro ao inserir no Supabase:', errInsert);
+      throw errInsert;
+    }
     console.log(`[Documentos Faltantes 📝] Novo pedido faltante registrado: "${tipoFormatado}" de "${titularFinal}".`);
 
     // Telemetria histórica em buscas_sem_resultado
@@ -223,7 +234,7 @@ export async function registrarOuIncrementarDocumentoFaltante(params: {
     return {
       id: novoRegistro.id,
       tipoDocumento: novoRegistro.tipo_documento,
-      titular: novoRegistro.titular,
+      titular: novoRegistro.titular || 'Não identificado',
       pessoaId: novoRegistro.pessoa_id,
       solicitanteNome: novoRegistro.solicitante_nome,
       solicitanteContato: novoRegistro.solicitante_contato,
@@ -241,7 +252,7 @@ export async function registrarOuIncrementarDocumentoFaltante(params: {
     return {
       id: `err-${Date.now()}`,
       tipoDocumento: tipoFormatado,
-      titular: titularFinal,
+      titular: titularFinal || 'Não identificado',
       pessoaId: pessoaIdFinal,
       solicitanteNome: params.solicitanteNome,
       quantidadePedidos: 1,

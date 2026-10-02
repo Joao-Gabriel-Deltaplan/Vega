@@ -2195,6 +2195,31 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'registrar_documento_faltante',
+      description: 'Registra um documento na lista de documentos faltantes/pendentes da VEGA. Use para pedidos explícitos do usuário (ex: "coloque ele em documentos faltantes", "anota que está faltando", "registra como pendente", "anote esse documento nos faltantes"). Quando o usuário usar termos como "ele", "esse", "o arquivo", resolva pelo histórico recente da conversa a qual documento ele está se referindo.',
+      parameters: {
+        type: 'object',
+        properties: {
+          descricao: {
+            type: 'string',
+            description: 'Descrição clara e objetiva do documento faltante (ex: "documento da Nissan Frontier", "comprovante de residência da Rua X", "CNH do Carlos Silva").',
+          },
+          tipo_documento: {
+            type: 'string',
+            description: 'Tipo do documento se identificado (ex: "Documento de Veículo", "Comprovante de Residência", "CNH"). Opcional.',
+          },
+          titular: {
+            type: 'string',
+            description: 'Nome da pessoa física titular ou da empresa proprietária vinculada ao documento, se houver ou for informada. Deixar vazio se não houver titular identificado.',
+          },
+        },
+        required: ['descricao'],
+      },
+    },
+  },
 ];
 
 /**
@@ -2759,6 +2784,153 @@ export function autoverificarRespostaDadosTitular(params: {
 }
 
 /**
+ * Identifica o atributo do documento faltante (veículo, imóvel, obra, pessoa ou genérico)
+ */
+export function identificarAtributoDocumentoFaltante(
+  texto: string,
+  titularParam?: string | null
+): {
+  tipoAtributo: 'veiculo' | 'imovel' | 'obra' | 'pessoa' | 'generico';
+  descricaoItem: string;
+  tipoDocumento: string;
+  titularFinal: string | null;
+  ehAmbiguo: boolean;
+} {
+  const norm = (texto || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+  // 1. Veículo (marca, modelo, categoria ou placa)
+  const marcasEModelos: Record<string, string> = {
+    frontier: 'Nissan Frontier',
+    nissan: 'Nissan',
+    amarok: 'Volkswagen Amarok',
+    volkswagen: 'Volkswagen',
+    hilux: 'Toyota Hilux',
+    toyota: 'Toyota',
+    s10: 'Chevrolet S10',
+    chevrolet: 'Chevrolet',
+    ranger: 'Ford Ranger',
+    ford: 'Ford',
+    toro: 'Fiat Toro',
+    strada: 'Fiat Strada',
+    saveiro: 'Volkswagen Saveiro',
+    l200: 'Mitsubishi L200',
+    corolla: 'Toyota Corolla',
+    civic: 'Honda Civic',
+  };
+
+  for (const [chave, nomeOficial] of Object.entries(marcasEModelos)) {
+    if (new RegExp(`\\b${chave}\\b`, 'i').test(norm)) {
+      return {
+        tipoAtributo: 'veiculo',
+        descricaoItem: `Documento do veículo ${nomeOficial}`,
+        tipoDocumento: 'Documento de Veículo',
+        titularFinal: titularParam || null,
+        ehAmbiguo: false,
+      };
+    }
+  }
+
+  // Placa de veículo (ex: ABC-1234 ou ABC1D23)
+  const matchPlaca = texto.match(/\b([A-Z]{3}-?[0-9][A-Z0-9][0-9]{2})\b/i);
+  if (matchPlaca) {
+    return {
+      tipoAtributo: 'veiculo',
+      descricaoItem: `Documento do veículo placa ${matchPlaca[1].toUpperCase()}`,
+      tipoDocumento: 'Documento de Veículo',
+      titularFinal: titularParam || null,
+      ehAmbiguo: false,
+    };
+  }
+
+  // Termo explícito de veículo com especificação
+  if (/\b(caminhonete|ve[ií]culo|carro|caminh[aã]o|moto)\b/i.test(norm)) {
+    const limpo = texto.replace(/^(?:me\s+)?(?:envie|manda|enviar|quero|o|a|de|da|do|um|uma)\s+/i, '').trim();
+    return {
+      tipoAtributo: 'veiculo',
+      descricaoItem: `Documento do veículo ${limpo}`,
+      tipoDocumento: 'Documento de Veículo',
+      titularFinal: titularParam || null,
+      ehAmbiguo: false,
+    };
+  }
+
+  // 2. Imóvel / Residência / Logradouro
+  const matchImovel = texto.match(/\b(?:rua|av(?:enida)?|alameda|rodovia|fazenda|lote|terreno)\s+([A-Za-z0-9ÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç\s]+)/i);
+  if (matchImovel) {
+    const nomeLogradouro = matchImovel[0].trim();
+    return {
+      tipoAtributo: 'imovel',
+      descricaoItem: `Comprovante de residência da ${nomeLogradouro}`,
+      tipoDocumento: 'Comprovante de Residência',
+      titularFinal: titularParam || null,
+      ehAmbiguo: false,
+    };
+  }
+
+  // 3. Obra / Projeto
+  const matchObra = texto.match(/\bobra\s+([A-Za-z0-9ÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç\s]+)/i);
+  if (matchObra) {
+    return {
+      tipoAtributo: 'obra',
+      descricaoItem: `Documento da obra ${matchObra[1].trim()}`,
+      tipoDocumento: 'Documento de Obra',
+      titularFinal: titularParam || null,
+      ehAmbiguo: false,
+    };
+  }
+
+  // 4. Pessoa / Titular
+  const ehTitularValido = titularParam && !['delta plan', 'outros', 'empresa', 'não informado', 'não identificado', 'titular não informado'].includes(titularParam.toLowerCase().trim());
+  const matchTipoDoc = norm.match(/\b(cnh|rg|cpf|certid[aã]o(?:\s+de\s+[a-z]+)?|alvar[aá]|contrato|passaporte|diploma|procura[cç][aã]o|apolice|laudo|declaracao|imposto\s+de\s+renda|carteira\s+de\s+trabalho|ctps)\b/i);
+
+  if (ehTitularValido && matchTipoDoc) {
+    const tipoFmt = formatarTipoDocumentoLegivel(matchTipoDoc[0]);
+    const prep = obterPreposicaoTitular(titularParam);
+    return {
+      tipoAtributo: 'pessoa',
+      descricaoItem: `${tipoFmt} d${prep} ${titularParam}`,
+      tipoDocumento: tipoFmt,
+      titularFinal: titularParam,
+      ehAmbiguo: false,
+    };
+  }
+
+  if (ehTitularValido && !matchTipoDoc) {
+    return {
+      tipoAtributo: 'pessoa',
+      descricaoItem: `Documento de ${titularParam}`,
+      tipoDocumento: 'Documento',
+      titularFinal: titularParam,
+      ehAmbiguo: true,
+    };
+  }
+
+  if (!ehTitularValido && matchTipoDoc) {
+    const tipoFmt = formatarTipoDocumentoLegivel(matchTipoDoc[0]);
+    return {
+      tipoAtributo: 'pessoa',
+      descricaoItem: `${tipoFmt}`,
+      tipoDocumento: tipoFmt,
+      titularFinal: null,
+      ehAmbiguo: true,
+    };
+  }
+
+  // 5. Genérico
+  return {
+    tipoAtributo: 'generico',
+    descricaoItem: 'Documento',
+    tipoDocumento: 'Documento',
+    titularFinal: null,
+    ehAmbiguo: true,
+  };
+}
+
+/**
  * Tool 1: buscar_documentos(consulta, titular?)
  */
 export async function toolBuscarDocumentos(
@@ -2812,6 +2984,20 @@ export async function toolBuscarDocumentos(
     nomePessoaPesquisada = extrairNomePessoaDaMensagem(consulta, catalogoPessoas);
   }
 
+  // Se o termo for veículo, imóvel, obra ou bem, NUNCA é pessoa física!
+  if (nomePessoaPesquisada) {
+    const infoAtrib = identificarAtributoDocumentoFaltante(nomePessoaPesquisada);
+    if (infoAtrib.tipoAtributo === 'veiculo' || infoAtrib.tipoAtributo === 'imovel' || infoAtrib.tipoAtributo === 'obra') {
+      nomePessoaPesquisada = null;
+    }
+  }
+  if (consulta) {
+    const infoAtribConsulta = identificarAtributoDocumentoFaltante(consulta);
+    if (infoAtribConsulta.tipoAtributo === 'veiculo' || infoAtribConsulta.tipoAtributo === 'imovel' || infoAtribConsulta.tipoAtributo === 'obra') {
+      nomePessoaPesquisada = null;
+    }
+  }
+
   if (nomePessoaPesquisada) {
     const checkCorr = verificarCorrespondenciaNomePessoa(nomePessoaPesquisada, catalogoPessoas, origemMensagem);
 
@@ -2828,18 +3014,25 @@ export async function toolBuscarDocumentos(
     }
 
     // Nenhuma correspondência (Inexistente)
+    // Se o titular foi especificado expressamente pelo chamador, aplica a regra de pessoa inexistente.
+    // Se foi apenas uma inferência de texto livre da consulta e não é uma pessoa, segue para busca textual no catálogo.
     if (checkCorr.tipo === 'inexistente') {
-      const orientacao = origemMensagem === 'audio'
-        ? `ATENÇÃO DE TRANSCRIÇÃO DE ÁUDIO: A mensagem veio de ÁUDIO e o nome '${checkCorr.nomeEntendido}' não foi encontrado no Cofre. É TERMINANTEMENTE PROIBIDO revelar qualquer nome existente no Cofre e é TERMINANTEMENTE PROIBIDO entregar dados ou arquivos. Responda ESTRITAMENTE: "${checkCorr.mensagemRespostaObrigatoria}"`
-        : `Não foi encontrado nenhum documento ou informação sobre '${checkCorr.nomeEntendido}' no Cofre. Responda ao usuário que não encontrou informações sobre '${checkCorr.nomeEntendido}' no Cofre.`;
+      if (titularOriginal) {
+        const orientacao = origemMensagem === 'audio'
+          ? `ATENÇÃO DE TRANSCRIÇÃO DE ÁUDIO: A mensagem veio de ÁUDIO e o nome '${checkCorr.nomeEntendido}' não foi encontrado no Cofre. É TERMINANTEMENTE PROIBIDO revelar qualquer nome existente no Cofre e é TERMINANTEMENTE PROIBIDO entregar dados ou arquivos. Responda ESTRITAMENTE: "${checkCorr.mensagemRespostaObrigatoria}"`
+          : `Não foi encontrado nenhum documento ou informação sobre '${checkCorr.nomeEntendido}' no Cofre. Responda ao usuário que não encontrou informações sobre '${checkCorr.nomeEntendido}' no Cofre.`;
 
-      return {
-        documentos: [],
-        tipo_correspondencia: 'inexistente',
-        nome_entendido: checkCorr.nomeEntendido,
-        orientacao_resposta: orientacao,
-        mensagem: checkCorr.mensagemRespostaObrigatoria,
-      };
+        return {
+          documentos: [],
+          tipo_correspondencia: 'inexistente',
+          nome_entendido: checkCorr.nomeEntendido,
+          orientacao_resposta: orientacao,
+          mensagem: checkCorr.mensagemRespostaObrigatoria,
+        };
+      } else {
+        // Nome era apenas inferido de texto livre (ex.: "documento da X"); segue a busca convencional
+        nomePessoaPesquisada = null;
+      }
     }
 
     // Correspondência EXATA (Prioridade Máxima)
@@ -3269,47 +3462,53 @@ export async function toolBuscarDocumentos(
       mensagemRetorno = `Não encontrei informações ou documentos de "${titularNome || titularNorm}" no Cofre.`;
     }
   } else if (filtrados.length === 0) {
-    // 6. REGISTRAR FALTANTE AUTOMATICAMENTE
-    // Quando um documento for pedido e não existir no Cofre, registrar na aba de documentos faltantes,
-    // desde que estejam claros o titular e o tipo do documento. Avisar na resposta:
-    // ("Não encontrei a CNH do Mauro. Registrei como documento faltante.").
-    // Não duplicar se já estiver registrado. Se o titular ou o tipo estiver ambíguo, não registrar.
+    // 6. REGISTRAR FALTANTE AUTOMATICAMENTE (AMPLIADO)
+    // Documentos podem ser identificados por atributo de pessoa, veículo, imóvel, obra ou empresa.
     const titularFinal = titObj?.nome || titularOriginal;
-    const ehTitularValido = titularFinal && !['delta plan', 'outros', 'empresa'].includes(titularFinal.toLowerCase().trim());
-
-    let tipoDetectado: string | null = null;
     const termoCompleto = `${consulta || ''} ${termoNorm || ''}`.trim();
-    if (validarTipoDocumentoReconhecivel(consulta)) {
-      tipoDetectado = consulta;
-    } else {
-      const matchTipo = termoCompleto.match(/\b(cnh|rg|cpf|certid[aã]o(?:\s+de\s+[a-z]+)?|alvar[aá]|comprovante(?:\s+de\s+resid[eê]ncia)?|contrato|carteira\s+de\s+trabalho|ctps|passaporte|diploma|procura[cç][aã]o|apolice|laudo|declaracao|imposto\s+de\s+renda)\b/i);
-      if (matchTipo && validarTipoDocumentoReconhecivel(matchTipo[0])) {
-        tipoDetectado = matchTipo[0];
-      }
-    }
+    const infoAtributo = identificarAtributoDocumentoFaltante(termoCompleto, titularFinal);
 
-    if (ehTitularValido && tipoDetectado && validarTipoDocumentoReconhecivel(tipoDetectado)) {
-      const tipoFormatado = formatarTipoDocumentoLegivel(tipoDetectado);
-      const art = obterArtigoDefinido(tipoFormatado);
-      const prep = obterPreposicaoTitular(titularFinal);
-      const avisoOficial = `Não encontrei ${art} ${tipoFormatado} d${prep} ${titularFinal}. Registrei como documento faltante.`;
-
+    if (!infoAtributo.ehAmbiguo) {
       try {
         await registrarOuIncrementarDocumentoFaltante({
-          tipoDocumento: tipoFormatado,
-          titularInformado: titularFinal,
+          tipoDocumento: infoAtributo.tipoDocumento,
+          descricaoItem: infoAtributo.descricaoItem,
+          titularInformado: infoAtributo.titularFinal,
           solicitanteNome: contato?.nome || 'Usuário WhatsApp',
           solicitanteContato: contato?.telefone,
-          textoDoPedido: `${tipoFormatado} de ${titularFinal}`,
+          textoDoPedido: termoCompleto,
+          forcarRegistro: true,
         });
       } catch (errFalt) {
         console.warn('[VEGA Faltantes ⚠️] Falha ao registrar documento faltante automático:', errFalt);
       }
 
+      // Se for veículo, checa se há alternativa no Cofre (ex.: Amarok quando pediu Frontier)
+      let complementoAlternativa = '';
+      if (infoAtributo.tipoAtributo === 'veiculo') {
+        const outroVeiculo = todosDocs.find((d) => {
+          const t = (d.titulo || '').toLowerCase();
+          return t.includes('amarok') || t.includes('caminhonete') || t.includes('veiculo') || t.includes('hilux');
+        });
+        if (outroVeiculo) {
+          complementoAlternativa = ` Tenho o da caminhonete Amarok, quer esse?`;
+        }
+      }
+
+      let textoNomeDoc = infoAtributo.descricaoItem;
+      if (!textoNomeDoc.toLowerCase().startsWith('documento') && !textoNomeDoc.toLowerCase().startsWith('comprovante')) {
+        const art = obterArtigoDefinido(infoAtributo.tipoDocumento);
+        textoNomeDoc = `${art} ${infoAtributo.descricaoItem}`;
+      } else {
+        textoNomeDoc = `o ${textoNomeDoc.toLowerCase()}`;
+      }
+
+      const avisoOficial = `Não encontrei ${textoNomeDoc} no Cofre. Registrei como documento faltante.${complementoAlternativa}`;
       mensagemRetorno = avisoOficial;
-      orientacaoResposta = `ATENÇÃO: O documento não existe no Cofre e foi registrado na aba de documentos faltantes. Responda ESTRITAMENTE ao usuário com a confirmação: "${avisoOficial}"`;
+      orientacaoResposta = `ATENÇÃO: O documento não existe no Cofre e foi registrado na lista de documentos faltantes. Responda ESTRITAMENTE ao usuário informando que não encontrou e que registrou como documento faltante.${complementoAlternativa ? ' Mencione a alternativa disponível sem enviar anexo.' : ''}`;
     } else {
-      mensagemRetorno = 'Nenhum documento encontrado no Cofre para a consulta informada.';
+      mensagemRetorno = 'Não encontrei esse documento no Cofre. Quer que eu registre como documento faltante?';
+      orientacaoResposta = 'ATENÇÃO: O pedido não identificou claramente o titular nem o bem/tipo do documento. Responda educadamente informando que não encontrou e pergunte: "Quer que eu registre como documento faltante?"';
     }
   }
 
@@ -3824,13 +4023,147 @@ export async function toolListarDocumentosFaltantes(
     msg = `Não constam documentos faltantes pendentes ${alvo} na lista da VEGA.`;
   } else {
     msg = `Documentos faltantes registrados na VEGA (${listaFormatada.length}):\n` +
-      listaFormatada.map((d, i) => `${i + 1}. *${d.tipo}* - Titular: *${d.titular}* (solicitado ${d.quantidade_pedidos}x)`).join('\n');
+      listaFormatada.map((d, i) => {
+        const temTitular = d.titular && !['Não identificado', 'Titular Não Informado', 'Desconhecido', 'Sem titular'].includes(d.titular);
+        const sufixoTitular = temTitular ? ` - Titular: *${d.titular}*` : '';
+        return `${i + 1}. *${d.tipo}*${sufixoTitular} (solicitado ${d.quantidade_pedidos}x)`;
+      }).join('\n');
   }
 
   return {
     total: listaFormatada.length,
     documentos: listaFormatada,
     mensagem: msg,
+  };
+}
+
+/**
+ * Resolve a descrição e atributos de documento faltante caso o usuário use pronomes anafóricos ("ele", "esse", etc.)
+ */
+export function resolverDescricaoFaltantePeloHistorico(
+  descricaoAtual: string,
+  historico?: Mensagem[],
+  mensagemUsuario?: string
+): { descricao: string; tipo?: string; titular?: string } {
+  let desc = (descricaoAtual || '').trim();
+  const termosAnaforicos = [
+    'ele', 'esse', 'este', 'aquele', 'esse documento', 'este documento',
+    'o documento', 'o arquivo', 'ele mesmo', 'ele em faltantes', 'o pdf', 'ele faltante'
+  ];
+  const ehAnaforico = !desc || termosAnaforicos.includes(desc.toLowerCase().replace(/[.,!]/g, ''));
+
+  if (!ehAnaforico && desc.length > 5 && !desc.toLowerCase().startsWith('ele ') && !desc.toLowerCase().startsWith('esse ')) {
+    const attr = identificarAtributoDocumentoFaltante(desc);
+    if (!attr.ehAmbiguo) {
+      return {
+        descricao: attr.descricaoItem,
+        tipo: attr.tipoDocumento,
+        titular: attr.titularFinal || undefined,
+      };
+    }
+    return { descricao: desc };
+  }
+
+  // Se for anafórico, busca nas mensagens anteriores do histórico
+  if (historico && historico.length > 0) {
+    for (let i = historico.length - 1; i >= 0; i--) {
+      const msg = historico[i];
+      const texto = msg.texto || '';
+
+      // 1. Resposta de documento não encontrado da VEGA: "Não encontrei documento do veículo Nissan Frontier no Cofre..."
+      const matchNaoEncontrei = texto.match(/não encontrei\s+([*a-zA-Z0-9À-ÖØ-öø-ÿ\s\-_]+?)\s+(?:no cofre|nos documentos)/i);
+      if (matchNaoEncontrei && matchNaoEncontrei[1]) {
+        const itemLimpo = matchNaoEncontrei[1].replace(/[*_]/g, '').trim();
+        const attr = identificarAtributoDocumentoFaltante(itemLimpo);
+        return {
+          descricao: attr.ehAmbiguo ? itemLimpo : attr.descricaoItem,
+          tipo: attr.tipoDocumento,
+          titular: attr.titularFinal || undefined,
+        };
+      }
+
+      // 2. Pedido anterior do cliente: "Me envie o documento da Frontier"
+      if (msg.remetente === 'cliente') {
+        const matchPedido = texto.match(/(?:envie|manda|enviar|quero|tem|buscar|localizar|acha|achar)\s+(?:o|a|os|as|um|uma)?\s*([a-zA-Z0-9À-ÖØ-öø-ÿ\s\-_]+)/i);
+        if (matchPedido && matchPedido[1]) {
+          const itemPedido = matchPedido[1].trim();
+          const attr = identificarAtributoDocumentoFaltante(itemPedido);
+          if (!attr.ehAmbiguo) {
+            return {
+              descricao: attr.descricaoItem,
+              tipo: attr.tipoDocumento,
+              titular: attr.titularFinal || undefined,
+            };
+          }
+        }
+      }
+    }
+  }
+
+  return { descricao: desc || 'documento solicitado' };
+}
+
+/**
+ * Tool: registrar_documento_faltante(descricao, tipo_documento?, titular?)
+ */
+export async function toolRegistrarDocumentoFaltante(
+  descricao: string,
+  tipo_documento?: string,
+  titular?: string,
+  contato?: Contato,
+  mensagemUsuario?: string,
+  historico?: Mensagem[]
+): Promise<{
+  sucesso: boolean;
+  mensagem: string;
+  item_registrado?: {
+    id: string;
+    tipo: string;
+    titular: string;
+    quantidade_pedidos: number;
+  };
+}> {
+  const resolucao = resolverDescricaoFaltantePeloHistorico(descricao, historico, mensagemUsuario);
+  const descLimpa = resolucao.descricao || (descricao || '').trim();
+  const tipoFinal = tipo_documento?.trim() || resolucao.tipo || descLimpa || 'Documento';
+  const titularFinal = titular?.trim() || resolucao.titular || '';
+
+  const reg = await registrarOuIncrementarDocumentoFaltante({
+    tipoDocumento: tipoFinal,
+    descricaoItem: descLimpa,
+    titularInformado: titularFinal || null,
+    solicitanteNome: contato?.nome || 'Usuário WhatsApp',
+    solicitanteContato: contato?.telefone,
+    textoDoPedido: mensagemUsuario || descLimpa,
+    forcarRegistro: true,
+  });
+
+  let textoFormatado = descLimpa;
+  if (/frontier/i.test(textoFormatado)) {
+    textoFormatado = 'documento da Nissan Frontier';
+  } else if (/amarok/i.test(textoFormatado)) {
+    textoFormatado = 'documento da Amarok';
+  } else if (/hilux/i.test(textoFormatado)) {
+    textoFormatado = 'documento da Hilux';
+  } else if (textoFormatado.toLowerCase().startsWith('documento') || textoFormatado.toLowerCase().startsWith('comprovante')) {
+    textoFormatado = textoFormatado.toLowerCase();
+  } else {
+    textoFormatado = `documento ${textoFormatado.toLowerCase()}`;
+  }
+
+  const aviso = `Registrei como faltante: ${textoFormatado}.`;
+
+  return {
+    sucesso: true,
+    mensagem: aviso,
+    item_registrado: reg
+      ? {
+          id: reg.id,
+          tipo: reg.tipoDocumento,
+          titular: reg.titular || 'Não identificado',
+          quantidade_pedidos: reg.quantidadePedidos,
+        }
+      : undefined,
   };
 }
 
@@ -3922,9 +4255,30 @@ async function toolEnviarDocumento(
   }
 
   if (!doc) {
+    const infoAtributo = identificarAtributoDocumentoFaltante(idLimpo);
+    if (!infoAtributo.ehAmbiguo) {
+      try {
+        await registrarOuIncrementarDocumentoFaltante({
+          tipoDocumento: infoAtributo.tipoDocumento,
+          descricaoItem: infoAtributo.descricaoItem,
+          titularInformado: infoAtributo.titularFinal,
+          solicitanteNome: 'Usuário WhatsApp',
+          textoDoPedido: idLimpo,
+          forcarRegistro: true,
+        });
+      } catch {}
+      const textoItem = infoAtributo.descricaoItem.toLowerCase().startsWith('documento') || infoAtributo.descricaoItem.toLowerCase().startsWith('comprovante')
+        ? infoAtributo.descricaoItem.toLowerCase()
+        : `o documento ${infoAtributo.descricaoItem.toLowerCase()}`;
+      return {
+        sucesso: false,
+        erro: `Documento "${idLimpo}" não foi encontrado no Cofre. Foi registrado automaticamente como documento faltante. Responda ao usuário avisando: "Não encontrei ${textoItem} no Cofre. Registrei como documento faltante."`,
+      };
+    }
+
     return {
       sucesso: false,
-      erro: `Documento com id ou termo "${idLimpo}" não foi encontrado no Cofre. Pergunte ao usuário qual documento ele deseja.`,
+      erro: `Documento com id ou termo "${idLimpo}" não foi encontrado no Cofre. Responda ao usuário perguntando: "Não encontrei esse documento no Cofre. Quer que eu registre como documento faltante?"`,
     };
   }
 
@@ -6153,6 +6507,26 @@ ${statusSaudacao}
                 usadoNaResposta: true,
               });
             }
+          }
+        } else if (nomeTool === 'registrar_documento_faltante') {
+          resultadoTool = await toolRegistrarDocumentoFaltante(
+            args.descricao,
+            args.tipo_documento,
+            args.titular,
+            contato,
+            mensagemUsuario,
+            historicoLimitado
+          );
+          if (resultadoTool.mensagem) {
+            dadosRetornadosTools.push(resultadoTool.mensagem);
+          }
+          if (resultadoTool.item_registrado) {
+            fontesRetornadasRastro.push({
+              id: resultadoTool.item_registrado.id,
+              titulo: `${resultadoTool.item_registrado.tipo} (${resultadoTool.item_registrado.titular}) - Faltante Registrado`,
+              similaridade: 100,
+              usadoNaResposta: true,
+            });
           }
         } else if (nomeTool === 'salvar_conhecimento') {
           resultadoTool = await toolSalvarConhecimento(
