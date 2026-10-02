@@ -75,6 +75,33 @@ async function rodarTestes() {
     console.log('❌ [FALHOU] VEGA não entregou a URL após o "Sim".');
   }
 
+  // CENÁRIO 1.2: Mudança de assunto após a oferta do link ("manda o CPF do Thomaz")
+  totalTestes++;
+  console.log(`\n--- Teste ${totalTestes}: Usuário muda de assunto após a oferta: "manda o CPF do Thomaz" ---`);
+  const res1_2 = await processarMensagemChat({
+    mensagemUsuario: 'manda o CPF do Thomaz',
+    historicoRecente: [
+      { id: '1', remetente: 'cliente', nomeRemetente: 'João Gabriel', horario: '09:59', texto: 'já que você tem acesso ao portfólio das máquinas, o que tem de importante nesse site?' },
+      msgAssistente1,
+    ],
+    contato: contatoAdmin,
+  });
+
+  console.log('   Resposta VEGA:', res1_2.textoResposta);
+  const naoMandouLink = !res1_2.textoResposta.includes('portfolio.deltaplanobras.com.br');
+  const naoOfereceuLinkDeNovo = !res1_2.textoResposta.includes('Quer o link?');
+  const respondeuSobreCpfOuThomaz =
+    res1_2.textoResposta.toLowerCase().includes('cpf') ||
+    res1_2.textoResposta.toLowerCase().includes('thomaz') ||
+    /\d{3}\.\d{3}\.\d{3}-\d{2}/.test(res1_2.textoResposta);
+
+  if (naoMandouLink && naoOfereceuLinkDeNovo && respondeuSobreCpfOuThomaz) {
+    console.log('✅ [PASSOU] VEGA atendeu à nova solicitação (CPF do Thomaz) e NÃO enviou o link do portfólio!');
+    testesPassados++;
+  } else {
+    console.log(`❌ [FALHOU] Mudança de assunto falhou. naoMandouLink: ${naoMandouLink}, naoOfereceuLinkDeNovo: ${naoOfereceuLinkDeNovo}, respondeuSobreCpfOuThomaz: ${respondeuSobreCpfOuThomaz}`);
+  }
+
   // CENÁRIO 2: Link NÃO CADASTRADO
   totalTestes++;
   console.log(`\n--- Teste ${totalTestes}: Pergunta sobre site que NÃO está na Base de Conhecimento ---`);

@@ -204,4 +204,16 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
 - **Validade para Dados Reais:** Aplica-se obrigatoriamente a qualquer alteração ou intervenção em registros reais existentes no banco de dados (scripts de correção, migrações, comandos manuais, rotinas de depuração ou manutenção).
 - **Exceção para Testes Automatizados (Dados Fictícios):** Dados fictícios criados pelo próprio script de teste e apagados por ele ao final da execução estão expressamente liberados, desde que nenhum registro real seja modificado ou afetado.
 
+---
+
+## 25. Proibição de Interceptação por Regex/Padrões Antes da IA
+- **Regra Permanente e Inviolável:** É terminantemente proibido criar funções ou lógica em código que detectam intenção por regex, palavras-chave ou padrões de texto e respondem ou agem antes da IA.
+- **Implementação por Prompt e Tools:** Comportamentos novos, regras de negócio e fluxos de conversa devem ser implementados exclusivamente por instruções no prompt do sistema (`prompts/assistente.md`), exemplos práticos (*few-shot*) e ferramentas oficiais (*tools* / *function calling*). A decisão de interpretar, chamar a ferramenta correta e formular a resposta deve ser 100% da IA (`gpt-5.4-mini`).
+- **Exceções Permitidas:**
+  1. Autorização de acesso do número de telefone do usuário (`contato.id === 'ct-nao-auth'`);
+  2. Confirmação prévia de ações críticas de escrita, atualização ou exclusão na Base de Conhecimento e no Cofre;
+  3. Formatação, limpeza e sanitização visual da resposta gerada para o WhatsApp (regras de apresentação).
+- **Autorização Prévia para Novas Exceções:** Se em algum cenário específico for considerado necessário criar uma exceção fora desses três casos, é obrigatório perguntar e obter aprovação prévia do usuário antes de implementar qualquer código.
+
+
 

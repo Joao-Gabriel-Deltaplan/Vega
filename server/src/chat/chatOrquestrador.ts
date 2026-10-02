@@ -3738,6 +3738,7 @@ async function toolBuscarConhecimento(
     conteudo: string;
     dadosEstruturados?: any;
   }>;
+  instrucao_resposta?: string;
 }> {
   let resK = await buscarConhecimento(termo);
   let itens = resK.resultados || (resK.instrucao ? [resK.instrucao] : []);
@@ -3756,6 +3757,21 @@ async function toolBuscarConhecimento(
       itens = itensFiltrados;
     }
   }
+
+  let instrucaoResposta: string | undefined = undefined;
+  const termoLower = (termo || '').toLowerCase();
+  const buscaSobreSite = /\b(site|portal|pagina|página|link|web|maquina|máquina|portfolio|portfólio)\b/i.test(termoLower);
+
+  if (itens.length > 0) {
+    const temItemLink = itens.some((i) => i.tipo === 'link' || /https?:\/\//i.test(i.conteudo));
+    if (temItemLink) {
+      const itemLink = itens.find((i) => i.tipo === 'link' || /https?:\/\//i.test(i.conteudo))!;
+      instrucaoResposta = `DIRETRIZ MANDATÓRIA: Se o usuário pediu para ler, resumir, ver o que tem de importante ou analisar este site/página, NÃO entregue o link diretamente nem tente resumir o site. Responda ESTRITAMENTE: "Tenho o link do ${itemLink.titulo} salvo, mas não consigo abrir sites para ler o conteúdo. Quer o link?". Apenas envie o link se o usuário já tiver dito "Sim" na rodada anterior ou se pediu expressamente "qual o link".`;
+    }
+  } else if (buscaSobreSite) {
+    instrucaoResposta = `DIRETRIZ MANDATÓRIA: Não foi encontrado link salvo para este site/página na Base de Conhecimento. Se o usuário pediu para ler, resumir ou ver o que tem no site, responda ESTRITAMENTE: "Não consigo abrir sites para ler o conteúdo, e não tenho esse link salvo na Base de Conhecimento."`;
+  }
+
   return {
     total: itens.length,
     itens: itens.map((i) => ({
@@ -3766,6 +3782,7 @@ async function toolBuscarConhecimento(
       conteudo: i.conteudo,
       dadosEstruturados: i.dadosEstruturados,
     })),
+    ...(instrucaoResposta ? { instrucao_resposta: instrucaoResposta } : {}),
   };
 }
 
@@ -4820,200 +4837,6 @@ export function detectarAcaoSemFerramenta(mensagemUsuario: string): string | nul
 }
 
 /**
- * Verifica se um item de conhecimento é do tipo link ou contém uma URL web.
- */
-export function ehItemDeLink(k: ItemConhecimento): boolean {
-  if (k.tipo === 'link') return true;
-  if (/https?:\/\//i.test(k.conteudo)) return true;
-  const d = k.dadosEstruturados as any;
-  if (/https?:\/\//i.test(d?.link || '') || /https?:\/\//i.test(d?.url || '')) return true;
-  if (k.categoria && /site|sistema|portal|link/i.test(k.categoria)) return true;
-  return false;
-}
-
-/**
- * Verifica se o item de link corresponde ao que foi citado na mensagem do usuário.
- */
-export function itemCorrespondeAoPedidoSite(item: ItemConhecimento, mensagemUsuario: string): boolean {
-  const msgNorm = normalizarParaComparacao(mensagemUsuario);
-  const titNorm = normalizarParaComparacao(item.titulo);
-
-  // 1. Título completo contido na mensagem (ex: "portfolio das maquinas" ou "portfolio de maquinas")
-  if (msgNorm.includes(titNorm)) return true;
-
-  // 2. Extrai termos significativos do título (ex: "portfolio", "maquinas")
-  const stopWords = ['de', 'do', 'da', 'dos', 'das', 'e', 'em', 'um', 'uma', 'o', 'a', 'os', 'as', 'para', 'com', 'que'];
-  const palavrasTit = titNorm.split(/\s+/).filter((w) => w.length >= 3 && !stopWords.includes(w));
-
-  if (palavrasTit.length > 0 && palavrasTit.every((p) => msgNorm.includes(p))) {
-    return true;
-  }
-
-  // 3. Checa apelidos se houver
-  const apelidos: string[] = (item.dadosEstruturados as any)?.apelidos || [];
-  for (const ap of apelidos) {
-    const apNorm = normalizarParaComparacao(ap);
-    if (msgNorm.includes(apNorm)) return true;
-  }
-
-  // 4. Checa domínio da URL se citado
-  const d = item.dadosEstruturados as any;
-  const url = d?.link || d?.url || item.conteudo;
-  if (url && typeof url === 'string') {
-    const dominio = url.replace(/^https?:\/\/(?:www\.)?/i, '').split('/')[0].toLowerCase();
-    if (dominio && msgNorm.includes(dominio)) return true;
-  }
-
-  return false;
-}
-
-/**
- * Detecta se a mensagem é um pedido para ler, resumir, ver o que tem de importante, extrair dados ou analisar um site/página web.
- */
-export function ehPedidoAnaliseOuLeituraSite(mensagemUsuario: string): boolean {
-  const msgNorm = normalizarParaComparacao(mensagemUsuario);
-
-  // Não deve ser pedido explícito apenas de obter/passar o link (ex: "qual o link", "me passa o link")
-  const ehPedidoDiretoLink =
-    /\b(qual\s+(?:é\s+|e\s+)?(?:o\s+)?link|me\s+(?:passa|manda|envia)\s+(?:o\s+)?link|onde\s+(?:acho|fica|está|esta)\s+o\s+link|quero\s+o\s+link)\b/i.test(msgNorm);
-  if (ehPedidoDiretoLink) return false;
-
-  // Não deve ser pedido de cadastro/salvamento de link
-  const ehCadastro =
-    /\b(salva|salvar|cadastra|cadastrar|anota|anotar|guarda|guardar|adiciona|adicionar)\b/i.test(msgNorm);
-  if (ehCadastro) return false;
-
-  // Deve mencionar explicitamente site, página, portal, web ou URL
-  const mencionaSite =
-    /\b(site|portal|pagina|página|web|website)\b/i.test(msgNorm) ||
-    /https?:\/\//i.test(mensagemUsuario);
-
-  if (!mencionaSite) return false;
-
-  // Expressões claras de pedido para ler, resumir, ver conteúdo, ver o que tem de importante, etc.
-  const acaoLeitura =
-    /\b(o que tem de importante|o que tem nesse site|o que tem no site|o que tem na pagina|o que tem na página|o que diz no site|o que diz na pagina|o que diz na página|o que consta no site|o que consta na pagina|o que há no site|o que ha no site|leia|ler|resuma|resumo|resumir|analise|analisa|analisar|abrir o site|abrir o link|leitura do site|conteudo do site|conteúdo do site|conteudo dessa pagina|conteúdo dessa página|conteudo desta pagina|conteúdo desta página)\b/i.test(
-      msgNorm
-    ) ||
-    /já que você tem acesso ao .*o que tem de importante nesse site/i.test(msgNorm) ||
-    /ja que voce tem acesso ao .*o que tem de importante nesse site/i.test(msgNorm) ||
-    /o que tem de importante nesse site/i.test(msgNorm) ||
-    /o que tem de importante no site/i.test(msgNorm) ||
-    /me resuma o conteúdo/i.test(msgNorm) ||
-    /me resuma o conteudo/i.test(msgNorm) ||
-    /me resuma a página/i.test(msgNorm) ||
-    /me resuma a pagina/i.test(msgNorm) ||
-    /resuma esse site/i.test(msgNorm) ||
-    /resuma o site/i.test(msgNorm);
-
-  return acaoLeitura;
-}
-
-/**
- * Trata o aceite ou recusa do usuário após a VEGA ofertar o envio de um link salvo.
- */
-export async function processarOfertaLinkSite(
-  historicoRecente: Mensagem[],
-  mensagemUsuarioAtual: string
-): Promise<ResultadoChatOrquestrador | null> {
-  if (!historicoRecente || historicoRecente.length === 0) return null;
-
-  const ultimaMsgAssistente = [...historicoRecente].reverse().find((m) => m.remetente === 'assistente');
-  const txtAssistente = (ultimaMsgAssistente?.texto || '').trim();
-
-  const matchOferta = txtAssistente.match(
-    /Tenho o link d[oe]\s+(.+?)\s+salvo,\s*mas não consigo abrir sites para ler o conteúdo\.\s*Quer o link\?/i
-  );
-
-  if (!matchOferta) return null;
-
-  const nomeItemOferta = matchOferta[1].trim();
-  const msgNorm = normalizarParaComparacao(mensagemUsuarioAtual);
-
-  const ehAfirmativo =
-    isConfirmacaoSimples(mensagemUsuarioAtual) ||
-    /^(sim|s|quero|manda|pode mandar|mande|envie|envia|manda aí|manda ai|por favor|claro|com certeza|ok|manda esse)\b/i.test(msgNorm);
-
-  const ehNegativo =
-    /^(n[aã]o|n|n[aã]o precisa|deixa|deixa pra l[aá]|esquece|n[aã]o quero)\b/i.test(msgNorm);
-
-  if (ehAfirmativo) {
-    const todosK = await obterTodosConhecimentos();
-    const item =
-      todosK.find((k) => normalizarParaComparacao(k.titulo) === normalizarParaComparacao(nomeItemOferta)) ||
-      todosK.find((k) => itemCorrespondeAoPedidoSite(k, nomeItemOferta)) ||
-      todosK.find((k) => k.tipo === 'link');
-
-    const d = item?.dadosEstruturados as any;
-    const url =
-      d?.link ||
-      d?.url ||
-      (item?.conteudo.match(/https?:\/\/[^\s]+/i)?.[0]) ||
-      item?.conteudo ||
-      '';
-
-    const tituloExibicao = item?.titulo || nomeItemOferta;
-    return {
-      textoResposta: `Aqui está o link do ${tituloExibicao}: ${url}`,
-      origem: 'motor',
-      intencaoDetectada: 'pergunta_conteudo',
-      perguntaReescrita: `Envio do link do ${tituloExibicao}`,
-      dadosEstruturados: item ? extrairDadosEstruturadosDeItemConhecimento(item) : undefined,
-    };
-  }
-
-  if (ehNegativo) {
-    return {
-      textoResposta: 'Tudo bem! Se precisar de mais alguma coisa, estou à disposição.',
-      origem: 'motor',
-      intencaoDetectada: 'saudacao_ou_vago',
-      perguntaReescrita: 'Recusa do envio do link',
-    };
-  }
-
-  return null;
-}
-
-/**
- * Trata pedidos de ler, resumir ou analisar sites / páginas web.
- * Se o link estiver cadastrado na Base de Conhecimento:
- *   "Tenho o link do [nome] salvo, mas não consigo abrir sites para ler o conteúdo. Quer o link?"
- * Se não estiver cadastrado:
- *   "Não consigo abrir sites para ler o conteúdo, e não tenho esse link salvo na Base de Conhecimento."
- */
-export async function processarPedidoSiteWeb(
-  mensagemUsuario: string
-): Promise<ResultadoChatOrquestrador | null> {
-  if (!ehPedidoAnaliseOuLeituraSite(mensagemUsuario)) {
-    return null;
-  }
-
-  const todosK = await obterTodosConhecimentos();
-  const itensLink = todosK.filter(ehItemDeLink);
-
-  const itemEncontrado = itensLink.find((item) => itemCorrespondeAoPedidoSite(item, mensagemUsuario));
-
-  if (itemEncontrado) {
-    const texto = `Tenho o link do ${itemEncontrado.titulo} salvo, mas não consigo abrir sites para ler o conteúdo. Quer o link?`;
-    return {
-      textoResposta: texto,
-      origem: 'motor',
-      intencaoDetectada: 'pergunta_conteudo',
-      perguntaReescrita: `Consulta sobre link de site: ${itemEncontrado.titulo}`,
-      dadosEstruturados: extrairDadosEstruturadosDeItemConhecimento(itemEncontrado),
-    };
-  }
-
-  // Não cadastrado
-  return {
-    textoResposta: 'Não consigo abrir sites para ler o conteúdo, e não tenho esse link salvo na Base de Conhecimento.',
-    origem: 'motor',
-    intencaoDetectada: 'pergunta_conteudo',
-    perguntaReescrita: `Pedido de leitura de site não cadastrado: ${mensagemUsuario}`,
-  };
-}
-
-/**
  * RESOLUÇÃO DE CONFIRMAÇÃO DE SALVAMENTO / ATUALIZAÇÃO / EXCLUSÃO NA BASE DE CONHECIMENTO
  * (Garante estritamente que nada seja gravado sem a confirmação explícita do usuário numa mensagem seguinte)
  */
@@ -5484,18 +5307,6 @@ export async function executarOrquestradorIaCentral(dados: {
         perguntaReescrita: `Exclusão cancelada: ${docTitulo}`,
       };
     }
-  }
-
-  // 3.0. RESOLUÇÃO DE RESPOSTA A OFERTA DE LINK DE SITE ("Quer o link?")
-  const resOfertaLink = await processarOfertaLinkSite(historicoPassado, mensagemUsuario);
-  if (resOfertaLink) {
-    return resOfertaLink;
-  }
-
-  // 3.0.1. PEDIDOS DE LER, RESUMIR OU ANALISAR SITES / PÁGINAS WEB
-  const resPedidoSite = await processarPedidoSiteWeb(mensagemUsuario);
-  if (resPedidoSite) {
-    return resPedidoSite;
   }
 
   // 3.1. VERIFICAÇÃO DE AÇÃO SEM FERRAMENTA (Regra: Não prometer o que não pode fazer)
