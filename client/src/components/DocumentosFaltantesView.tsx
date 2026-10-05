@@ -13,6 +13,8 @@ import {
   X,
   ExternalLink,
   Info,
+  Trash2,
+  Plus,
 } from 'lucide-react';
 import { DocumentoFaltanteRegistro, StatusDocumentoFaltante } from '../types/chat.js';
 import { obterPaletaAvatar, obterIniciais } from '../utils/avatarUtils.js';
@@ -37,6 +39,19 @@ function formatarDataBrasilia(dataStr?: string | null): string {
   }
 }
 
+/**
+ * Normaliza e separa as linhas de dados equivalentes oferecidos.
+ * Corrige casos legados em que múltiplos dados foram salvos sem quebra de linha.
+ */
+function extrairLinhasDadosEquivalentes(texto?: string | null): string[] {
+  if (!texto || !texto.trim()) return [];
+  const normalizado = texto.replace(/(?!^)(Documento de origem:)/g, '\n$1');
+  return normalizado
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
 interface DocumentosFaltantesViewProps {
   onIrParaCofre?: () => void;
 }
@@ -53,6 +68,12 @@ export const DocumentosFaltantesView: React.FC<DocumentosFaltantesViewProps> = (
   const [idEditandoObs, setIdEditandoObs] = useState<string | null>(null);
   const [textoObs, setTextoObs] = useState('');
   const [salvandoObs, setSalvandoObs] = useState(false);
+
+  // Estados para edição e remoção de dados equivalentes
+  const [linhaEditando, setLinhaEditando] = useState<{ faltanteId: string; index: number; texto: string } | null>(null);
+  const [salvandoDadoEquivalente, setSalvandoDadoEquivalente] = useState(false);
+  const [adicionandoDadoId, setAdicionandoDadoId] = useState<string | null>(null);
+  const [novoDadoTexto, setNovoDadoTexto] = useState('');
 
   // Carregar dados da API
   const carregarFaltantes = async () => {
@@ -111,6 +132,64 @@ export const DocumentosFaltantesView: React.FC<DocumentosFaltantesViewProps> = (
     } finally {
       setSalvandoObs(false);
     }
+  };
+
+  // Atualizar dados equivalentes no backend
+  const handleAtualizarDadosEquivalentes = async (faltanteId: string, novasLinhas: string[]) => {
+    setSalvandoDadoEquivalente(true);
+    const novoValor = novasLinhas.length > 0 ? novasLinhas.join('\n') : null;
+    try {
+      const res = await fetch(`/api/documentos-faltantes/${faltanteId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dadosEquivalentesOferecidos: novoValor }),
+      });
+      if (!res.ok) throw new Error('Falha ao atualizar dados equivalentes.');
+      setFaltantes((prev) =>
+        prev.map((item) =>
+          item.id === faltanteId ? { ...item, dadosEquivalentesOferecidos: novoValor } : item
+        )
+      );
+      setLinhaEditando(null);
+      setAdicionandoDadoId(null);
+      setNovoDadoTexto('');
+    } catch (err: any) {
+      alert(`Erro: ${err.message}`);
+    } finally {
+      setSalvandoDadoEquivalente(false);
+    }
+  };
+
+  const handleRemoverLinhaDadoEquivalente = (
+    faltanteId: string,
+    indexParaRemover: number,
+    textoAtual?: string | null
+  ) => {
+    const linhas = extrairLinhasDadosEquivalentes(textoAtual);
+    const novasLinhas = linhas.filter((_, idx) => idx !== indexParaRemover);
+    handleAtualizarDadosEquivalentes(faltanteId, novasLinhas);
+  };
+
+  const handleSalvarEdicaoLinha = (
+    faltanteId: string,
+    indexParaEditar: number,
+    novoTexto: string,
+    textoAtual?: string | null
+  ) => {
+    if (!novoTexto.trim()) {
+      handleRemoverLinhaDadoEquivalente(faltanteId, indexParaEditar, textoAtual);
+      return;
+    }
+    const linhas = extrairLinhasDadosEquivalentes(textoAtual);
+    const novasLinhas = linhas.map((l, idx) => (idx === indexParaEditar ? novoTexto.trim() : l));
+    handleAtualizarDadosEquivalentes(faltanteId, novasLinhas);
+  };
+
+  const handleAdicionarNovaLinha = (faltanteId: string, textoAtual?: string | null) => {
+    if (!novoDadoTexto.trim()) return;
+    const linhas = extrairLinhasDadosEquivalentes(textoAtual);
+    const novasLinhas = [...linhas, novoDadoTexto.trim()];
+    handleAtualizarDadosEquivalentes(faltanteId, novasLinhas);
   };
 
   // Métricas
@@ -398,20 +477,180 @@ export const DocumentosFaltantesView: React.FC<DocumentosFaltantesViewProps> = (
                         </div>
                       </div>
 
-                      {/* Dado equivalente sugerido */}
-                      {item.dadosEquivalentesOferecidos && (
-                        <div className="flex items-start gap-2 mt-2 text-[11px] text-cyan-300/90 bg-cyan-950/30 border border-cyan-800/30 px-2.5 py-1.5 rounded-lg">
-                          <Info className="w-3.5 h-3.5 flex-shrink-0 text-cyan-400 mt-0.5" />
-                          <div className="flex-1 space-y-0.5">
-                            <span className="font-semibold text-cyan-400 block text-[10px] uppercase tracking-wider">
-                              Dado equivalente localizado:
-                            </span>
-                            <div className="text-slate-200 whitespace-pre-line font-medium leading-relaxed">
-                              {item.dadosEquivalentesOferecidos}
+                      {/* Dados equivalentes oferecidos (editáveis e removíveis linha a linha) */}
+                      {(() => {
+                        const linhasEquivalentes = extrairLinhasDadosEquivalentes(item.dadosEquivalentesOferecidos);
+                        const estáAdicionando = adicionandoDadoId === item.id;
+
+                        if (linhasEquivalentes.length === 0 && !estáAdicionando) {
+                          return null;
+                        }
+
+                        return (
+                          <div className="mt-2.5 rounded-xl bg-cyan-950/20 border border-cyan-800/30 p-2.5 space-y-2">
+                            <div className="flex items-center justify-between gap-2 border-b border-cyan-800/20 pb-1.5">
+                              <div className="flex items-center gap-1.5">
+                                <Info className="w-3.5 h-3.5 text-cyan-400" />
+                                <span className="font-bold text-cyan-300 text-[10px] uppercase tracking-wider">
+                                  Dados Equivalentes Localizados ({linhasEquivalentes.length})
+                                </span>
+                              </div>
+                              {!estáAdicionando && (
+                                <button
+                                  onClick={() => {
+                                    setAdicionandoDadoId(item.id);
+                                    setNovoDadoTexto('');
+                                  }}
+                                  className="flex items-center gap-1 text-[10px] font-semibold text-cyan-400 hover:text-cyan-200 transition-colors cursor-pointer"
+                                  title="Adicionar dado equivalente"
+                                >
+                                  <Plus className="w-3 h-3" />
+                                  <span>Adicionar</span>
+                                </button>
+                              )}
                             </div>
+
+                            {/* Lista de Linhas */}
+                            <div className="space-y-1.5">
+                              {linhasEquivalentes.map((linha, idx) => {
+                                const editandoEstaLinha =
+                                  linhaEditando?.faltanteId === item.id && linhaEditando?.index === idx;
+
+                                return (
+                                  <div
+                                    key={idx}
+                                    className="flex items-center justify-between gap-2 text-xs bg-[#101722]/80 border border-cyan-900/30 rounded-lg px-2.5 py-1.5 group/linha"
+                                  >
+                                    {editandoEstaLinha ? (
+                                      <div className="flex items-center gap-2 flex-1">
+                                        <input
+                                          type="text"
+                                          value={linhaEditando.texto}
+                                          onChange={(e) =>
+                                            setLinhaEditando({
+                                              ...linhaEditando,
+                                              texto: e.target.value,
+                                            })
+                                          }
+                                          className="flex-1 bg-[#18202b] text-xs text-slate-100 px-2.5 py-1 rounded border border-cyan-500/50 focus:outline-none"
+                                          autoFocus
+                                          onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                              handleSalvarEdicaoLinha(
+                                                item.id,
+                                                idx,
+                                                linhaEditando.texto,
+                                                item.dadosEquivalentesOferecidos
+                                              );
+                                            } else if (e.key === 'Escape') {
+                                              setLinhaEditando(null);
+                                            }
+                                          }}
+                                        />
+                                        <button
+                                          onClick={() =>
+                                            handleSalvarEdicaoLinha(
+                                              item.id,
+                                              idx,
+                                              linhaEditando.texto,
+                                              item.dadosEquivalentesOferecidos
+                                            )
+                                          }
+                                          disabled={salvandoDadoEquivalente}
+                                          className="p-1 bg-cyan-600 hover:bg-cyan-500 text-slate-950 rounded cursor-pointer"
+                                          title="Salvar alteração"
+                                        >
+                                          <Check className="w-3.5 h-3.5" />
+                                        </button>
+                                        <button
+                                          onClick={() => setLinhaEditando(null)}
+                                          disabled={salvandoDadoEquivalente}
+                                          className="p-1 text-slate-400 hover:text-slate-200 cursor-pointer"
+                                          title="Cancelar"
+                                        >
+                                          <X className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <>
+                                        <span className="text-slate-200 font-medium leading-relaxed flex-1 break-all">
+                                          {linha}
+                                        </span>
+                                        <div className="flex items-center gap-1 opacity-80 group-hover/linha:opacity-100 transition-opacity flex-shrink-0">
+                                          <button
+                                            onClick={() =>
+                                              setLinhaEditando({
+                                                faltanteId: item.id,
+                                                index: idx,
+                                                texto: linha,
+                                              })
+                                            }
+                                            className="p-1 text-slate-400 hover:text-cyan-300 hover:bg-cyan-950/50 rounded transition-colors cursor-pointer"
+                                            title="Editar esta linha"
+                                          >
+                                            <Edit3 className="w-3.5 h-3.5" />
+                                          </button>
+                                          <button
+                                            onClick={() => {
+                                              if (window.confirm(`Deseja remover este dado equivalente?\n\n"${linha}"`)) {
+                                                handleRemoverLinhaDadoEquivalente(
+                                                  item.id,
+                                                  idx,
+                                                  item.dadosEquivalentesOferecidos
+                                                );
+                                              }
+                                            }}
+                                            className="p-1 text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 rounded transition-colors cursor-pointer"
+                                            title="Remover esta linha"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
+                                      </>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            {/* Formulário para adicionar nova linha */}
+                            {estáAdicionando && (
+                              <div className="flex items-center gap-2 pt-1 border-t border-cyan-800/20">
+                                <input
+                                  type="text"
+                                  value={novoDadoTexto}
+                                  onChange={(e) => setNovoDadoTexto(e.target.value)}
+                                  placeholder="Ex: Documento de origem: IR 2024 | Valor: 1234 5678 9012 (em 05/10/2026)"
+                                  className="flex-1 bg-[#18202b] text-xs text-slate-100 px-2.5 py-1 rounded border border-cyan-500/50 focus:outline-none"
+                                  autoFocus
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      handleAdicionarNovaLinha(item.id, item.dadosEquivalentesOferecidos);
+                                    } else if (e.key === 'Escape') {
+                                      setAdicionandoDadoId(null);
+                                    }
+                                  }}
+                                />
+                                <button
+                                  onClick={() => handleAdicionarNovaLinha(item.id, item.dadosEquivalentesOferecidos)}
+                                  disabled={salvandoDadoEquivalente || !novoDadoTexto.trim()}
+                                  className="p-1 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-slate-950 rounded cursor-pointer"
+                                  title="Adicionar"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => setAdicionandoDadoId(null)}
+                                  className="p-1 text-slate-400 hover:text-slate-200 cursor-pointer"
+                                  title="Cancelar"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            )}
                           </div>
-                        </div>
-                      )}
+                        );
+                      })()}
 
                       {/* Observação */}
                       {idEditandoObs === item.id ? (

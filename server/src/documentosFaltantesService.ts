@@ -4,6 +4,7 @@ import {
   StatusDocumentoFaltante,
 } from './types.js';
 import { obterTodosTitulares, resolverTitularCadastrado, registrarBuscaSemResultado } from './storage.js';
+import { obterAgoraBrasilia, formatarDataBrasilia } from './utils/dataHoraUtils.js';
 
 /**
  * Normaliza strings para comparação insensível a acentos e espaços
@@ -134,69 +135,98 @@ export async function registrarOuIncrementarDocumentoFaltante(params: {
     });
 
     if (matchExistente) {
-      // Pedido repetido: verifica se é reprocessamento recente (menos de 60 segundos)
-      // para não incrementar duas vezes o mesmo pedido em caso de reprocessamento ou requisições concorrentes
-      const dataUltimo = matchExistente.data_ultimo_pedido ? new Date(matchExistente.data_ultimo_pedido).getTime() : 0;
-      const diferencaMs = Date.now() - dataUltimo;
-      const ehReprocessamentoRecente = diferencaMs >= 0 && diferencaMs < 60000; // 60 segundos
+      const ehReaberturaCiclo = matchExistente.status === 'dispensado' || matchExistente.status === 'providenciado';
 
-      const novaQtd = ehReprocessamentoRecente
-        ? (matchExistente.quantidade_pedidos || 1)
-        : (matchExistente.quantidade_pedidos || 1) + 1;
-
-      let solicitantes = matchExistente.solicitante_nome || '';
-      if (params.solicitanteNome && !solicitantes.toLowerCase().includes(params.solicitanteNome.toLowerCase())) {
-        solicitantes = `${solicitantes}, ${params.solicitanteNome}`;
-      }
+      let novaQtd = 1;
+      let solicitantes = (params.solicitanteNome && params.solicitanteNome.trim()) || matchExistente.solicitante_nome || '';
 
       const updates: any = {
-        quantidade_pedidos: novaQtd,
         data_ultimo_pedido: agoraIso,
-        solicitante_nome: solicitantes,
         atualizado_em: agoraIso,
       };
 
-      if (params.dadosEquivalentesOferecidos && params.dadosEquivalentesOferecidos.trim().length > 0) {
-        const novoDado = params.dadosEquivalentesOferecidos.trim();
-        const existente = (matchExistente.dados_equivalentes_oferecidos || '').trim();
+      if (ehReaberturaCiclo) {
+        // =========================================================================
+        // REABERTURA DE NOVO CICLO (Item dispensado ou providenciado pedido de novo)
+        // 1. quantidade_pedidos volta para 1
+        // 2. Os dados equivalentes antigos NÃO são carregados (começam limpos)
+        // 3. Histórico do ciclo anterior registrado na observação
+        // =========================================================================
+        novaQtd = 1;
+        updates.quantidade_pedidos = 1;
+        updates.status = 'pendente';
+        updates.data_primeiro_pedido = agoraIso;
+        updates.solicitante_nome = solicitantes;
+        updates.solicitante_contato = params.solicitanteContato || matchExistente.solicitante_contato;
+        updates.dados_equivalentes_oferecidos = params.dadosEquivalentesOferecidos
+          ? params.dadosEquivalentesOferecidos.trim()
+          : null;
 
-        if (!existente) {
-          updates.dados_equivalentes_oferecidos = novoDado;
-        } else {
-          // Extrai chave sem data para desduplicação (ex: "Documento de origem: X | Valor: Y")
-          const chaveNova = novoDado.replace(/\s*\(em\s+[^)]+\)/i, '').toLowerCase().trim();
-          const linhasExistentes = existente.split('\n').map((l: string) => l.trim()).filter(Boolean);
-          const jaExiste = linhasExistentes.some((l: string) => {
-            const chaveL = l.replace(/\s*\(em\s+[^)]+\)/i, '').toLowerCase().trim();
-            return chaveL === chaveNova;
-          });
+        const dataReabertura = obterAgoraBrasilia().dataStr;
+        const dataCicloAnterior = formatarDataBrasilia(matchExistente.atualizado_em || matchExistente.data_ultimo_pedido).split(' ')[0];
+        const statusAnterior = matchExistente.status === 'dispensado' ? 'dispensado' : 'providenciado';
+        const registroCiclo = `Reaberto em ${dataReabertura}; ciclo anterior: ${matchExistente.quantidade_pedidos || 1} pedido(s), ${statusAnterior} em ${dataCicloAnterior}.`;
 
-          if (!jaExiste) {
-            updates.dados_equivalentes_oferecidos = `${existente}\n${novoDado}`;
+        updates.observacao = matchExistente.observacao
+          ? `${matchExistente.observacao} | ${registroCiclo}`
+          : registroCiclo;
+
+        console.log(`[Documentos Faltantes 🔁] Item "${tipoFormatado}" de "${titularFinal}" REABERTO em novo ciclo (1x). Histórico registrado na observação.`);
+      } else {
+        // =========================================================================
+        // CICLO ATUAL CONTÍNUO (Item já pendente sendo pedido novamente)
+        // =========================================================================
+        const dataUltimo = matchExistente.data_ultimo_pedido ? new Date(matchExistente.data_ultimo_pedido).getTime() : 0;
+        const diferencaMs = Date.now() - dataUltimo;
+        const ehReprocessamentoRecente = diferencaMs >= 0 && diferencaMs < 60000; // 60 segundos
+
+        novaQtd = ehReprocessamentoRecente
+          ? (matchExistente.quantidade_pedidos || 1)
+          : (matchExistente.quantidade_pedidos || 1) + 1;
+
+        if (params.solicitanteNome && !solicitantes.toLowerCase().includes(params.solicitanteNome.toLowerCase())) {
+          solicitantes = `${solicitantes}, ${params.solicitanteNome}`;
+        }
+
+        updates.quantidade_pedidos = novaQtd;
+        updates.solicitante_nome = solicitantes;
+
+        // Acumulação de dados equivalentes: cada um em uma linha separada
+        if (params.dadosEquivalentesOferecidos && params.dadosEquivalentesOferecidos.trim().length > 0) {
+          const novoDado = params.dadosEquivalentesOferecidos.trim();
+          const existente = (matchExistente.dados_equivalentes_oferecidos || '').trim();
+
+          if (!existente) {
+            updates.dados_equivalentes_oferecidos = novoDado;
           } else {
-            updates.dados_equivalentes_oferecidos = existente;
+            // Normaliza caso haja texto legado sem quebra de linha
+            const existenteNormalizado = existente.replace(/(?!^)(Documento de origem:)/g, '\n$1');
+            const chaveNova = novoDado.replace(/\s*\(em\s+[^)]+\)/i, '').toLowerCase().trim();
+            const linhasExistentes = existenteNormalizado.split('\n').map((l: string) => l.trim()).filter(Boolean);
+            const jaExiste = linhasExistentes.some((l: string) => {
+              const chaveL = l.replace(/\s*\(em\s+[^)]+\)/i, '').toLowerCase().trim();
+              return chaveL === chaveNova;
+            });
+
+            if (!jaExiste) {
+              updates.dados_equivalentes_oferecidos = `${existenteNormalizado}\n${novoDado}`;
+            } else {
+              updates.dados_equivalentes_oferecidos = existenteNormalizado;
+            }
           }
         }
-      }
 
-      // Se estava dispensado e foi pedido novamente, reabre como pendente
-      if (matchExistente.status === 'dispensado') {
-        updates.status = 'pendente';
-        updates.observacao = matchExistente.observacao
-          ? `${matchExistente.observacao} | Reaberto após novo pedido.`
-          : 'Reaberto após novo pedido.';
+        if (ehReprocessamentoRecente) {
+          console.log(`[Documentos Faltantes 🔄] Pedido "${tipoFormatado}" de "${titularFinal}" mantido em ${novaQtd} (reprocessamento detectado, sem incremento duplo).`);
+        } else {
+          console.log(`[Documentos Faltantes 📈] Incrementado pedido repetido "${tipoFormatado}" de "${titularFinal}". Total: ${novaQtd}`);
+        }
       }
 
       await supabase
         .from('documentos_faltantes')
         .update(updates)
         .eq('id', matchExistente.id);
-
-      if (ehReprocessamentoRecente) {
-        console.log(`[Documentos Faltantes 🔄] Pedido "${tipoFormatado}" de "${titularFinal}" mantido em ${novaQtd} (reprocessamento detectado, sem incremento duplo).`);
-      } else {
-        console.log(`[Documentos Faltantes 📈] Incrementado pedido repetido "${tipoFormatado}" de "${titularFinal}". Total: ${novaQtd}`);
-      }
 
       // Telemetria histórica em buscas_sem_resultado
       await registrarBuscaSemResultado({
@@ -343,6 +373,7 @@ export async function atualizarStatusObservacaoFaltante(
   dados: {
     status?: StatusDocumentoFaltante;
     observacao?: string | null;
+    dadosEquivalentesOferecidos?: string | null;
   }
 ): Promise<boolean> {
   try {
@@ -352,6 +383,9 @@ export async function atualizarStatusObservacaoFaltante(
     };
     if (dados.status !== undefined) payload.status = dados.status;
     if (dados.observacao !== undefined) payload.observacao = dados.observacao;
+    if (dados.dadosEquivalentesOferecidos !== undefined) {
+      payload.dados_equivalentes_oferecidos = dados.dadosEquivalentesOferecidos;
+    }
 
     const { error } = await supabase
       .from('documentos_faltantes')

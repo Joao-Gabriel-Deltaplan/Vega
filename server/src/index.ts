@@ -1274,16 +1274,20 @@ app.get('/api/documentos-faltantes', async (req, res) => {
   }
 });
 
-// PATCH /api/documentos-faltantes/:id (Atualiza status ou observação do documento faltante)
+// PATCH /api/documentos-faltantes/:id (Atualiza status, observação ou dados equivalentes do documento faltante)
 app.patch('/api/documentos-faltantes/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, observacao } = req.body;
-    const sucesso = await atualizarStatusObservacaoFaltante(id, { status, observacao });
+    const { status, observacao, dadosEquivalentesOferecidos } = req.body;
+    const sucesso = await atualizarStatusObservacaoFaltante(id, {
+      status,
+      observacao,
+      dadosEquivalentesOferecidos,
+    });
     if (!sucesso) {
       return res.status(400).json({ erro: 'Falha ao atualizar documento faltante.' });
     }
-    res.json({ sucesso: true, id, status, observacao });
+    res.json({ sucesso: true, id, status, observacao, dadosEquivalentesOferecidos });
   } catch (erro) {
     console.error('Erro ao atualizar documento faltante:', erro);
     res.status(500).json({ erro: 'Erro ao atualizar documento faltante.' });
