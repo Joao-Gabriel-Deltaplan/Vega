@@ -156,8 +156,27 @@ export async function registrarOuIncrementarDocumentoFaltante(params: {
         atualizado_em: agoraIso,
       };
 
-      if (params.dadosEquivalentesOferecidos) {
-        updates.dados_equivalentes_oferecidos = params.dadosEquivalentesOferecidos;
+      if (params.dadosEquivalentesOferecidos && params.dadosEquivalentesOferecidos.trim().length > 0) {
+        const novoDado = params.dadosEquivalentesOferecidos.trim();
+        const existente = (matchExistente.dados_equivalentes_oferecidos || '').trim();
+
+        if (!existente) {
+          updates.dados_equivalentes_oferecidos = novoDado;
+        } else {
+          // Extrai chave sem data para desduplicação (ex: "Documento de origem: X | Valor: Y")
+          const chaveNova = novoDado.replace(/\s*\(em\s+[^)]+\)/i, '').toLowerCase().trim();
+          const linhasExistentes = existente.split('\n').map((l: string) => l.trim()).filter(Boolean);
+          const jaExiste = linhasExistentes.some((l: string) => {
+            const chaveL = l.replace(/\s*\(em\s+[^)]+\)/i, '').toLowerCase().trim();
+            return chaveL === chaveNova;
+          });
+
+          if (!jaExiste) {
+            updates.dados_equivalentes_oferecidos = `${existente}\n${novoDado}`;
+          } else {
+            updates.dados_equivalentes_oferecidos = existente;
+          }
+        }
       }
 
       // Se estava dispensado e foi pedido novamente, reabre como pendente

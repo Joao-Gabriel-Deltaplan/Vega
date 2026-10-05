@@ -71,12 +71,15 @@ Proibido introduzir outros modelos ou aliases legados (gpt-4o, whisper-1, etc.).
 
 ---
 
-## 10. Documentos Faltantes e Inexistentes
+## 10. Documentos Faltantes, Inexistentes e Dados Equivalentes
 - **Registro cumulativo:** Documento não encontrado deve ser registrado em `documentos_faltantes`. Se já existir para o mesmo titular/tipo, somar contagem (`quantidade_pedidos`) e atualizar data, sem duplicar.
+- **Validação Estrita de Dado Equivalente:** Dado equivalente só pode ser registrado ou afirmado ao usuário quando a IA/sistema extrair o valor específico pedido com formato matemático e estrutural comprovado (Título de Eleitor: 12 dígitos; CPF: 11 dígitos; CNH: 11 dígitos; PIS: 11 dígitos; Passaporte: 2 letras + 6 números). É terminantemente proibido confundir termos semelhantes (como "titular/titulaire" em passaporte com "título de eleitor"). Se não passar na validação do formato, a VEGA NÃO afirma que encontrou o número e NUNCA registra como dado equivalente.
+- **Formato Limpo de Dado Equivalente:** O campo `dados_equivalentes_oferecidos` deve guardar exclusivamente `"Documento de origem: [nome] | Valor: [número] (em DD/MM/AAAA)"`, NUNCA trechos crus de texto.
+- **Preservação de Dados Equivalentes:** Um novo pedido nunca substitui nem apaga um dado equivalente válido já existente: guarda a lista acumulada com documento de origem, valor e data, sem apagar os anteriores.
 - **Estrutura da resposta:**
   1. `"Não encontrei [artigo] *[Tipo]* d[prep] *[Titular]* no Cofre."` (com saudação se houver).
   2. `"Anotei na lista de documentos pendentes."`
-  3. Se o dado constar em outro documento do titular no Cofre, oferecer a informação.
+  3. Se o dado equivalente com formato válido constar em outro documento do titular no Cofre, oferecer a informação com o valor exato e citar o documento de origem.
   4. Proibido prometer dados inexistentes ou despejar lista completa de documentos disponíveis.
 - **Baixa automática:** Adição de documento ao Cofre marca pendências correspondentes como providenciadas automaticamente.
 

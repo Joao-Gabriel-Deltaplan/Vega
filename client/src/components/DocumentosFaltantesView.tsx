@@ -400,9 +400,16 @@ export const DocumentosFaltantesView: React.FC<DocumentosFaltantesViewProps> = (
 
                       {/* Dado equivalente sugerido */}
                       {item.dadosEquivalentesOferecidos && (
-                        <div className="flex items-center gap-1.5 mt-2 text-[11px] text-cyan-300/80 bg-cyan-950/30 border border-cyan-800/30 px-2.5 py-1 rounded-lg">
-                          <Info className="w-3 h-3 flex-shrink-0 text-cyan-400" />
-                          <span>Oferecido dado equivalente: <strong>{item.dadosEquivalentesOferecidos}</strong></span>
+                        <div className="flex items-start gap-2 mt-2 text-[11px] text-cyan-300/90 bg-cyan-950/30 border border-cyan-800/30 px-2.5 py-1.5 rounded-lg">
+                          <Info className="w-3.5 h-3.5 flex-shrink-0 text-cyan-400 mt-0.5" />
+                          <div className="flex-1 space-y-0.5">
+                            <span className="font-semibold text-cyan-400 block text-[10px] uppercase tracking-wider">
+                              Dado equivalente localizado:
+                            </span>
+                            <div className="text-slate-200 whitespace-pre-line font-medium leading-relaxed">
+                              {item.dadosEquivalentesOferecidos}
+                            </div>
+                          </div>
                         </div>
                       )}
 

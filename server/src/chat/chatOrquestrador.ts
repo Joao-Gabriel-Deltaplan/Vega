@@ -42,6 +42,7 @@ import {
   obterPreposicaoTitular,
 } from '../busca/equivalenciaService.js';
 import { buscarConhecimento } from '../busca/motorConhecimento.js';
+import { extrairEValidarDadoDocumental } from '../utils/validacaoDocumentalUtils.js';
 import {
   Contato,
   DocumentoRegistro,
@@ -3611,6 +3612,7 @@ export async function toolBuscarDocumentos(
 
   // REGRA DOCUMENTO x DADO: Se o usuário pediu um documento específico (ex: Título de Eleitor)
   // e o documento em si NÃO existe no Cofre, mas o dado apareceu em outro documento (ex: IR):
+  let documentosParaRetorno = filtrados.slice(0, 8);
   const tipoDocBuscado = identificarTipoDocumentoBuscado(consulta);
   if (tipoDocBuscado && filtrados.length > 0 && !ehPessoaNaoCadastrada) {
     const normTipo = tipoDocBuscado.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -3620,33 +3622,77 @@ export async function toolBuscarDocumentos(
     });
 
     if (!temDocumentoOficial) {
-      const docFonte = filtrados[0];
-      const titularFinal = titObj?.nome || titularOriginal;
-      const nomeContatoReal = (contato?.nome || contato?.telefone || 'Contato').trim();
+      // 1. Só aceita dado equivalente se a IA/sistema extrair um valor válido com formato comprovado (Regra 2)
+      let docFonteComDado: typeof filtrados[0] | null = null;
+      let valorExtraidoValido: string | null = null;
 
-      try {
-        await registrarOuIncrementarDocumentoFaltante({
-          tipoDocumento: tipoDocBuscado,
-          descricaoItem: tipoDocBuscado,
-          titularInformado: titularFinal,
-          solicitanteNome: nomeContatoReal,
-          solicitanteContato: contato?.telefone,
-          textoDoPedido: consulta,
-          dadosEquivalentesOferecidos: `Número/dado localizado no documento "${docFonte.nome_documento}": ${docFonte.trecho ? docFonte.trecho.substring(0, 150) : ''}`,
-          forcarRegistro: true,
-        });
-        bloquearCancelamento?.('Registro de documento faltante com dados equivalentes via busca de documentos');
-      } catch (errF) {
-        console.warn('[VEGA Faltantes ⚠️] Falha ao registrar documento faltante com dados equivalentes:', errF);
+      for (const doc of filtrados) {
+        if (!doc.trecho) continue;
+        const resVal = extrairEValidarDadoDocumental(tipoDocBuscado, doc.trecho);
+        if (resVal.valido && resVal.valorFormatado) {
+          docFonteComDado = doc;
+          valorExtraidoValido = resVal.valorFormatado;
+          break;
+        }
       }
 
-      orientacaoResposta = `ATENÇÃO REGRA DOCUMENTO x DADO: O documento "${tipoDocBuscado}" NÃO existe como arquivo no Cofre, mas o número/dado foi localizado dentro de outro documento ("${docFonte.nome_documento}"). Você DEVE responder separando expressamente as duas coisas: "Não tenho o ${tipoDocBuscado.toLowerCase()} no Cofre, mas o número aparece na ${docFonte.nome_documento}: [insira o número ou dado encontrado]. Anotei na lista de documentos pendentes." NUNCA diga que encontrou o documento, apenas que o número/dado consta no outro documento.`;
-      mensagemRetorno = orientacaoResposta;
+      const titularFinal = titObj?.nome || titularOriginal;
+      const nomeContatoReal = (contato?.nome || contato?.telefone || 'Contato').trim();
+      const art = obterArtigoDefinido(tipoDocBuscado);
+      const prep = obterPreposicaoTitular(titularFinal);
+
+      if (docFonteComDado && valorExtraidoValido) {
+        // Encontrou documento legítimo com o valor válido!
+        // Guarda apenas "Documento de origem: [nome] | Valor: [número] (em DD/MM/AAAA)", nunca trechos crus (Regra 3)
+        const dataHojeBr = obterAgoraBrasilia().dataStr;
+        const dadoEquivalenteFormatado = `Documento de origem: ${docFonteComDado.nome_documento} | Valor: ${valorExtraidoValido} (em ${dataHojeBr})`;
+
+        try {
+          await registrarOuIncrementarDocumentoFaltante({
+            tipoDocumento: tipoDocBuscado,
+            descricaoItem: tipoDocBuscado,
+            titularInformado: titularFinal,
+            solicitanteNome: nomeContatoReal,
+            solicitanteContato: contato?.telefone,
+            textoDoPedido: consulta,
+            dadosEquivalentesOferecidos: dadoEquivalenteFormatado,
+            forcarRegistro: true,
+          });
+          bloquearCancelamento?.('Registro de documento faltante com dados equivalentes via busca de documentos');
+        } catch (errF) {
+          console.warn('[VEGA Faltantes ⚠️] Falha ao registrar documento faltante com dados equivalentes:', errF);
+        }
+
+        orientacaoResposta = `ATENÇÃO REGRA DOCUMENTO x DADO: O documento oficial "${tipoDocBuscado}" NÃO existe como arquivo no Cofre, mas o número (${valorExtraidoValido}) foi localizado dentro de outro documento ("${docFonteComDado.nome_documento}"). Você DEVE responder separando expressamente as duas coisas: "Não tenho ${art} ${tipoDocBuscado.toLowerCase()} ${prep} ${titularFinal} no Cofre, mas o número aparece na ${docFonteComDado.nome_documento}: ${valorExtraidoValido}. Anotei na lista de documentos pendentes." NUNCA diga que encontrou o documento, apenas que o número consta no outro documento.`;
+        mensagemRetorno = orientacaoResposta;
+        documentosParaRetorno = [docFonteComDado];
+      } else {
+        // NÃO encontrou nenhum trecho com o valor no formato válido! (Regra 2: não afirmar nem registrar)
+        try {
+          await registrarOuIncrementarDocumentoFaltante({
+            tipoDocumento: tipoDocBuscado,
+            descricaoItem: tipoDocBuscado,
+            titularInformado: titularFinal,
+            solicitanteNome: nomeContatoReal,
+            solicitanteContato: contato?.telefone,
+            textoDoPedido: consulta,
+            dadosEquivalentesOferecidos: null,
+            forcarRegistro: true,
+          });
+          bloquearCancelamento?.('Registro de documento faltante via busca de documentos');
+        } catch (errF) {
+          console.warn('[VEGA Faltantes ⚠️] Falha ao registrar documento faltante:', errF);
+        }
+
+        orientacaoResposta = `ATENÇÃO: O documento oficial "${tipoDocBuscado}" NÃO existe no Cofre e nenhum número/dado correspondente com formato válido foi localizado nos outros documentos. Responda estritamente ao usuário informando: "Não encontrei ${art} ${tipoDocBuscado} ${prep} ${titularFinal} no Cofre. Anotei na lista de documentos pendentes." É TERMINANTEMENTE PROIBIDO inventar números, afirmar que encontrou em outros documentos (como Passaporte) ou passar trechos que não contenham o dado solicitado.`;
+        mensagemRetorno = orientacaoResposta;
+        documentosParaRetorno = [];
+      }
     }
   }
 
   return {
-    documentos: filtrados.slice(0, 8),
+    documentos: documentosParaRetorno,
     orientacao_resposta: orientacaoResposta,
     mensagem: mensagemRetorno,
   };
