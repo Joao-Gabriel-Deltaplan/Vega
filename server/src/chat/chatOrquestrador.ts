@@ -3014,7 +3014,8 @@ export async function toolBuscarDocumentos(
   tipoReferencia?: 'pessoa' | 'veiculo' | 'imovel' | 'empresa' | 'obra' | 'outro',
   identificadorReferencia?: string,
   pessoaBase?: string,
-  relacao: 'propria' | 'pai' | 'mae' | 'conjuge' | 'filho' | 'outro' = 'propria'
+  relacao: 'propria' | 'pai' | 'mae' | 'conjuge' | 'filho' | 'outro' = 'propria',
+  bloquearCancelamento?: (motivo: string) => void
 ): Promise<{
   documentos: Array<{
     doc_id: string;
@@ -3571,6 +3572,7 @@ export async function toolBuscarDocumentos(
           textoDoPedido: termoCompleto,
           forcarRegistro: true,
         });
+        bloquearCancelamento?.('Registro automático de documento faltante via busca de documentos');
       } catch (errFalt) {
         console.warn('[VEGA Faltantes ⚠️] Falha ao registrar documento faltante automático:', errFalt);
       }
@@ -3633,6 +3635,7 @@ export async function toolBuscarDocumentos(
           dadosEquivalentesOferecidos: `Número/dado localizado no documento "${docFonte.nome_documento}": ${docFonte.trecho ? docFonte.trecho.substring(0, 150) : ''}`,
           forcarRegistro: true,
         });
+        bloquearCancelamento?.('Registro de documento faltante com dados equivalentes via busca de documentos');
       } catch (errF) {
         console.warn('[VEGA Faltantes ⚠️] Falha ao registrar documento faltante com dados equivalentes:', errF);
       }
@@ -6093,6 +6096,7 @@ export async function executarOrquestradorIaCentral(dados: {
   origemMensagem?: 'audio' | 'texto';
   idsMensagensLoteAtual?: string[];
   abortSignal?: AbortSignal;
+  bloquearCancelamento?: (motivo: string) => void;
 }): Promise<ResultadoChatOrquestrador> {
   const inicioTotal = Date.now();
   const mensagemUsuario = dados.mensagemUsuario || (dados as any).mensagem || '';
@@ -6435,7 +6439,8 @@ ${statusSaudacao}
             args.tipo_referencia,
             args.identificador_referencia,
             args.pessoa_base,
-            args.relacao || 'propria'
+            args.relacao || 'propria',
+            dados.bloquearCancelamento
           );
           if (resultadoTool.tipo_correspondencia) {
             etapasRastro.push({
@@ -6548,6 +6553,7 @@ ${statusSaudacao}
             todosDocs,
           });
           if (resultadoTool.sucesso) {
+            dados.bloquearCancelamento?.('Confirmação de versão de dado do titular');
             dadosRetornadosTools.push(
               `${resultadoTool.mensagem} ${resultadoTool.valorSalvo || ''} ${resultadoTool.documentoOrigem || ''}`
             );
@@ -6686,6 +6692,9 @@ ${statusSaudacao}
             args.tipo_referencia,
             args.identificador_referencia
           );
+          if (resultadoTool.item_registrado || resultadoTool.sucesso) {
+            dados.bloquearCancelamento?.('Registro de documento faltante');
+          }
           if (resultadoTool.mensagem) {
             dadosRetornadosTools.push(resultadoTool.mensagem);
           }
@@ -6704,6 +6713,9 @@ ${statusSaudacao}
             historicoLimitado,
             mensagemUsuario
           );
+          if (resultadoTool.sucesso || resultadoTool.item || resultadoTool.acao) {
+            dados.bloquearCancelamento?.('Salvar na Base de Conhecimento');
+          }
           if (resultadoTool.mensagem) {
             dadosRetornadosTools.push(resultadoTool.mensagem);
           }
@@ -6717,6 +6729,9 @@ ${statusSaudacao}
             historicoLimitado,
             mensagemUsuario
           );
+          if (resultadoTool.sucesso) {
+            dados.bloquearCancelamento?.('Atualizar Base de Conhecimento');
+          }
           if (resultadoTool.mensagem) {
             dadosRetornadosTools.push(resultadoTool.mensagem);
           }
@@ -6730,6 +6745,9 @@ ${statusSaudacao}
             historicoLimitado,
             mensagemUsuario
           );
+          if (resultadoTool.sucesso) {
+            dados.bloquearCancelamento?.('Remover da Base de Conhecimento');
+          }
           if (resultadoTool.mensagem) {
             dadosRetornadosTools.push(resultadoTool.mensagem);
           }
@@ -6880,6 +6898,7 @@ export async function processarMensagemChat(dados: {
   origemMensagem?: 'audio' | 'texto';
   idsMensagensLoteAtual?: string[];
   abortSignal?: AbortSignal;
+  bloquearCancelamento?: (motivo: string) => void;
 }): Promise<ResultadoChatOrquestrador> {
   // 1. VERIFICAÇÃO DE ESTOURO DE LIMITE MENSAL DE CONSUMO (100%)
   try {

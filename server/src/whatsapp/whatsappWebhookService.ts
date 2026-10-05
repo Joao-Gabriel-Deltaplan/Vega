@@ -246,6 +246,7 @@ export async function processarEventoEvolution(
   evento: any,
   ipOrigem: string = 'desconhecida'
 ): Promise<ResultadoProcessamentoWebhook> {
+  const timestampRecebimentoWebhook = Date.now();
   limparCacheDeduplicacao();
 
   const key = evento?.key;
@@ -901,6 +902,7 @@ export async function processarEventoEvolution(
             nomeArquivo: resultadoDoc.anexo?.nome || resultadoDoc.doc?.arquivo,
             anexo: resultadoDoc.anexo,
             mensagemRespostaPadraoDoc: resultadoDoc.mensagemResposta,
+            timestampRecebimentoWebhook,
           },
         });
 
@@ -1184,6 +1186,7 @@ export async function processarEventoEvolution(
       correcoesTranscricao,
       audioStoragePath,
       audioMimeType,
+      timestampRecebimentoWebhook,
     },
   });
 

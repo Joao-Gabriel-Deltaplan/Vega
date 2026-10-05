@@ -35,6 +35,7 @@ export interface ItemMensagemAgrupada {
   nomeArquivo?: string;
   anexo?: Anexo;
   mensagemRespostaPadraoDoc?: string;
+  timestampRecebimentoWebhook?: number;
 }
 
 export interface EntradaAgrupador {
@@ -56,15 +57,17 @@ interface EstadoAgrupamentoConversa {
   timerAgrupamento: NodeJS.Timeout | null;
   primeiroRecebidoEm: number;
 
-  // Controle de cancelamento imediato e reprocessamento
+  // Controle de cancelamento seguro e reprocessamento
   emProcessamento: boolean;
   loteEmProcessamento: ItemMensagemAgrupada[];
   abortController: AbortController | null;
+  podeCancelar: boolean;
+  motivoBloqueioCancelamento?: string;
 
   // Mensagens em preparo (áudio sendo baixado/transcrito)
   mensagensEmPreparo: Set<string>;
 
-  // Fila de espera pós-processamento
+  // Fila de espera pós-processamento (para mensagens que chegaram enquanto tool de escrita rodava)
   filaEsperaAposProcessamento: ItemMensagemAgrupada[];
 
   // NOVO: Controle de presença em tempo real do usuário (composing / paused)
@@ -115,6 +118,8 @@ function obterOuCriarEstado(
       emProcessamento: false,
       loteEmProcessamento: [],
       abortController: null,
+      podeCancelar: true,
+      motivoBloqueioCancelamento: undefined,
       mensagensEmPreparo: new Set<string>(),
       filaEsperaAposProcessamento: [],
       usuarioDigitando: jaEstaDigitando,
@@ -324,10 +329,19 @@ export async function adicionarMensagemAoAgrupador(entrada: EntradaAgrupador): P
   }
 
   // SE JÁ ESTIVER EM PROCESSAMENTO:
-  // Requisito 4a: "ao chegar nova mensagem da mesma conversa antes do envio da resposta, cancelar o processamento em andamento (sem enviar nada) e reprocessar com o lote completo."
+  // Requisito 2 (Cancelamento Seguro): se uma tool de escrita já tiver sido executada,
+  // o processamento NÃO pode mais ser cancelado: termina e envia a resposta, e a mensagem nova entra como próximo lote.
   if (estado.emProcessamento) {
+    if (!estado.podeCancelar) {
+      console.log(
+        `[Agrupador 🔒 CANCELAMENTO BLOQUEADO] Nova mensagem recebida para ${conversaId}, mas o lote em andamento já executou ação de escrita no sistema (${estado.motivoBloqueioCancelamento || 'tool de escrita'}). Mensagem enfileirada para o próximo lote.`
+      );
+      estado.filaEsperaAposProcessamento.push(item);
+      return;
+    }
+
     console.log(
-      `[Agrupador ⚡ CANCELAMENTO] Nova mensagem recebida antes do envio da resposta! Cancelando processamento anterior para reprocessar com o lote completo...`
+      `[Agrupador ⚡ CANCELAMENTO SEGURO] Nova mensagem recebida antes do envio e sem tools de escrita! Cancelando processamento anterior para reprocessar com o lote completo...`
     );
     if (estado.abortController) {
       estado.abortController.abort();
@@ -400,16 +414,24 @@ async function dispararLote(conversaId: string): Promise<void> {
   estado.loteEmProcessamento = [...loteParaProcessar];
   estado.primeiroRecebidoEm = 0;
   estado.emProcessamento = true;
+  estado.podeCancelar = true;
+  estado.motivoBloqueioCancelamento = undefined;
 
   const abortController = new AbortController();
   estado.abortController = abortController;
+
+  const callbackBloquearCancelamento = (motivo: string) => {
+    estado.podeCancelar = false;
+    estado.motivoBloqueioCancelamento = motivo;
+    console.log(`[Agrupador 🔒 BLOQUEIO DE CANCELAMENTO] Lote de ${conversaId} não pode mais ser cancelado: ${motivo}`);
+  };
 
   console.log(
     `\n[Agrupador ⚡] Iniciando processamento imediato para ${conversaId} (${loteParaProcessar.length} mensagens no lote)...`
   );
 
   try {
-    await processarLoteUnificado(estado, loteParaProcessar, abortController.signal);
+    await processarLoteUnificado(estado, loteParaProcessar, abortController.signal, callbackBloquearCancelamento);
   } catch (erro: any) {
     if (abortController.signal.aborted || erro?.name === 'AbortError') {
       console.log(`[Agrupador 🛑] Processamento do lote para ${conversaId} cancelado com sucesso.`);
@@ -421,6 +443,21 @@ async function dispararLote(conversaId: string): Promise<void> {
       estado.emProcessamento = false;
       estado.loteEmProcessamento = [];
       estado.abortController = null;
+      estado.podeCancelar = true;
+      estado.motivoBloqueioCancelamento = undefined;
+
+      // Se havia mensagens retidas enquanto o lote com escrita rodava, dispara o próximo lote:
+      if (estado.filaEsperaAposProcessamento.length > 0) {
+        console.log(
+          `[Agrupador 📦 PRÓXIMO LOTE] Disparando próximo lote com ${estado.filaEsperaAposProcessamento.length} mensagem(ns) retida(s) para ${conversaId}...`
+        );
+        const pendentes = [...estado.filaEsperaAposProcessamento];
+        estado.filaEsperaAposProcessamento = [];
+        estado.loteAtual = [...pendentes, ...estado.loteAtual];
+        setImmediate(async () => {
+          await dispararLote(conversaId);
+        });
+      }
     }
   }
 }
@@ -491,10 +528,11 @@ Retorne ESTRITAMENTE um objeto JSON:
 async function processarLoteUnificado(
   estado: EstadoAgrupamentoConversa,
   itens: ItemMensagemAgrupada[],
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  bloquearCancelamento?: (motivo: string) => void
 ): Promise<void> {
   const { conversaId, destinatario, contato, usuarioAutorizado } = estado;
-  const inicioProcessamento = Date.now();
+  const agoraInicioProcessamento = Date.now();
 
   // Inicia envio contínuo de status "digitando..." da VEGA para o WhatsApp
   const pararDigitando = iniciarPresencaDigitandoVega(destinatario);
@@ -659,6 +697,7 @@ async function processarLoteUnificado(
       origemMensagem,
       idsMensagensLoteAtual: idsMensagensLote,
       abortSignal,
+      bloquearCancelamento,
     });
 
     // Se o lote foi cancelado durante o raciocínio da IA, encerra sem enviar nada
@@ -670,65 +709,105 @@ async function processarLoteUnificado(
     const textoResposta = sanitizarRespostaTextoFinal(resultadoChat.textoResposta);
     const assistenteMsgId = `wa-msg-${Date.now()}-vega`;
 
-    // 4. Se o lote conteve áudios, enriquece o rastro com transcrição e custos
-    if (resultadoChat.rastro && itensAudio.length > 0) {
-      resultadoChat.rastro.tipoEntrada = 'audio';
-      const primeiroAudio = itensAudio[0];
-
-      resultadoChat.rastro.transcricaoAudio = {
-        duracaoSegundos: duracaoTotalAudio,
-        custoUsd: custoTotalTranscricaoUsd,
-        modelo: primeiroAudio.modeloTranscricao || 'gpt-transcribe',
-        metodoDownload: primeiroAudio.metodoDownloadAudio,
-        textoOriginal: itensAudio.map((a) => a.textoTranscritoOriginal || a.texto).join('\n'),
-        textoCorrigido: textoConsolidado,
-        correcoesAplicadas: itensAudio.flatMap((a) => a.correcoesTranscricao || []),
-      };
-
-      resultadoChat.rastro.etapas.unshift({
-        ordem: 0,
-        nome: 'Transcrição de Áudio (Whisper) - Agrupamento',
-        descricao: `Total de ${itensAudio.length} áudio(s) transcrito(s) (~${duracaoTotalAudio}s). Custo: $${custoTotalTranscricaoUsd}.`,
-        tempoMs: tempoTotalTranscricaoMs,
-        detalhes: {
-          totalAudios: itensAudio.length,
-          duracaoSegundos: duracaoTotalAudio,
-          custoUsd: custoTotalTranscricaoUsd,
-        },
-      });
-
-      resultadoChat.rastro.custoEstimadoUsd = Number(
-        ((resultadoChat.rastro.custoEstimadoUsd || 0) + custoTotalTranscricaoUsd).toFixed(6)
-      );
-      resultadoChat.rastro.tempoTotalMs =
-        (resultadoChat.rastro.tempoTotalMs || 0) + tempoTotalTranscricaoMs;
-    }
-
     // Checagem final de cancelamento antes de enviar mensagem ao WhatsApp
     if (abortSignal?.aborted) {
       console.log(`[Agrupador 🛑] Processamento de ${conversaId} interrompido antes do envio ao WhatsApp.`);
       return;
     }
 
-    // 5. Envia resposta para o WhatsApp (texto, anexos e localização se houver) e mede o tempo de envio
+    // 4. Envia resposta para o WhatsApp (texto, anexos e localização se houver) e mede o tempo de envio
     const inicioEnvio = Date.now();
     await enviarRespostaCompletaWhatsApp(destinatario, textoResposta, resultadoChat.anexos, resultadoChat.localizacao);
     const tempoEnvioMs = Date.now() - inicioEnvio;
 
-    // 6. Registra etapa de envio e salva o rastro completo com todas as etapas medidas
+    // 5. MEDIÇÃO DE PONTA A PONTA (Requisito 1):
+    // Calcula o tempo exato desde o recebimento do primeiro webhook até o envio confirmado pela Evolution
+    const timestampsRecebimento = itens
+      .map((i) => i.timestampRecebimentoWebhook)
+      .filter((t): t is number => typeof t === 'number' && t > 0);
+    const menorTimestampWebhook = timestampsRecebimento.length > 0
+      ? Math.min(...timestampsRecebimento)
+      : agoraInicioProcessamento;
+
+    const tempoEsperaAgrupadorMs = Math.max(
+      0,
+      agoraInicioProcessamento - menorTimestampWebhook - tempoTotalTranscricaoMs
+    );
+    const tempoTotalPontaAPontaMs = Date.now() - menorTimestampWebhook;
+
+    // 6. Registra e consolida todas as etapas no rastro
     if (resultadoChat.rastro) {
+      const etapasIniciais: any[] = [];
+
+      // Etapa: Transcrição de Áudio (se houve)
+      if (itensAudio.length > 0) {
+        resultadoChat.rastro.tipoEntrada = 'audio';
+        const primeiroAudio = itensAudio[0];
+        resultadoChat.rastro.transcricaoAudio = {
+          duracaoSegundos: duracaoTotalAudio,
+          custoUsd: custoTotalTranscricaoUsd,
+          modelo: primeiroAudio.modeloTranscricao || 'gpt-transcribe',
+          metodoDownload: primeiroAudio.metodoDownloadAudio,
+          textoOriginal: itensAudio.map((a) => a.textoTranscritoOriginal || a.texto).join('\n'),
+          textoCorrigido: textoConsolidado,
+          correcoesAplicadas: itensAudio.flatMap((a) => a.correcoesTranscricao || []),
+        };
+
+        etapasIniciais.push({
+          ordem: 0,
+          nome: 'Transcrição de Áudio (Whisper)',
+          descricao: `Download e transcrição de ${itensAudio.length} áudio(s) (~${duracaoTotalAudio}s) finalizada em ${tempoTotalTranscricaoMs}ms. Custo: $${custoTotalTranscricaoUsd}.`,
+          tempoMs: tempoTotalTranscricaoMs,
+          detalhes: {
+            totalAudios: itensAudio.length,
+            duracaoSegundos: duracaoTotalAudio,
+            custoUsd: custoTotalTranscricaoUsd,
+            tempoMs: tempoTotalTranscricaoMs,
+          },
+        });
+
+        resultadoChat.rastro.custoEstimadoUsd = Number(
+          ((resultadoChat.rastro.custoEstimadoUsd || 0) + custoTotalTranscricaoUsd).toFixed(6)
+        );
+      }
+
+      // Etapa: Espera no Agrupador / Fila (se relevante, > 10ms)
+      if (tempoEsperaAgrupadorMs > 10) {
+        etapasIniciais.push({
+          ordem: 0,
+          nome: 'Espera no Agrupador / Fila',
+          descricao: `Mensagem aguardou ${tempoEsperaAgrupadorMs}ms na fila do agrupador (preparo de áudio / debounce / lote anterior).`,
+          tempoMs: tempoEsperaAgrupadorMs,
+          detalhes: {
+            tempoEsperaAgrupadorMs,
+            totalMensagensNoLote: itens.length,
+          },
+        });
+      }
+
+      // Consolida: [Etapas Iniciais] + [Etapas Orquestrador (OpenAI / Tools)] + [Envio Evolution]
+      resultadoChat.rastro.etapas = [...etapasIniciais, ...(resultadoChat.rastro.etapas || [])];
+
       resultadoChat.rastro.etapas.push({
-        ordem: resultadoChat.rastro.etapas.length + 1,
+        ordem: 0,
         nome: 'Envio WhatsApp (Evolution API)',
-        descricao: `Mensagem entregue via Evolution API em ${tempoEnvioMs}ms.`,
+        descricao: `Mensagem entregue e confirmada via Evolution API em ${tempoEnvioMs}ms.`,
         tempoMs: tempoEnvioMs,
         detalhes: {
           destinatario,
+          tempoEnvioMs,
           temAnexo: Boolean(resultadoChat.anexos && resultadoChat.anexos.length > 0),
           temLocalizacao: Boolean(resultadoChat.localizacao),
         },
       });
-      resultadoChat.rastro.tempoTotalMs = (resultadoChat.rastro.tempoTotalMs || 0) + tempoEnvioMs;
+
+      // Reordena sequencialmente
+      resultadoChat.rastro.etapas.forEach((etapa, idx) => {
+        etapa.ordem = idx + 1;
+      });
+
+      // Define o tempo total real de ponta a ponta
+      resultadoChat.rastro.tempoTotalMs = tempoTotalPontaAPontaMs;
       resultadoChat.rastro.mensagemId = assistenteMsgId;
       resultadoChat.rastro.conversaId = conversaId;
       resultadoChat.rastro.usuarioNome = usuarioAutorizado.nome;
@@ -739,6 +818,14 @@ async function processarLoteUnificado(
       } catch (e: any) {
         console.warn('[Agrupador ⚠️] Falha ao salvar rastro no Supabase:', e?.message || e);
       }
+
+      console.log(
+        `\n[Agrupador ⏱️ PONTA A PONTA] Total: ${(tempoTotalPontaAPontaMs / 1000).toFixed(2)}s (${tempoTotalPontaAPontaMs}ms) para "${usuarioAutorizado.nome}":`
+      );
+      for (const e of resultadoChat.rastro.etapas) {
+        console.log(`   - ${e.nome.padEnd(35)}: ${e.tempoMs}ms`);
+      }
+      console.log('');
     }
 
     // 7. Registra e transmite a resposta única da VEGA na conversa
@@ -762,7 +849,7 @@ async function processarLoteUnificado(
       eventosPainel.emitirNovaMensagem(conversaId, msgAssistente, conversaAtualizada);
     }
 
-    const tempoTotal = Date.now() - inicioProcessamento;
+    const tempoTotal = Date.now() - agoraInicioProcessamento;
     console.log(
       `[Agrupador 🤖] Resposta única enviada para "${usuarioAutorizado.nome}" em ${tempoTotal}ms (Lote de ${itens.length} mensagens, envio WhatsApp: ${tempoEnvioMs}ms).`
     );

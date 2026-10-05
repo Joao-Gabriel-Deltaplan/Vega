@@ -134,8 +134,16 @@ export async function registrarOuIncrementarDocumentoFaltante(params: {
     });
 
     if (matchExistente) {
-      // Pedido repetido: incrementa a contagem e atualiza a data do último pedido
-      const novaQtd = (matchExistente.quantidade_pedidos || 1) + 1;
+      // Pedido repetido: verifica se é reprocessamento recente (menos de 60 segundos)
+      // para não incrementar duas vezes o mesmo pedido em caso de reprocessamento ou requisições concorrentes
+      const dataUltimo = matchExistente.data_ultimo_pedido ? new Date(matchExistente.data_ultimo_pedido).getTime() : 0;
+      const diferencaMs = Date.now() - dataUltimo;
+      const ehReprocessamentoRecente = diferencaMs >= 0 && diferencaMs < 60000; // 60 segundos
+
+      const novaQtd = ehReprocessamentoRecente
+        ? (matchExistente.quantidade_pedidos || 1)
+        : (matchExistente.quantidade_pedidos || 1) + 1;
+
       let solicitantes = matchExistente.solicitante_nome || '';
       if (params.solicitanteNome && !solicitantes.toLowerCase().includes(params.solicitanteNome.toLowerCase())) {
         solicitantes = `${solicitantes}, ${params.solicitanteNome}`;
@@ -165,7 +173,11 @@ export async function registrarOuIncrementarDocumentoFaltante(params: {
         .update(updates)
         .eq('id', matchExistente.id);
 
-      console.log(`[Documentos Faltantes 📈] Incrementado pedido repetido "${tipoFormatado}" de "${titularFinal}". Total: ${novaQtd}`);
+      if (ehReprocessamentoRecente) {
+        console.log(`[Documentos Faltantes 🔄] Pedido "${tipoFormatado}" de "${titularFinal}" mantido em ${novaQtd} (reprocessamento detectado, sem incremento duplo).`);
+      } else {
+        console.log(`[Documentos Faltantes 📈] Incrementado pedido repetido "${tipoFormatado}" de "${titularFinal}". Total: ${novaQtd}`);
+      }
 
       // Telemetria histórica em buscas_sem_resultado
       await registrarBuscaSemResultado({
