@@ -178,12 +178,13 @@ function classificarErroOpenAI(erro: any): { titulo: string; severidade: 'baixa'
 export async function chamarChatComTelemetria(
   openai: OpenAI,
   params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
-  meta: MetadadosTelemetria
+  meta: MetadadosTelemetria,
+  options?: OpenAI.RequestOptions
 ): Promise<OpenAI.Chat.ChatCompletion> {
   const modelo = params.model || 'gpt-5.4-mini';
 
   try {
-    const resposta = await openai.chat.completions.create(params);
+    const resposta = await openai.chat.completions.create(params, options);
     const tokensIn = resposta.usage?.prompt_tokens || 0;
     const tokensOut = resposta.usage?.completion_tokens || 0;
     const custo = calcularCustoChamada(modelo, tokensIn, tokensOut);
@@ -204,6 +205,13 @@ export async function chamarChatComTelemetria(
 
     return resposta;
   } catch (erro: any) {
+    // Se a requisição foi abortada/cancelada voluntariamente por nova mensagem chegando
+    const foiAbortado = erro?.name === 'AbortError' || erro?.code === 'ERR_CANCELED' || options?.signal?.aborted;
+    if (foiAbortado) {
+      console.log(`[Telemetria IA 🛑] Chamada OpenAI cancelada voluntariamente (AbortSignal): ${meta.motivo}`);
+      throw erro;
+    }
+
     const msgErro = erro?.message || String(erro);
     registrarUsoIaAsync({
       motivo: meta.motivo,

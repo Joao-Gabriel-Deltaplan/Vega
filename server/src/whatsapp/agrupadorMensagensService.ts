@@ -56,8 +56,15 @@ interface EstadoAgrupamentoConversa {
   timerAgrupamento: NodeJS.Timeout | null;
   primeiroRecebidoEm: number;
 
-  // Controle de concorrência / fila
+  // Controle de cancelamento imediato e reprocessamento
   emProcessamento: boolean;
+  loteEmProcessamento: ItemMensagemAgrupada[];
+  abortController: AbortController | null;
+
+  // Mensagens em preparo (áudio sendo baixado/transcrito)
+  mensagensEmPreparo: Set<string>;
+
+  // Fila de espera pós-processamento
   filaEsperaAposProcessamento: ItemMensagemAgrupada[];
 
   // NOVO: Controle de presença em tempo real do usuário (composing / paused)
@@ -106,6 +113,9 @@ function obterOuCriarEstado(
       timerAgrupamento: null,
       primeiroRecebidoEm: 0,
       emProcessamento: false,
+      loteEmProcessamento: [],
+      abortController: null,
+      mensagensEmPreparo: new Set<string>(),
       filaEsperaAposProcessamento: [],
       usuarioDigitando: jaEstaDigitando,
       ultimoEventoPresencaEm: jaEstaDigitando ? (presencaRecente?.atualizadoEm || Date.now()) : 0,
@@ -210,111 +220,155 @@ export function notificarPresencaUsuarioNoAgrupador(
 }
 
 /**
- * Adiciona uma mensagem ao agrupador para ser processada em lote (debounce).
- * 
- * Regras aplicadas:
- * 1. Se tempoEspera === 0, processa imediatamente (ou enfileira se já estiver em processamento).
- * 2. Se a VEGA já estiver processando um lote anterior desta conversa (emProcessamento === true),
- *    a nova mensagem entra na fila de espera para o próximo lote (Requisito 7).
- * 3. Se o usuário estiver comprovadamente digitando (via presença da Evolution API), aguarda
- *    enquanto ele digita e processa logo que ele parar (com reserva de 3s).
- * 4. Se eventos de presença não chegarem, opera com a espera reduzida padrão de 3s (sliding window).
- * 5. Teto máximo inegociável de 20s total mesmo com evento preso.
+ * Notifica o agrupador de que uma mensagem está sendo baixada/transcrita no webhook (mensagem em preparo).
+ * Impede o fechamento ou disparo prematuro de lote e cancela qualquer processamento em andamento
+ * para aguardar a nova mensagem ser consolidada.
  */
-export async function adicionarMensagemAoAgrupador(entrada: EntradaAgrupador): Promise<void> {
-  const { conversaId, destinatario, contato, usuarioAutorizado, item } = entrada;
-  const config = obterConfiguracoesVegaSync();
-  const tempoEsperaSegundos = Math.max(0, Math.min(20, config.tempoEsperaAgrupamentoSegundos ?? 3));
-  const tempoEsperaMs = tempoEsperaSegundos * 1000;
-
-  const estado = obterOuCriarEstado(conversaId, destinatario, contato, usuarioAutorizado);
-
-  console.log(
-    `[Agrupador ⏳] Mensagem recebida para conversa "${conversaId}" (Tipo: ${item.tipoMensagem}). Em processamento: ${estado.emProcessamento}. Usuário digitando: ${estado.usuarioDigitando}. Tempo reserva: ${tempoEsperaSegundos}s.`
+export function notificarMensagemEmPreparo(
+  conversaId: string,
+  mensagemId: string,
+  destinatario?: string,
+  contato?: Contato,
+  usuarioAutorizado?: UsuarioWhatsApp
+): void {
+  const estado = obterOuCriarEstado(
+    conversaId,
+    destinatario || conversaId,
+    contato || {
+      id: 'anonimo',
+      nome: 'Contato',
+      telefone: '',
+      avatarCor: '#25D366',
+      ficha: { cargo: 'Colaborador', setor: 'Administrativo', nivelAcesso: 'geral', observacoes: '' },
+    },
+    usuarioAutorizado || { id: 'anonimo', numero: '', nome: 'Contato', perfil: 'comum', ativo: true, pessoa_id: null }
   );
 
-  // Se a VEGA já estiver ocupada processando um lote desta conversa:
-  // a nova mensagem entra na fila pós-processamento (Requisito 7)
-  if (estado.emProcessamento) {
-    console.log(
-      `[Agrupador 📥] VEGA ocupada processando lote anterior. Mensagem enfileirada para o próximo lote (${estado.filaEsperaAposProcessamento.length + 1} na fila).`
-    );
-    estado.filaEsperaAposProcessamento.push(item);
-    return;
-  }
+  estado.mensagensEmPreparo.add(mensagemId);
+  console.log(
+    `[Agrupador 🎙️ Preparo] Mensagem "${mensagemId}" em preparo (download/transcrição). Total em preparo: ${estado.mensagensEmPreparo.size}.`
+  );
 
-  // Se o tempo configurado for 0 (debounce desativado): processa imediatamente
-  if (tempoEsperaMs === 0) {
-    estado.loteAtual = [item];
-    await dispararLote(conversaId);
-    return;
-  }
+  // Mantém presença "digitando..."
+  iniciarPresencaDigitandoVega(estado.destinatario);
 
-  // Início de um novo lote ou continuação do lote existente
-  if (estado.loteAtual.length === 0) {
-    estado.primeiroRecebidoEm = Date.now();
-  }
-
-  estado.loteAtual.push(item);
-
-  // Regra de segurança: se atingiu o máximo de 5 mensagens agrupadas, dispara imediatamente
-  if (estado.loteAtual.length >= MAX_MENSAGENS_AGRUPADAS) {
-    console.log(
-      `[Agrupador 🚀] Limite máximo de ${MAX_MENSAGENS_AGRUPADAS} mensagens atingido para ${conversaId}. Disparando processamento imediatamente.`
-    );
-    if (estado.timerAgrupamento) {
-      clearTimeout(estado.timerAgrupamento);
-      estado.timerAgrupamento = null;
-    }
-    await dispararLote(conversaId);
-    return;
-  }
-
-  // Calcula quanto tempo resta até o teto de 20 segundos
-  const tempoDecorrido = Date.now() - estado.primeiroRecebidoEm;
-  const tempoRestanteAteTeto = MAX_TEMPO_ESPERA_TOTAL_MS - tempoDecorrido;
-
-  if (tempoRestanteAteTeto <= 0) {
-    console.log(
-      `[Agrupador 🚀] Teto máximo de 20s atingido para ${conversaId}. Disparando processamento imediatamente.`
-    );
-    if (estado.timerAgrupamento) {
-      clearTimeout(estado.timerAgrupamento);
-      estado.timerAgrupamento = null;
-    }
-    await dispararLote(conversaId);
-    return;
-  }
-
-  // Cancela o timer anterior para reiniciar a contagem
+  // Cancela qualquer timer de espera ativo
   if (estado.timerAgrupamento) {
     clearTimeout(estado.timerAgrupamento);
     estado.timerAgrupamento = null;
   }
 
-  // Se o usuário estiver comprovadamente digitando no momento da chegada da mensagem:
-  if (estado.usuarioDigitando) {
+  // Se a VEGA estiver ocupada processando lote anterior:
+  // CANCELA imediatamente sem enviar nada, para incluir o áudio no lote consolidado!
+  if (estado.emProcessamento && estado.abortController) {
     console.log(
-      `[Agrupador ⌨️] Usuário "${usuarioAutorizado.nome}" está digitando. Aguardando pausa na digitação (respeitando teto de ${Math.round(tempoRestanteAteTeto / 1000)}s)...`
+      `[Agrupador ⚡ CANCELAMENTO] Áudio em preparo chegou durante processamento de mensagem anterior! Cancelando para aguardar transcrição...`
     );
-    estado.timerAgrupamento = setTimeout(async () => {
-      console.log(`[Agrupador 🚀] Teto de 20s atingido durante digitação para ${conversaId}. Disparando processamento.`);
+    estado.abortController.abort();
+    estado.abortController = null;
+    estado.loteAtual = [...estado.loteEmProcessamento, ...estado.loteAtual];
+    estado.loteEmProcessamento = [];
+    estado.emProcessamento = false;
+  }
+}
+
+/**
+ * Conclui o preparo de uma mensagem (áudio baixado/transcrito ou erro de download).
+ * Se não houver mais mensagens em preparo e houver itens acumulados, dispara imediatamente o lote unificado.
+ */
+export function concluirMensagemEmPreparo(conversaId: string, mensagemId: string): void {
+  const estado = estadosAgrupamento.get(conversaId);
+  if (!estado) return;
+
+  estado.mensagensEmPreparo.delete(mensagemId);
+  console.log(
+    `[Agrupador 🎙️ Preparo] Mensagem "${mensagemId}" concluiu preparo. Restantes em preparo: ${estado.mensagensEmPreparo.size}.`
+  );
+
+  // Se todas as mensagens em preparo terminaram e há itens no lote:
+  if (estado.mensagensEmPreparo.size === 0 && estado.loteAtual.length > 0 && !estado.emProcessamento) {
+    console.log(
+      `[Agrupador 🚀] Todas as mensagens em preparo concluídas para ${conversaId}. Disparando lote completo (${estado.loteAtual.length} itens)...`
+    );
+    setImmediate(async () => {
       await dispararLote(conversaId);
-    }, tempoRestanteAteTeto);
+    });
+  }
+}
+
+/**
+ * Adiciona uma mensagem ao agrupador para ser processada imediatamente com cancelamento.
+ *
+ * Regras aplicadas (Requisitos 1 e 4a):
+ * 1. Processamento imediato: ao chegar uma mensagem, começa a processar na hora (sem esperar 3s).
+ * 2. Se chegar nova mensagem da mesma conversa antes do envio da resposta, cancela o processamento
+ *    em andamento (sem enviar nada) e reprocessa com o lote completo consolidado.
+ * 3. Se houver mensagem em preparo (áudio baixando/transcrevendo), não fecha o lote antes dela terminar.
+ * 4. Mantém o status "digitando..." ativo.
+ */
+export async function adicionarMensagemAoAgrupador(entrada: EntradaAgrupador): Promise<void> {
+  const { conversaId, destinatario, contato, usuarioAutorizado, item } = entrada;
+  const estado = obterOuCriarEstado(conversaId, destinatario, contato, usuarioAutorizado);
+
+  console.log(
+    `[Agrupador ⏳] Mensagem recebida para conversa "${conversaId}" (Tipo: ${item.tipoMensagem}). Em processamento: ${estado.emProcessamento}. Mensagens em preparo: ${estado.mensagensEmPreparo.size}.`
+  );
+
+  // Mantém presença "digitando..."
+  iniciarPresencaDigitandoVega(destinatario);
+
+  // Cancela qualquer timer residual
+  if (estado.timerAgrupamento) {
+    clearTimeout(estado.timerAgrupamento);
+    estado.timerAgrupamento = null;
+  }
+
+  // SE JÁ ESTIVER EM PROCESSAMENTO:
+  // Requisito 4a: "ao chegar nova mensagem da mesma conversa antes do envio da resposta, cancelar o processamento em andamento (sem enviar nada) e reprocessar com o lote completo."
+  if (estado.emProcessamento) {
+    console.log(
+      `[Agrupador ⚡ CANCELAMENTO] Nova mensagem recebida antes do envio da resposta! Cancelando processamento anterior para reprocessar com o lote completo...`
+    );
+    if (estado.abortController) {
+      estado.abortController.abort();
+      estado.abortController = null;
+    }
+    // Recombina os itens do lote anterior que foi abortado com o novo item recebido
+    const itensRecombinados = [...estado.loteEmProcessamento, ...estado.loteAtual, item];
+    estado.loteEmProcessamento = [];
+    estado.loteAtual = itensRecombinados;
+    estado.emProcessamento = false;
+
+    // Se ainda houver áudio sendo baixado/transcrito, aguarda sua conclusão
+    if (estado.mensagensEmPreparo.size > 0) {
+      console.log(
+        `[Agrupador ⏳] Aguardando ${estado.mensagensEmPreparo.size} mensagem(ns) em preparo antes de disparar novo lote para ${conversaId}...`
+      );
+      return;
+    }
+
+    // Dispara imediatamente o lote consolidado
+    setImmediate(async () => {
+      await dispararLote(conversaId);
+    });
     return;
   }
 
-  // Se o usuário não estiver digitando (ou eventos de presença não chegarem):
-  // Utiliza a espera de reserva (padrão de 3s), respeitando o teto de 20s
-  const proximoDelayMs = Math.min(tempoEsperaMs, tempoRestanteAteTeto);
+  // Não estava em processamento: adiciona ao lote atual
+  estado.loteAtual.push(item);
 
-  console.log(
-    `[Agrupador ⏱️] Lote de "${conversaId}" possui ${estado.loteAtual.length} mensagem(ns). Aguardando ${proximoDelayMs / 1000}s sem novas mensagens...`
-  );
+  // Se houver mensagens em preparo (áudio sendo baixado/transcrito), não fecha o lote antes dela terminar
+  if (estado.mensagensEmPreparo.size > 0) {
+    console.log(
+      `[Agrupador ⏳] Mensagem adicionada ao lote de ${conversaId}, aguardando ${estado.mensagensEmPreparo.size} mensagem(ns) em preparo...`
+    );
+    return;
+  }
 
-  estado.timerAgrupamento = setTimeout(async () => {
+  // Disparo imediato na hora, sem espera de 3s (Requisito 4a)
+  setImmediate(async () => {
     await dispararLote(conversaId);
-  }, proximoDelayMs);
+  });
 }
 
 /**
@@ -329,54 +383,44 @@ async function dispararLote(conversaId: string): Promise<void> {
     estado.timerAgrupamento = null;
   }
 
+  // Se houver mensagem em preparo, não fecha o lote antes dela terminar (Requisito 1)
+  if (estado.mensagensEmPreparo.size > 0) {
+    console.log(
+      `[Agrupador ⏳] dispararLote retido para ${conversaId}: ainda há ${estado.mensagensEmPreparo.size} mensagem(ns) em preparo.`
+    );
+    return;
+  }
+
   if (estado.loteAtual.length === 0) {
     return;
   }
 
-  // Prepara o lote para processamento e marca estado como em processamento
   const loteParaProcessar = [...estado.loteAtual];
   estado.loteAtual = [];
+  estado.loteEmProcessamento = [...loteParaProcessar];
   estado.primeiroRecebidoEm = 0;
   estado.emProcessamento = true;
 
+  const abortController = new AbortController();
+  estado.abortController = abortController;
+
   console.log(
-    `\n[Agrupador ⚡] Iniciando processamento de lote unificado para ${conversaId} (${loteParaProcessar.length} mensagens acumuladas)...`
+    `\n[Agrupador ⚡] Iniciando processamento imediato para ${conversaId} (${loteParaProcessar.length} mensagens no lote)...`
   );
 
   try {
-    await processarLoteUnificado(estado, loteParaProcessar);
+    await processarLoteUnificado(estado, loteParaProcessar, abortController.signal);
   } catch (erro: any) {
-    console.error(`[Agrupador ❌] Erro ao processar lote para ${conversaId}:`, erro);
+    if (abortController.signal.aborted || erro?.name === 'AbortError') {
+      console.log(`[Agrupador 🛑] Processamento do lote para ${conversaId} cancelado com sucesso.`);
+    } else {
+      console.error(`[Agrupador ❌] Erro ao processar lote para ${conversaId}:`, erro);
+    }
   } finally {
-    estado.emProcessamento = false;
-
-    // Se novas mensagens chegaram durante o processamento do lote (Requisito 7):
-    if (estado.filaEsperaAposProcessamento.length > 0) {
-      const mensagensProximoLote = [...estado.filaEsperaAposProcessamento];
-      estado.filaEsperaAposProcessamento = [];
-
-      console.log(
-        `[Agrupador 🔄] Promovendo ${mensagensProximoLote.length} mensagem(ns) da fila pós-processamento para novo lote em ${conversaId}.`
-      );
-
-      const config = obterConfiguracoesVegaSync();
-      const tempoEsperaSegundos = Math.max(0, Math.min(20, config.tempoEsperaAgrupamentoSegundos ?? 3));
-      const tempoEsperaMs = tempoEsperaSegundos * 1000;
-
-      estado.loteAtual = mensagensProximoLote;
-      estado.primeiroRecebidoEm = Date.now();
-
-      if (tempoEsperaMs === 0 || estado.loteAtual.length >= MAX_MENSAGENS_AGRUPADAS) {
-        // Dispara imediatamente
-        setImmediate(async () => {
-          await dispararLote(conversaId);
-        });
-      } else {
-        // Agenda timer para as mensagens que estavam na fila
-        estado.timerAgrupamento = setTimeout(async () => {
-          await dispararLote(conversaId);
-        }, tempoEsperaMs);
-      }
+    if (estado.abortController === abortController) {
+      estado.emProcessamento = false;
+      estado.loteEmProcessamento = [];
+      estado.abortController = null;
     }
   }
 }
@@ -446,7 +490,8 @@ Retorne ESTRITAMENTE um objeto JSON:
  */
 async function processarLoteUnificado(
   estado: EstadoAgrupamentoConversa,
-  itens: ItemMensagemAgrupada[]
+  itens: ItemMensagemAgrupada[],
+  abortSignal?: AbortSignal
 ): Promise<void> {
   const { conversaId, destinatario, contato, usuarioAutorizado } = estado;
   const inicioProcessamento = Date.now();
@@ -613,7 +658,14 @@ async function processarLoteUnificado(
       documentosDisponiveis: docsDisponiveis,
       origemMensagem,
       idsMensagensLoteAtual: idsMensagensLote,
+      abortSignal,
     });
+
+    // Se o lote foi cancelado durante o raciocínio da IA, encerra sem enviar nada
+    if (abortSignal?.aborted) {
+      console.log(`[Agrupador 🛑] Processamento de ${conversaId} interrompido antes do envio (abortado).`);
+      return;
+    }
 
     const textoResposta = sanitizarRespostaTextoFinal(resultadoChat.textoResposta);
     const assistenteMsgId = `wa-msg-${Date.now()}-vega`;
@@ -652,19 +704,44 @@ async function processarLoteUnificado(
         (resultadoChat.rastro.tempoTotalMs || 0) + tempoTotalTranscricaoMs;
     }
 
+    // Checagem final de cancelamento antes de enviar mensagem ao WhatsApp
+    if (abortSignal?.aborted) {
+      console.log(`[Agrupador 🛑] Processamento de ${conversaId} interrompido antes do envio ao WhatsApp.`);
+      return;
+    }
+
+    // 5. Envia resposta para o WhatsApp (texto, anexos e localização se houver) e mede o tempo de envio
+    const inicioEnvio = Date.now();
+    await enviarRespostaCompletaWhatsApp(destinatario, textoResposta, resultadoChat.anexos, resultadoChat.localizacao);
+    const tempoEnvioMs = Date.now() - inicioEnvio;
+
+    // 6. Registra etapa de envio e salva o rastro completo com todas as etapas medidas
     if (resultadoChat.rastro) {
+      resultadoChat.rastro.etapas.push({
+        ordem: resultadoChat.rastro.etapas.length + 1,
+        nome: 'Envio WhatsApp (Evolution API)',
+        descricao: `Mensagem entregue via Evolution API em ${tempoEnvioMs}ms.`,
+        tempoMs: tempoEnvioMs,
+        detalhes: {
+          destinatario,
+          temAnexo: Boolean(resultadoChat.anexos && resultadoChat.anexos.length > 0),
+          temLocalizacao: Boolean(resultadoChat.localizacao),
+        },
+      });
+      resultadoChat.rastro.tempoTotalMs = (resultadoChat.rastro.tempoTotalMs || 0) + tempoEnvioMs;
+      resultadoChat.rastro.mensagemId = assistenteMsgId;
+      resultadoChat.rastro.conversaId = conversaId;
+      resultadoChat.rastro.usuarioNome = usuarioAutorizado.nome;
+      resultadoChat.rastro.usuarioId = usuarioAutorizado.id;
+
       try {
-        resultadoChat.rastro.mensagemId = assistenteMsgId;
-        resultadoChat.rastro.conversaId = conversaId;
-        resultadoChat.rastro.usuarioNome = usuarioAutorizado.nome;
-        resultadoChat.rastro.usuarioId = usuarioAutorizado.id;
         await salvarRastro(resultadoChat.rastro);
       } catch (e: any) {
         console.warn('[Agrupador ⚠️] Falha ao salvar rastro no Supabase:', e?.message || e);
       }
     }
 
-    // 5. Registra e transmite a resposta única da VEGA
+    // 7. Registra e transmite a resposta única da VEGA na conversa
     const msgAssistente: Mensagem = {
       id: assistenteMsgId,
       remetente: 'assistente',
@@ -685,12 +762,9 @@ async function processarLoteUnificado(
       eventosPainel.emitirNovaMensagem(conversaId, msgAssistente, conversaAtualizada);
     }
 
-    // 6. Envia resposta para o WhatsApp (texto, anexos e localização se houver)
-    await enviarRespostaCompletaWhatsApp(destinatario, textoResposta, resultadoChat.anexos, resultadoChat.localizacao);
-
     const tempoTotal = Date.now() - inicioProcessamento;
     console.log(
-      `[Agrupador 🤖] Resposta única enviada para "${usuarioAutorizado.nome}" em ${tempoTotal}ms (Lote de ${itens.length} mensagens).`
+      `[Agrupador 🤖] Resposta única enviada para "${usuarioAutorizado.nome}" em ${tempoTotal}ms (Lote de ${itens.length} mensagens, envio WhatsApp: ${tempoEnvioMs}ms).`
     );
   } finally {
     // Garante que o status digitando pare quando a resposta for enviada ou em caso de erro

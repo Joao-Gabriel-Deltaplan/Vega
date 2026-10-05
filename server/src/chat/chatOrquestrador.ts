@@ -1817,18 +1817,33 @@ export function validarCorrespondenciaCampoResposta(
     }
   }
 
-  // 8. PARENTESCO: "meu pai", "minha esposa", etc. NUNCA entregar os dados do próprio remetente!
-  const pedePai = /\b(meu\s+pai|do\s+meu\s+pai|da\s+casa\s+do\s+meu\s+pai)\b/i.test(msgNorm);
-  if (pedePai) {
-    const primeiroNomeRemetente = (extrairPrimeiroNome(contato?.nome || '') || '').toLowerCase();
-    const atribuiAoRemetente = primeiroNomeRemetente && respNorm.includes(primeiroNomeRemetente) && !respNorm.includes('pai');
-    const afirmaEnderecoDireto = /\bo\s+endere[cç]o\s+d[oe]\s+[a-z]+\s+[eé]\b/i.test(respNorm);
-    if (atribuiAoRemetente || (afirmaEnderecoDireto && !respNorm.includes('pai'))) {
-      return {
-        textoValidado: 'Não encontrei o endereço da casa do seu pai nos documentos.',
-        interceptado: true,
-        motivo: 'Usuário pediu o endereço da casa do pai, mas a resposta entregou endereço do próprio remetente.',
-      };
+  // 8. PARENTESCO EM GERAL (pai, mãe, cônjuge, filho):
+  // NUNCA entregar os dados da pessoa base se pediu dados do parente!
+  const matchParente =
+    msgNorm.match(/\b(pai|m[aã]e|c[oó]njuge|esposa|marido|filh[oa])\s+d[oae]\s+([a-z\s]+)/i) ||
+    msgNorm.match(/\b(meu\s+pai|minha\s+m[aã]e|minha\s+esposa|meu\s+marido|meu\s+filho|minha\s+filha)\b/i);
+  if (matchParente) {
+    const termoRel = matchParente[1].toLowerCase();
+    const nomeBase = matchParente[2] ? matchParente[2].trim() : (contato?.nome || '');
+    const primeiroNomeBase = (extrairPrimeiroNome(nomeBase) || nomeBase).toLowerCase();
+
+    // Se a mensagem pediu endereço ou dados do parente
+    const pedeEnderecoOuDado = /(?:endere[cç]|resid[eê]n|\bmora\b|\bmorando\b|\bcasa\b|\bbairro\b|\brua\b|cpf|rg|telefone|contato)/i.test(msgNorm);
+    if (pedeEnderecoOuDado) {
+      const mencionaParenteNaResposta = new RegExp(`\\b(${termoRel}|pai|m[aã]e|esposa|marido|filh[oa])\\b`, 'i').test(respNorm);
+      const afirmaEnderecoBase = respNorm.includes(primeiroNomeBase) && !mencionaParenteNaResposta;
+      const afirmaEnderecoDiretoSemParente = /\bo\s+endere[cç]o\s+d[oe]\s+[a-z]+\s+[eé]\b/i.test(respNorm) && !mencionaParenteNaResposta;
+
+      if (afirmaEnderecoBase || afirmaEnderecoDiretoSemParente) {
+        const artParente = ['mãe', 'mae', 'esposa', 'filha'].some((x) => termoRel.includes(x)) ? 'da' : 'do';
+        const relExib = termoRel.includes('meu') || termoRel.includes('minha') ? termoRel : `${termoRel}`;
+        const titularExib = matchParente[2] ? ` d${artParente} ${matchParente[2].trim()}` : '';
+        return {
+          textoValidado: `Não encontrei o endereço ${artParente} ${relExib}${titularExib} nos documentos.`,
+          interceptado: true,
+          motivo: `Usuário pediu o endereço ${artParente} ${termoRel}, mas a resposta entregou dados ou endereços da pessoa base.`,
+        };
+      }
     }
   }
 
@@ -1863,6 +1878,24 @@ export function validarCorrespondenciaCampoResposta(
     }
   }
 
+  // 11. DOCUMENTO x DADO (ex: "meu título de eleitor" ou "título de eleitor do X")
+  const pedeDocTituloEleitor = /\bt[ií]tulo\s*(?:de\s*eleitor)?\b/i.test(msgNorm);
+  if (pedeDocTituloEleitor) {
+    const citaIR = /\b(ir|imposto\s*de\s*renda|dirpf|declara[cç][aã]o)\b/i.test(respNorm);
+    const afirmaEncontrouDoc = /\b(encontrei\s+o\s+t[ií]tulo|o\s+t[ií]tulo\s+de\s+eleitor\s+est[aá]\s+no|segue\s+o\s+t[ií]tulo)\b/i.test(respNorm);
+    const naoDisseQueNaoTemDoc = !/\b(n[aã]o\s+tenho\s+o\s+t[ií]tulo|n[aã]o\s+encontrei\s+o\s+documento)\b/i.test(respNorm);
+
+    if (citaIR && afirmaEncontrouDoc && naoDisseQueNaoTemDoc) {
+      const matchNum = textoResposta.match(/\b\d{10,14}\b/) || textoResposta.match(/(?:número|nº|numero)[:\s]*([0-9\s.-]+)/i);
+      const numeroTexto = matchNum ? `: ${matchNum[1] || matchNum[0]}` : '';
+      return {
+        textoValidado: `Não tenho o título de eleitor no Cofre, mas o número aparece na Declaração de IR${numeroTexto}. Anotei na lista de documentos pendentes.`,
+        interceptado: true,
+        motivo: 'Usuário pediu o documento físico do título de eleitor, mas a resposta entregou como se fosse o documento em vez de separar documento x dado.',
+      };
+    }
+  }
+
   return { textoValidado: textoResposta, interceptado: false };
 }
 
@@ -1884,6 +1917,15 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
           consulta: {
             type: 'string',
             description: 'Termo de busca, assunto, tipo ou trecho procurado (ex: "Declaração de IR", "contrato social", "documento da Frontier", "comprovante de endereço", "endereço do Carlos")',
+          },
+          pessoa_base: {
+            type: 'string',
+            description: 'Nome da pessoa física cadastrada que serve como base da busca (ex: "Thomaz Lustri Fabre", "Carlos").',
+          },
+          relacao: {
+            type: 'string',
+            enum: ['propria', 'pai', 'mae', 'conjuge', 'filho', 'outro'],
+            description: 'Relação da pessoa procurada com a pessoa_base. "propria" se a busca for referente ao próprio titular. "pai", "mae", "conjuge", "filho" ou "outro" se for parente/terceiro.',
           },
           titular: {
             type: 'string',
@@ -1907,16 +1949,25 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'consultar_ficha_titular',
-      description: 'Consulta os dados cadastrais oficiais do titular (CPF, RG, endereço, estado civil, filiação, CNH, datas, etc.) validados no cadastro da Delta Plan. Retorna valor, origemNome, conferido, dataConferencia, manual, confirmadoPor, dataConfirmacao e alerta se houver documento posterior no Cofre com valor divergente. Você DEVE acionar esta ferramenta SEMPRE que houver pergunta sobre endereço, filiação ou dados cadastrais (mesmo com pronomes como "qual o endereço dele?"), identificando o titular pelo histórico recente.',
+      description: 'Consulta os dados cadastrais oficiais do titular (CPF, RG, endereço, estado civil, filiação, CNH, datas, etc.) validados no cadastro da Delta Plan. Você DEVE acionar esta ferramenta SEMPRE que houver pergunta sobre endereço, filiação ou dados cadastrais (mesmo com pronomes como "qual o endereço dele?"), identificando o titular pelo histórico recente. É OBRIGATÓRIO informar a relacao ("propria" para dados do titular, ou "pai", "mae", "conjuge", "filho", "outro" para parentes).',
       parameters: {
         type: 'object',
         properties: {
+          pessoa_base: {
+            type: 'string',
+            description: 'Nome completo, primeiro nome ou apelido do titular cadastrado base da consulta (ex: "Thomaz Lustri Fabre", "Carlos").',
+          },
+          relacao: {
+            type: 'string',
+            enum: ['propria', 'pai', 'mae', 'conjuge', 'filho', 'outro'],
+            description: 'OBRIGATÓRIO: Relação da pessoa cujos dados estão sendo consultados. Deve ser "propria" se os dados pedidos forem do próprio titular cadastrado; ou "pai", "mae", "conjuge", "filho", "outro" se os dados pedidos forem de parente ou terceiro relacionado.',
+          },
           nome: {
             type: 'string',
-            description: 'Nome completo, primeiro nome ou apelido do titular cadastrado (ex: "Carlos")',
+            description: 'Nome do titular (para compatibilidade, use pessoa_base prioritariamente)',
           },
         },
-        required: ['nome'],
+        required: ['pessoa_base', 'relacao'],
       },
     },
   },
@@ -2898,6 +2949,60 @@ export function identificarAtributoDocumentoFaltante(
 }
 
 /**
+ * Identifica se a busca se refere a um documento oficial específico (Título de Eleitor, CNH, etc.)
+ */
+export function identificarTipoDocumentoBuscado(texto: string): string | null {
+  const t = (texto || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (/\b(titulo(\s+de)?\s+eleitor(al)?)\b/i.test(t)) return 'Título de Eleitor';
+  if (/\b(pis|pasep|nis)\b/i.test(t)) return 'PIS';
+  if (/\b(reservista|carteira\s+de\s+reservista)\b/i.test(t)) return 'Carteira de Reservista';
+  if (/\b(passaporte)\b/i.test(t)) return 'Passaporte';
+  if (/\b(certidao\s+de\s+nascimento)\b/i.test(t)) return 'Certidão de Nascimento';
+  if (/\b(certidao\s+de\s+casamento)\b/i.test(t)) return 'Certidão de Casamento';
+  if (/\b(cnh|carteira\s+(nacional\s+de\s+)?habilitacao)\b/i.test(t)) return 'CNH';
+  if (/\b(rg|carteira\s+de\s+identidade)\b/i.test(t)) return 'RG';
+  if (/\b(ctps|carteira\s+(de\s+trabalho|digital))\b/i.test(t)) return 'CTPS';
+  if (/\b(alvara|licenca)\b/i.test(t)) return 'Alvará';
+  if (/\b(apolice|seguro)\b/i.test(t)) return 'Apólice de Seguro';
+  return null;
+}
+
+/**
+ * Extrai o nome da pessoa relacionada (pai, mãe, cônjuge, filho) a partir da ficha cadastral
+ */
+export function extrairPessoaRelacionadaDaFicha(
+  titular: { campos?: Record<string, { valor?: string }> } | null,
+  relacao: string
+): string | null {
+  if (!titular || !titular.campos) return null;
+  const rel = (relacao || '').toLowerCase().trim();
+
+  if (rel === 'pai') {
+    if (titular.campos.pai?.valor) return titular.campos.pai.valor.trim();
+    if (titular.campos.filiacaoPai?.valor) return titular.campos.filiacaoPai.valor.trim();
+    if (titular.campos.filiacao?.valor) {
+      const match = titular.campos.filiacao.valor.match(/\bpai:\s*([^|;\n,]+)/i);
+      if (match) return match[1].trim();
+    }
+  } else if (rel === 'mae') {
+    if (titular.campos.mae?.valor) return titular.campos.mae.valor.trim();
+    if (titular.campos.filiacaoMae?.valor) return titular.campos.filiacaoMae.valor.trim();
+    if (titular.campos.filiacao?.valor) {
+      const match = titular.campos.filiacao.valor.match(/\bm[aã]e:\s*([^|;\n,]+)/i);
+      if (match) return match[1].trim();
+    }
+  } else if (rel === 'conjuge') {
+    if (titular.campos.conjuge?.valor) return titular.campos.conjuge.valor.trim();
+    if (titular.campos.esposa?.valor) return titular.campos.esposa.valor.trim();
+    if (titular.campos.marido?.valor) return titular.campos.marido.valor.trim();
+  } else if (rel === 'filho') {
+    if (titular.campos.filho?.valor) return titular.campos.filho.valor.trim();
+    if (titular.campos.filhos?.valor) return titular.campos.filhos.valor.trim();
+  }
+  return null;
+}
+
+/**
  * Tool 1: buscar_documentos(consulta, titular?)
  */
 export async function toolBuscarDocumentos(
@@ -2907,7 +3012,9 @@ export async function toolBuscarDocumentos(
   origemMensagem?: 'audio' | 'texto',
   contato?: Contato,
   tipoReferencia?: 'pessoa' | 'veiculo' | 'imovel' | 'empresa' | 'obra' | 'outro',
-  identificadorReferencia?: string
+  identificadorReferencia?: string,
+  pessoaBase?: string,
+  relacao: 'propria' | 'pai' | 'mae' | 'conjuge' | 'filho' | 'outro' = 'propria'
 ): Promise<{
   documentos: Array<{
     doc_id: string;
@@ -2942,10 +3049,33 @@ export async function toolBuscarDocumentos(
   const todosTits = await obterTodosTitulares();
   const catalogoPessoas = extrairCatalogoPessoas(todosTits, todosDocs);
 
-  const titularOriginal = (titularNome || '').trim();
+  let titularOriginal = (titularNome || '').trim();
   let titularNorm = titularOriginal.toLowerCase();
   let titObj: FichaTitular | null = null;
   let ehPessoaNaoCadastrada = false;
+
+  // 0.1 TRATAMENTO DE PARENTES (relacao != 'propria')
+  if (relacao && relacao !== 'propria') {
+    const nomeBase = (pessoaBase || titularNome || '').trim();
+    const titularBaseObj = todosTits.find((t) => titularCorresponde(t.nome, nomeBase)) || null;
+    const nomeParente = extrairPessoaRelacionadaDaFicha(titularBaseObj, relacao);
+
+    if (!nomeParente) {
+      const artRel = ['mae', 'esposa', 'filha'].includes(relacao) ? 'da' : 'do';
+      const nomeExibBase = titularBaseObj?.nome || nomeBase || 'titular';
+      return {
+        documentos: [],
+        total_fontes_com_dado: 0,
+        mensagem: `nao_encontrado: não há dados nem identificação ${artRel} ${relacao} de ${nomeExibBase} no cadastro.`,
+        orientacao_resposta: `ATENÇÃO: Não há dados ou documentos ${artRel} ${relacao} de ${nomeExibBase} no sistema. É TERMINANTEMENTE PROIBIDO entregar dados ou endereços de ${nomeExibBase}. Responda ESTRITAMENTE: "Não encontrei o endereço ${artRel} ${relacao} de ${nomeExibBase} nos documentos." (ou o campo que foi solicitado).`,
+      };
+    } else {
+      titularOriginal = nomeParente;
+      titularNorm = nomeParente.toLowerCase();
+      tipoReferencia = 'pessoa';
+      titObj = todosTits.find((t) => titularCorresponde(t.nome, nomeParente)) || null;
+    }
+  }
 
   // 1. Identifica nome de pessoa pesquisado: SÓ RODA SE tipo_referencia === 'pessoa' (Regra 25)
   // NUNCA tenta inferir nome de pessoa no texto livre por padrão!
@@ -3477,6 +3607,41 @@ export async function toolBuscarDocumentos(
     }
   }
 
+  // REGRA DOCUMENTO x DADO: Se o usuário pediu um documento específico (ex: Título de Eleitor)
+  // e o documento em si NÃO existe no Cofre, mas o dado apareceu em outro documento (ex: IR):
+  const tipoDocBuscado = identificarTipoDocumentoBuscado(consulta);
+  if (tipoDocBuscado && filtrados.length > 0 && !ehPessoaNaoCadastrada) {
+    const normTipo = tipoDocBuscado.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const temDocumentoOficial = filtrados.some((d) => {
+      const tit = (d.nome_documento || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return tit.includes(normTipo);
+    });
+
+    if (!temDocumentoOficial) {
+      const docFonte = filtrados[0];
+      const titularFinal = titObj?.nome || titularOriginal;
+      const nomeContatoReal = (contato?.nome || contato?.telefone || 'Contato').trim();
+
+      try {
+        await registrarOuIncrementarDocumentoFaltante({
+          tipoDocumento: tipoDocBuscado,
+          descricaoItem: tipoDocBuscado,
+          titularInformado: titularFinal,
+          solicitanteNome: nomeContatoReal,
+          solicitanteContato: contato?.telefone,
+          textoDoPedido: consulta,
+          dadosEquivalentesOferecidos: `Número/dado localizado no documento "${docFonte.nome_documento}": ${docFonte.trecho ? docFonte.trecho.substring(0, 150) : ''}`,
+          forcarRegistro: true,
+        });
+      } catch (errF) {
+        console.warn('[VEGA Faltantes ⚠️] Falha ao registrar documento faltante com dados equivalentes:', errF);
+      }
+
+      orientacaoResposta = `ATENÇÃO REGRA DOCUMENTO x DADO: O documento "${tipoDocBuscado}" NÃO existe como arquivo no Cofre, mas o número/dado foi localizado dentro de outro documento ("${docFonte.nome_documento}"). Você DEVE responder separando expressamente as duas coisas: "Não tenho o ${tipoDocBuscado.toLowerCase()} no Cofre, mas o número aparece na ${docFonte.nome_documento}: [insira o número ou dado encontrado]. Anotei na lista de documentos pendentes." NUNCA diga que encontrou o documento, apenas que o número/dado consta no outro documento.`;
+      mensagemRetorno = orientacaoResposta;
+    }
+  }
+
   return {
     documentos: filtrados.slice(0, 8),
     orientacao_resposta: orientacaoResposta,
@@ -3485,78 +3650,17 @@ export async function toolBuscarDocumentos(
 }
 
 /**
- * Tool 2: consultar_ficha_titular(nome)
+ * Processa e valida os campos estruturados da ficha cadastral de um titular
  */
-async function toolConsultarFichaTitular(
-  nome: string,
-  todosDocs: DocumentoRegistro[] = [],
-  origemMensagem?: 'audio' | 'texto'
-): Promise<{
-  encontrado: boolean;
-  titular?: string;
-  id?: string;
-  alerta_documento_posterior?: string;
-  instrucao_resposta?: string;
-  mensagem?: string;
-  campos?: Record<string, {
-    valor: string;
-    origemNome: string;
-    origemId?: string;
-    conferido: boolean;
-    dataConferencia?: string;
-    manual: boolean;
-    confirmadoPor?: string;
-    dataConfirmacao?: string;
-    documentoPosteriorNoCofre?: {
-      doc_id: string;
-      nome_documento: string;
-      data_armazenamento: string;
-      data_documento?: string;
-      trecho?: string;
-      instrucaoObrigatoria: string;
-    };
-  }>;
-}> {
-  const todosT = await obterTodosTitulares();
-  const catalogoPessoas = extrairCatalogoPessoas(todosT, todosDocs);
-  const checkCorr = verificarCorrespondenciaNomePessoa(nome, catalogoPessoas, origemMensagem);
-
-  if (checkCorr.tipo === 'aproximada') {
-    return {
-      encontrado: false,
-      instrucao_resposta: `ATENÇÃO DE PRIVACIDADE E SEGURANÇA: O nome '${checkCorr.nomeEntendido}' possui apenas correspondência aproximada. É TERMINANTEMENTE PROIBIDO revelar qualquer nome existente no Cofre e é PROIBIDO entregar dados cadastrais. Responda ESTRITAMENTE: "${checkCorr.mensagemRespostaObrigatoria}"`,
-      mensagem: checkCorr.mensagemRespostaObrigatoria,
-    };
-  }
-
-  if (checkCorr.tipo === 'inexistente') {
-    const instrucao = origemMensagem === 'audio'
-      ? `ATENÇÃO DE TRANSCRIÇÃO DE ÁUDIO: A mensagem veio de ÁUDIO e o nome '${checkCorr.nomeEntendido}' não foi encontrado no Cofre. É TERMINANTEMENTE PROIBIDO revelar qualquer nome existente no Cofre e é TERMINANTEMENTE PROIBIDO entregar dados cadastrais. Responda ESTRITAMENTE: "${checkCorr.mensagemRespostaObrigatoria}"`
-      : `Não foi encontrado nenhum titular cadastrado ou informação sobre '${checkCorr.nomeEntendido}' no Cofre. Responda ao usuário que não encontrou informações sobre '${checkCorr.nomeEntendido}' no Cofre.`;
-
-    return {
-      encontrado: false,
-      instrucao_resposta: instrucao,
-      mensagem: checkCorr.mensagemRespostaObrigatoria,
-    };
-  }
-
-  // Correspondência EXATA
-  let titular = checkCorr.pessoaExata?.titularId
-    ? todosT.find((t) => t.id === checkCorr.pessoaExata?.titularId) || null
-    : null;
-  if (!titular && checkCorr.pessoaExata) {
-    titular = todosT.find((t) => t.nome.toLowerCase() === checkCorr.pessoaExata?.nomeNorm) || null;
-  }
-
-  if (!titular) {
-    return {
-      encontrado: false,
-      mensagem: `A pessoa '${checkCorr.nomeEntendido}' possui documentos no Cofre, mas não possui ficha cadastral de titular estruturada. Consulte buscar_documentos para acessar os documentos dela.`,
-      instrucao_resposta: `A pessoa '${checkCorr.nomeEntendido}' possui documentos no Cofre, mas não tem ficha cadastral estruturada. Faça busca nos documentos ou responda com base nos documentos existentes.`,
-    };
-  }
-
+function processarCamposFichaTitular(
+  titular: FichaTitular,
+  todosDocs: DocumentoRegistro[]
+): {
+  camposValidados: Record<string, any>;
+  alertaDocPosterior?: string;
+  instrucaoConfirmado?: string;
+  mensagemPadrao?: string;
+} {
   const camposValidados: Record<string, any> = {};
   for (const [campoId, campoObj] of Object.entries(titular.campos || {})) {
     if (!campoObj || !campoObj.valor) continue;
@@ -3591,7 +3695,7 @@ async function toolConsultarFichaTitular(
       const dataConf = parseDataBrOuIso(campoObj.dataConfirmacao || campoObj.dataConferencia || '');
       if (dataConf) {
         const docsPosteriores = todosDocs.filter((d) => {
-          if (!titularCorresponde(d.titular, titular!.nome)) return false;
+          if (!titularCorresponde(d.titular, titular.nome)) return false;
           if (d.id === campoObj.origem || d.metadata?.id_legado === campoObj.origem) return false;
           const dataArmazenamento = parseDataBrOuIso(d.dataCadastro || d.metadata?.dataCadastro || d.dataValidade || '');
           return dataArmazenamento && dataArmazenamento.getTime() > dataConf.getTime();
@@ -3609,7 +3713,6 @@ async function toolConsultarFichaTitular(
           const nomeConfLimpo = limparFormaTratamentoNome(campoObj.confirmadoPor || '');
           const primeiroNomeConf = extrairPrimeiroNome(nomeConfLimpo) || nomeConfLimpo || 'Usuário';
 
-          // Extrai o novo valor (endereço, etc.) do documento posterior a partir da descrição ou trecho
           const novoValorEncontrado = extrairValorDeTrechoOuDescricao(docMaisRecente.descricao || '') || 'outro endereço';
           const valorAtualFormatado = campoObj.valor ? `(${campoObj.valor})` : '';
 
@@ -3652,16 +3755,124 @@ async function toolConsultarFichaTitular(
     mensagemPadrao = `A ficha cadastral do titular "${titular.nome}" não possui campos cadastrais preenchidos. Você DEVE acionar em seguida a ferramenta "buscar_documentos" com consulta="endereço" e titular="${titular.nome}" para verificar os documentos arquivados desse titular no Cofre antes de responder.`;
   }
 
-  const mensagemFinal = alertaDocPosterior || instrucaoConfirmado || mensagemPadrao;
+  return { camposValidados, alertaDocPosterior, instrucaoConfirmado, mensagemPadrao };
+}
 
+/**
+ * Tool 2: consultar_ficha_titular(pessoa_base, relacao)
+ */
+async function toolConsultarFichaTitular(
+  pessoaBaseOuNome: string,
+  relacao: 'propria' | 'pai' | 'mae' | 'conjuge' | 'filho' | 'outro' = 'propria',
+  todosDocs: DocumentoRegistro[] = [],
+  origemMensagem?: 'audio' | 'texto',
+  pessoaBaseParam?: string
+): Promise<{
+  encontrado: boolean;
+  titular?: string;
+  id?: string;
+  alerta_documento_posterior?: string;
+  instrucao_resposta?: string;
+  mensagem?: string;
+  tipo_correspondencia?: string;
+  nome_entendido?: string;
+  campos?: Record<string, any>;
+}> {
+  const nomeEfetivo = (pessoaBaseParam || pessoaBaseOuNome || '').trim();
+  const todosT = await obterTodosTitulares();
+  const catalogoPessoas = extrairCatalogoPessoas(todosT, todosDocs);
+  const checkCorr = verificarCorrespondenciaNomePessoa(nomeEfetivo, catalogoPessoas, origemMensagem);
+
+  if (checkCorr.tipo === 'aproximada') {
+    return {
+      encontrado: false,
+      tipo_correspondencia: 'aproximada',
+      nome_entendido: checkCorr.nomeEntendido,
+      instrucao_resposta: `ATENÇÃO DE PRIVACIDADE E SEGURANÇA: O nome '${checkCorr.nomeEntendido}' possui apenas correspondência aproximada. É TERMINANTEMENTE PROIBIDO revelar qualquer nome existente no Cofre e é PROIBIDO entregar dados cadastrais. Responda ESTRITAMENTE: "${checkCorr.mensagemRespostaObrigatoria}"`,
+      mensagem: checkCorr.mensagemRespostaObrigatoria,
+    };
+  }
+
+  if (checkCorr.tipo === 'inexistente') {
+    const instrucao = origemMensagem === 'audio'
+      ? `ATENÇÃO DE TRANSCRIÇÃO DE ÁUDIO: A mensagem veio de ÁUDIO e o nome '${checkCorr.nomeEntendido}' não foi encontrado no Cofre. É TERMINANTEMENTE PROIBIDO revelar qualquer nome existente no Cofre e é TERMINANTEMENTE PROIBIDO entregar dados cadastrais. Responda ESTRITAMENTE: "${checkCorr.mensagemRespostaObrigatoria}"`
+      : `Não foi encontrado nenhum titular cadastrado ou informação sobre '${checkCorr.nomeEntendido}' no Cofre. Responda ao usuário que não encontrou informações sobre '${checkCorr.nomeEntendido}' no Cofre.`;
+
+    return {
+      encontrado: false,
+      tipo_correspondencia: 'inexistente',
+      nome_entendido: checkCorr.nomeEntendido,
+      instrucao_resposta: instrucao,
+      mensagem: checkCorr.mensagemRespostaObrigatoria,
+    };
+  }
+
+  // Correspondência EXATA da pessoa base
+  let titularBase = checkCorr.pessoaExata?.titularId
+    ? todosT.find((t) => t.id === checkCorr.pessoaExata?.titularId) || null
+    : null;
+  if (!titularBase && checkCorr.pessoaExata) {
+    titularBase = todosT.find((t) => t.nome.toLowerCase() === checkCorr.pessoaExata?.nomeNorm) || null;
+  }
+
+  if (!titularBase) {
+    return {
+      encontrado: false,
+      mensagem: `A pessoa '${checkCorr.nomeEntendido}' possui documentos no Cofre, mas não possui ficha cadastral de titular estruturada. Consulte buscar_documentos para acessar os documentos dela.`,
+      instrucao_resposta: `A pessoa '${checkCorr.nomeEntendido}' possui documentos no Cofre, mas não tem ficha cadastral estruturada. Faça busca nos documentos ou responda com base nos documentos existentes.`,
+    };
+  }
+
+  // CASO 1: relacao === 'propria' -> Retorna os dados do próprio titularBase
+  if (!relacao || relacao === 'propria') {
+    const proc = processarCamposFichaTitular(titularBase, todosDocs);
+    const mensagemFinal = proc.alertaDocPosterior || proc.instrucaoConfirmado || proc.mensagemPadrao;
+    return {
+      encontrado: true,
+      titular: titularBase.nome,
+      id: titularBase.id,
+      alerta_documento_posterior: proc.alertaDocPosterior,
+      instrucao_resposta: proc.instrucaoConfirmado,
+      mensagem: mensagemFinal,
+      campos: proc.camposValidados,
+    };
+  }
+
+  // CASO 2: relacao !== 'propria' -> Busca estrita do parente/relacionado
+  const nomeParente = extrairPessoaRelacionadaDaFicha(titularBase, relacao);
+  const artRel = ['mae', 'esposa', 'filha'].includes(relacao) ? 'da' : 'do';
+
+  if (!nomeParente) {
+    return {
+      encontrado: false,
+      mensagem: `nao_encontrado: não há dados nem identificação ${artRel} ${relacao} de ${titularBase.nome} no cadastro.`,
+      instrucao_resposta: `ATENÇÃO DE SEGURANÇA E PRIVACIDADE: Não há dados nem identificação ${artRel} ${relacao} de ${titularBase.nome} no sistema. É TERMINANTEMENTE PROIBIDO entregar dados, telefones ou endereços de ${titularBase.nome}. Responda ESTRITAMENTE: "Não encontrei o endereço ${artRel} ${relacao} de ${titularBase.nome} nos documentos." (ou o campo que foi solicitado).`,
+      campos: {},
+    };
+  }
+
+  // Se tem nome do parente, verifica se ele possui ficha própria
+  const titularParente = todosT.find((t) => titularCorresponde(t.nome, nomeParente)) || null;
+  if (!titularParente) {
+    return {
+      encontrado: false,
+      mensagem: `O ${relacao} de ${titularBase.nome} é "${nomeParente}", mas ele não possui ficha cadastral de titular estruturada. Você deve consultar a ferramenta buscar_documentos com titular="${nomeParente}". NUNCA forneça dados de ${titularBase.nome}.`,
+      instrucao_resposta: `O ${relacao} de ${titularBase.nome} é "${nomeParente}", mas ele não possui ficha cadastral. Faça busca em buscar_documentos para acessar os documentos dele. NUNCA forneça dados da pessoa base.`,
+      campos: {},
+    };
+  }
+
+  // Parente tem ficha própria! Processa os campos da ficha DO PARENTE
+  const procParente = processarCamposFichaTitular(titularParente, todosDocs);
+  const mensagemFinalParente = procParente.alertaDocPosterior || procParente.instrucaoConfirmado || procParente.mensagemPadrao;
   return {
     encontrado: true,
-    titular: titular.nome,
-    id: titular.id,
-    alerta_documento_posterior: alertaDocPosterior,
-    instrucao_resposta: instrucaoConfirmado,
-    mensagem: mensagemFinal,
-    campos: camposValidados,
+    titular: titularParente.nome,
+    id: titularParente.id,
+    alerta_documento_posterior: procParente.alertaDocPosterior,
+    instrucao_resposta: procParente.instrucaoConfirmado,
+    mensagem: mensagemFinalParente,
+    campos: procParente.camposValidados,
   };
 }
 
@@ -5881,6 +6092,7 @@ export async function executarOrquestradorIaCentral(dados: {
   documentoIdDireto?: string;
   origemMensagem?: 'audio' | 'texto';
   idsMensagensLoteAtual?: string[];
+  abortSignal?: AbortSignal;
 }): Promise<ResultadoChatOrquestrador> {
   const inicioTotal = Date.now();
   const mensagemUsuario = dados.mensagemUsuario || (dados as any).mensagem || '';
@@ -6167,9 +6379,11 @@ ${statusSaudacao}
         motivo: 'chat_orquestrador_central',
         contatoId: contato.id,
         contatoNome: contato.nome,
-      }
+      },
+      dados.abortSignal ? { signal: dados.abortSignal } : undefined
     );
 
+    const tempoIa = Date.now() - inicioChamadaIa;
     const uso = respostaIa.usage;
     if (uso) {
       tokensPromptTotal += uso.prompt_tokens || 0;
@@ -6180,6 +6394,21 @@ ${statusSaudacao}
     const escolha = respostaIa.choices?.[0];
     const msgResposta = escolha?.message;
     if (!msgResposta) break;
+
+    etapasRastro.push({
+      ordem: ordemEtapa++,
+      nome: `Chamada OpenAI (Volta ${volta})`,
+      descricao: `Chamada ao modelo ${chatModel} finalizada em ${tempoIa}ms (Prompt: ${uso?.prompt_tokens || 0}, Completion: ${uso?.completion_tokens || 0}).`,
+      tempoMs: tempoIa,
+      detalhes: {
+        volta,
+        modelo: chatModel,
+        tokensPrompt: uso?.prompt_tokens,
+        tokensCompletion: uso?.completion_tokens,
+        totalTokens: uso?.total_tokens,
+        teveToolCalls: Boolean(msgResposta.tool_calls && msgResposta.tool_calls.length > 0),
+      },
+    });
 
     mensagensOpenAi.push(msgResposta);
 
@@ -6196,7 +6425,7 @@ ${statusSaudacao}
         let resultadoTool: any = null;
 
         if (nomeTool === 'buscar_documentos') {
-          const titularEfetivo = args.titular || ultimoTitularFoco;
+          const titularEfetivo = args.titular || args.pessoa_base || ultimoTitularFoco;
           resultadoTool = await toolBuscarDocumentos(
             args.consulta,
             titularEfetivo,
@@ -6204,7 +6433,9 @@ ${statusSaudacao}
             dados.origemMensagem,
             contato,
             args.tipo_referencia,
-            args.identificador_referencia
+            args.identificador_referencia,
+            args.pessoa_base,
+            args.relacao || 'propria'
           );
           if (resultadoTool.tipo_correspondencia) {
             etapasRastro.push({
@@ -6250,10 +6481,17 @@ ${statusSaudacao}
             }
           }
         } else if (nomeTool === 'consultar_ficha_titular') {
-          if (args.nome) {
-            ultimoTitularFoco = args.nome;
+          const nomeEfetivo = args.pessoa_base || args.nome || ultimoTitularFoco;
+          if (nomeEfetivo) {
+            ultimoTitularFoco = nomeEfetivo;
           }
-          resultadoTool = await toolConsultarFichaTitular(args.nome, todosDocs, dados.origemMensagem);
+          resultadoTool = await toolConsultarFichaTitular(
+            nomeEfetivo,
+            args.relacao || 'propria',
+            todosDocs,
+            dados.origemMensagem,
+            args.pessoa_base
+          );
           if (resultadoTool.tipo_correspondencia) {
             etapasRastro.push({
               ordem: ordemEtapa++,
@@ -6522,14 +6760,20 @@ ${statusSaudacao}
         }
 
         const tempoTool = Date.now() - inicioTool;
+        const relacaoUsada = args.relacao || (nomeTool === 'consultar_ficha_titular' || nomeTool === 'buscar_documentos' ? 'propria' : undefined);
+        const pessoaBaseUsada = args.pessoa_base || args.nome || args.titular;
+        const descComplemento = relacaoUsada ? ` [relação: ${relacaoUsada}${pessoaBaseUsada ? `, pessoa: ${pessoaBaseUsada}` : ''}]` : '';
+
         etapasRastro.push({
           ordem: ordemEtapa++,
           nome: `Tool: ${nomeTool}`,
-          descricao: `Executada ferramenta "${nomeTool}" (${tempoTool}ms).`,
+          descricao: `Executada ferramenta "${nomeTool}" (${tempoTool}ms)${descComplemento}.`,
           tempoMs: tempoTool,
           detalhes: {
             argumentos: args,
             resultado: resultadoTool,
+            relacao: relacaoUsada,
+            pessoaBase: pessoaBaseUsada,
           },
         });
 
@@ -6612,10 +6856,6 @@ ${statusSaudacao}
     etapas: etapasRastro,
   };
 
-  try {
-    salvarRastro(rastro).catch(() => {});
-  } catch {}
-
   return {
     textoResposta: textoLimpoFinal,
     anexos: anexosAcumulados.length > 0 ? anexosAcumulados : undefined,
@@ -6639,6 +6879,7 @@ export async function processarMensagemChat(dados: {
   documentoIdDireto?: string;
   origemMensagem?: 'audio' | 'texto';
   idsMensagensLoteAtual?: string[];
+  abortSignal?: AbortSignal;
 }): Promise<ResultadoChatOrquestrador> {
   // 1. VERIFICAÇÃO DE ESTOURO DE LIMITE MENSAL DE CONSUMO (100%)
   try {
@@ -6661,6 +6902,10 @@ export async function processarMensagemChat(dados: {
   try {
     resultado = await executarOrquestradorIaCentral(dados);
   } catch (erroFatal: any) {
+    // Se a chamada foi cancelada intencionalmente por chegada de nova mensagem, propaga
+    if (dados.abortSignal?.aborted || erroFatal?.name === 'AbortError') {
+      throw erroFatal;
+    }
     const msgErro = erroFatal?.message || String(erroFatal);
     console.error('[VEGA Chat ❌] Falha técnica durante processamento da mensagem:', erroFatal);
 
@@ -6706,9 +6951,6 @@ export async function processarMensagemChat(dados: {
           respostaFinalEnviada: checagemCampo.textoValidado,
         },
       });
-      try {
-        salvarRastro(resultado.rastro).catch(() => {});
-      } catch {}
     }
   }
 

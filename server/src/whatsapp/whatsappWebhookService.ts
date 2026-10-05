@@ -30,7 +30,12 @@ import {
   buscarPendenciaAtivaWhatsApp,
   processarRespostaPendenciaWhatsApp,
 } from './pendenciasWhatsAppService.js';
-import { adicionarMensagemAoAgrupador, notificarPresencaUsuarioNoAgrupador } from './agrupadorMensagensService.js';
+import {
+  adicionarMensagemAoAgrupador,
+  notificarPresencaUsuarioNoAgrupador,
+  notificarMensagemEmPreparo,
+  concluirMensagemEmPreparo,
+} from './agrupadorMensagensService.js';
 import {
   obterConversaPorId,
   salvarConversa,
@@ -492,12 +497,15 @@ export async function processarEventoEvolution(
   const infoAudio = extrairInfoAudio(evento);
 
   if (infoAudio.isAudio) {
-    // Registra no terminal a estrutura completa do primeiro áudio recebido (sem imprimir bytes de base64)
-    registrarInspecaoPrimeiroAudio(evento);
+    const audioPreparoId = mensagemId || `wa-msg-audio-${Date.now()}`;
+    notificarMensagemEmPreparo(conversaId, audioPreparoId, remoteJid, contato, usuarioAutorizado);
+    try {
+      // Registra no terminal a estrutura completa do primeiro áudio recebido (sem imprimir bytes de base64)
+      registrarInspecaoPrimeiroAudio(evento);
 
-    console.log(
-      `[Webhook WhatsApp 🎙️] Mensagem de áudio recebida de "${usuarioAutorizado.nome}" (~${infoAudio.duracaoSegundos}s).`
-    );
+      console.log(
+        `[Webhook WhatsApp 🎙️] Mensagem de áudio recebida de "${usuarioAutorizado.nome}" (~${infoAudio.duracaoSegundos}s).`
+      );
 
     // Validação prévia de duração (se informada no payload da Evolution)
     if (infoAudio.duracaoSegundos > 0) {
@@ -745,7 +753,10 @@ export async function processarEventoEvolution(
         usuario: usuarioAutorizado,
       };
     }
-  } else {
+  } finally {
+    concluirMensagemEmPreparo(conversaId, audioPreparoId);
+  }
+} else {
     // Verifica se é um documento (PDF) ou imagem enviado pelo WhatsApp
     const infoDoc = extrairInfoDocumentoWhatsApp(evento);
 
@@ -954,44 +965,12 @@ export async function processarEventoEvolution(
       const linkMaps = infoDoc.linkMaps || `https://www.google.com/maps?q=${lat},${lng}`;
 
       const textoRegistroUsuario = `[Localização recebida: latitude ${lat}, longitude ${lng}${nomeLoc}${endLoc} | Link: ${linkMaps}]`;
-      const respostaVega = `Recebi a localização${infoDoc.nomeLocal ? ` de *${infoDoc.nomeLocal}*` : ''}! 📍\nCoordenadas: ${lat}, ${lng}\nLink: ${linkMaps}\n\nSe quiser salvar na Base de Conhecimento, basta me dizer com qual nome deseja salvar (ex: _"Salve essa localização como Rancho Advir"_).`;
-
       console.log(`[Webhook WhatsApp 📍] Localização recebida de "${usuarioAutorizado.nome}": ${lat}, ${lng}`);
 
-      try {
-        await garantirConversaWhatsApp(conversaId, contato);
-        await registrarMensagemETransmitir(conversaId, {
-          id: mensagemId || `wa-msg-${Date.now()}-user-loc`,
-          remetente: 'cliente',
-          nomeRemetente: contato.nome,
-          horario: formatarHorarioBrasilia(),
-          timestamp: obterAgoraIsoUtc(),
-          texto: textoRegistroUsuario,
-          tipoMensagem: 'texto',
-        });
-        await registrarMensagemETransmitir(conversaId, {
-          id: `wa-msg-${Date.now()}-vega-loc`,
-          remetente: 'assistente',
-          nomeRemetente: ASSISTENTE.nomeExibicao,
-          horario: formatarHorarioBrasilia(),
-          timestamp: obterAgoraIsoUtc(),
-          texto: respostaVega,
-          origem: 'motor',
-        });
-      } catch (errPersist) {
-        console.warn('[Webhook WhatsApp ⚠️] Falha ao registrar mensagem de localização na conversa:', errPersist);
-      }
-
-      await enviarTextoEvolution(remoteJid, respostaVega);
-
-      return {
-        sucesso: true,
-        status: 'processado',
-        resposta: respostaVega,
-        destinatario: remoteJid,
-        mensagemId,
-        usuario: usuarioAutorizado,
-      };
+      // Em vez de enviar resposta isolada e síncrona, enfileira a localização no agrupador
+      // permitindo que seja consolidada com mensagens/áudios enviados em seguida (ex: "salve como Rancho Advir")
+      textoMensagem = textoRegistroUsuario;
+      tipoMensagem = 'texto';
     } else if (infoDoc.isNaoSuportado) {
       // Ponto 4: Se o arquivo vier de um tipo não suportado, a VEGA responde explicando o que aceita!
       const msgNaoSuportado = `Olá, ${usuarioAutorizado.nome}! No momento, o Cofre da VEGA aceita documentos em formato PDF e imagens (JPG, PNG e WEBP), além de mensagens de texto e áudio. Não consigo processar arquivos do tipo ${infoDoc.tipoDetectado}.`;
@@ -1153,6 +1132,18 @@ export async function processarEventoEvolution(
 
   // Carrega ou inicializa a conversa do WhatsApp
   let conversa = await garantirConversaWhatsApp(conversaId, contato);
+
+  // Idempotência adicional pelo histórico gravado no Supabase
+  if (mensagemId && conversa?.mensagens?.some((m) => m.id === mensagemId)) {
+    console.log(`[Webhook WhatsApp 🔁] Mensagem já existente no histórico da conversa (id: ${mensagemId}), ignorando.`);
+    return {
+      sucesso: true,
+      status: 'ignorado',
+      motivo: 'mensagem_ja_gravada',
+      mensagemId,
+      usuario: usuarioAutorizado,
+    };
+  }
 
   // Registra mensagem do usuário no histórico com fuso de Brasília e timestamp ISO UTC
   const msgUsuario: Mensagem = {
