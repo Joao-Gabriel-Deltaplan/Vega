@@ -286,6 +286,51 @@ export async function processarEventoEvolution(
     cacheMensagensProcessadas.set(mensagemId, Date.now());
   }
 
+  // 1.1 FILTRO SILENCIOSO DE EVENTOS TÉCNICOS / CONTROLE / SEM CONTEÚDO PARA O USUÁRIO
+  const msgTypeBruto = String(evento?.messageType || '').trim();
+  const eventosTecnicosIgnorados = [
+    'protocolmessage',
+    'senderkeydistributionmessage',
+    'messagecontextinfo',
+    'devicesentmessage',
+    'keepinchatmessage',
+    'pollupdatemessage',
+    'pollcreationmessage',
+    'reactionmessage',
+    'ephemeralsetting',
+  ];
+
+  const temSubPropTecnica =
+    Boolean(evento?.message?.protocolMessage) ||
+    Boolean(evento?.message?.senderKeyDistributionMessage) ||
+    Boolean(evento?.message?.reactionMessage) ||
+    (Boolean(evento?.message?.messageContextInfo) &&
+      !evento?.message?.conversation &&
+      !evento?.message?.extendedTextMessage &&
+      !evento?.message?.audioMessage &&
+      !evento?.message?.documentMessage &&
+      !evento?.message?.imageMessage &&
+      !evento?.message?.videoMessage &&
+      !evento?.message?.locationMessage &&
+      !evento?.message?.liveLocationMessage);
+
+  const isEventoTecnico =
+    eventosTecnicosIgnorados.some((t) => msgTypeBruto.toLowerCase().includes(t)) ||
+    temSubPropTecnica;
+
+  if (isEventoTecnico) {
+    console.log(
+      `[Webhook WhatsApp ℹ️] Evento técnico/protocolo ignorado em silêncio (${msgTypeBruto || 'controle'}) para ${remoteJid}.`
+    );
+    return {
+      sucesso: true,
+      status: 'ignorado',
+      motivo: 'evento_tecnico_sem_conteudo',
+      destinatario: remoteJid,
+      mensagemId,
+    };
+  }
+
   // 2. EXTRAÇÃO DO REMETENTE E RESOLUÇÃO DE FORMATO @lid
   const isGrupo = remoteJid.endsWith('@g.us');
   const participantRaw = (key.participant || evento.participant || '') as string;
@@ -959,7 +1004,7 @@ export async function processarEventoEvolution(
         };
       }
     } else if (infoDoc.isLocalizacao) {
-      // Ponto 1: Mensagem de localização recebida nativamente do WhatsApp (locationMessage)
+      // Localização recebida nativamente ou encaminhada pelo WhatsApp
       const lat = infoDoc.latitude;
       const lng = infoDoc.longitude;
       const nomeLoc = infoDoc.nomeLocal ? `, nome: "${infoDoc.nomeLocal}"` : '';
@@ -969,111 +1014,60 @@ export async function processarEventoEvolution(
       const textoRegistroUsuario = `[Localização recebida: latitude ${lat}, longitude ${lng}${nomeLoc}${endLoc} | Link: ${linkMaps}]`;
       console.log(`[Webhook WhatsApp 📍] Localização recebida de "${usuarioAutorizado.nome}": ${lat}, ${lng}`);
 
-      // Em vez de enviar resposta isolada e síncrona, enfileira a localização no agrupador
-      // permitindo que seja consolidada com mensagens/áudios enviados em seguida (ex: "salve como Rancho Advir")
+      // Enfileira a localização no agrupador para resposta unificada com o lote
       textoMensagem = textoRegistroUsuario;
       tipoMensagem = 'texto';
     } else if (infoDoc.isNaoSuportado) {
-      // Ponto 4: Se o arquivo vier de um tipo não suportado, a VEGA responde explicando o que aceita!
-      const msgNaoSuportado = `Olá, ${usuarioAutorizado.nome}! No momento, o Cofre da VEGA aceita documentos em formato PDF e imagens (JPG, PNG e WEBP), além de mensagens de texto e áudio. Não consigo processar arquivos do tipo ${infoDoc.tipoDetectado}.`;
-
+      // Formato não suportado: NÃO envia direto no webhook! Encaminha ao agrupador para consolidar no lote
       registrarLogMensagemNaoTexto(
         evento,
         infoDoc,
         usuarioAutorizado.nome,
         false,
-        `Formato não suportado (${infoDoc.tipoDetectado}). Notificado remetente no WhatsApp.`
+        `Formato não suportado (${infoDoc.tipoDetectado}). Encaminhado ao agrupador para resposta unificada.`
       );
 
-      try {
-        await garantirConversaWhatsApp(conversaId, contato);
-        await registrarMensagemETransmitir(conversaId, {
-          id: mensagemId || `wa-msg-${Date.now()}-user-nao-sup`,
-          remetente: 'cliente',
-          nomeRemetente: contato.nome,
-          horario: formatarHorarioBrasilia(),
-          timestamp: obterAgoraIsoUtc(),
-          texto: `[Arquivo com formato não suportado: ${infoDoc.tipoDetectado}]`,
-          tipoMensagem: 'documento',
-        });
-        await registrarMensagemETransmitir(conversaId, {
-          id: `wa-msg-${Date.now()}-vega-nao-sup`,
-          remetente: 'assistente',
-          nomeRemetente: ASSISTENTE.nomeExibicao,
-          horario: formatarHorarioBrasilia(),
-          timestamp: obterAgoraIsoUtc(),
-          texto: msgNaoSuportado,
-          origem: 'motor',
-        });
-      } catch {}
-
-      return {
-        sucesso: true,
-        status: 'processado',
-        resposta: msgNaoSuportado,
-        destinatario: remoteJid,
-        mensagemId,
-        usuario: usuarioAutorizado,
-      };
+      textoMensagem = `[Arquivo recebido em formato não suportado: ${infoDoc.tipoDetectado}]`;
+      tipoMensagem = 'texto';
+    } else {
+      // Mensagem de texto tradicional
+      textoMensagem = extrairTextoMensagem(evento.message);
+      const textoCitado = extrairMensagemCitada(evento.message);
+      if (textoCitado && textoMensagem) {
+        textoMensagem = `[Em resposta à mensagem: "${textoCitado}"]\n${textoMensagem}`;
+      }
+      tipoMensagem = 'texto';
     }
 
-    // Mensagem de texto tradicional
-    textoMensagem = extrairTextoMensagem(evento.message);
-    const textoCitado = extrairMensagemCitada(evento.message);
-    if (textoCitado && textoMensagem) {
-      textoMensagem = `[Em resposta à mensagem: "${textoCitado}"]\n${textoMensagem}`;
-    }
-    if (!textoMensagem) {
-      // Se não for texto, nem áudio, nem documento/imagem suportado ou não suportado
+    if (!textoMensagem || textoMensagem.trim().length === 0) {
+      // Se não for texto, nem áudio, nem documento/imagem suportado
       const msgType = String(evento?.messageType || 'desconhecido');
-      if (msgType.toLowerCase().includes('reaction')) {
-        console.log(`[Webhook WhatsApp ℹ️] Reação recebida de "${usuarioAutorizado.nome}": ignorada.`);
+      const isEventoSemConteudo =
+        !evento.message ||
+        Object.keys(evento.message).length === 0 ||
+        msgType.toLowerCase().includes('reaction') ||
+        msgType.toLowerCase().includes('protocol') ||
+        msgType.toLowerCase().includes('context');
+
+      if (isEventoSemConteudo) {
+        console.log(`[Webhook WhatsApp ℹ️] Evento sem texto/conteúdo ignorado em silêncio (messageType: ${msgType}).`);
         return {
           sucesso: true,
           status: 'ignorado',
-          motivo: 'reacao_mensagem',
+          motivo: 'evento_sem_conteudo',
+          destinatario: remoteJid,
           mensagemId,
         };
       }
 
       console.warn(
-        `[Webhook WhatsApp ⚠️] Mensagem sem texto ou formato não identificado de "${usuarioAutorizado.nome}" (messageType: ${msgType}). Respondendo instruções de formato.`
+        `[Webhook WhatsApp ⚠️] Mensagem sem texto ou formato não identificado de "${usuarioAutorizado.nome}" (messageType: ${msgType}). Encaminhando ao agrupador.`
       );
 
-      const msgAjuda = `Olá, ${usuarioAutorizado.nome}! Não consegui compreender este formato de mensagem. Você pode me enviar mensagens de texto, áudio, documentos em PDF ou fotos (JPG, PNG e WEBP).`;
-
-      try {
-        await garantirConversaWhatsApp(conversaId, contato);
-        await registrarMensagemETransmitir(conversaId, {
-          id: mensagemId || `wa-msg-${Date.now()}-user-desc`,
-          remetente: 'cliente',
-          nomeRemetente: contato.nome,
-          horario: formatarHorarioBrasilia(),
-          timestamp: obterAgoraIsoUtc(),
-          texto: `[Mensagem recebida em formato não identificado: ${msgType}]`,
-          tipoMensagem: 'texto',
-        });
-        await registrarMensagemETransmitir(conversaId, {
-          id: `wa-msg-${Date.now()}-vega-ajuda`,
-          remetente: 'assistente',
-          nomeRemetente: ASSISTENTE.nomeExibicao,
-          horario: formatarHorarioBrasilia(),
-          timestamp: obterAgoraIsoUtc(),
-          texto: msgAjuda,
-          origem: 'motor',
-        });
-      } catch {}
-
-      return {
-        sucesso: true,
-        status: 'processado',
-        resposta: msgAjuda,
-        destinatario: remoteJid,
-        mensagemId,
-        usuario: usuarioAutorizado,
-      };
+      // Repassa ao agrupador para que a resposta seja unificada no lote
+      textoMensagem = `[Mensagem recebida em formato não compreendido: ${msgType}]`;
+      tipoMensagem = 'texto';
     }
-    tipoMensagem = 'texto';
   }
 
   // 4.1 SALVA O ÁUDIO ORIGINAL NO SUPABASE STORAGE (BUCKET PRIVADO)

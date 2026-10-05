@@ -608,40 +608,127 @@ export async function enviarPresencaEvolution(
   }
 }
 
+interface SessaoPresencaConversa {
+  conversaId: string;
+  destinatario: string;
+  inicioEm: number;
+  intervalId: NodeJS.Timeout;
+  travaSegurancaId: NodeJS.Timeout;
+  ativo: boolean;
+}
+
+const sessoesPresencaPorConversa = new Map<string, SessaoPresencaConversa>();
+
 /**
- * Inicia a emissão contínua de "digitando..." (composing) da VEGA para o destinatário,
- * renovando a cada 4 segundos para evitar que o status expire no WhatsApp,
- * e retorna uma função assíncrona de parada que encerra o timer e envia 'paused'.
+ * Inicia ou reinicia o status "digitando..." (composing) da VEGA para uma conversa específica.
+ * Garante um único controlador ativo por conversa: se já houver uma presença ativa na mesma conversa,
+ * ela é cancelada e finalizada antes de iniciar a nova.
+ *
+ * Trava de segurança: presença nunca fica ativa por mais de 60 segundos seguidos (auto-stop).
+ * Auditoria: registra [Presença 🟢 INÍCIO] e [Presença 🔴 FIM] com id da conversa e duração.
  */
-export function iniciarPresencaDigitandoVega(
+export function iniciarPresencaDigitando(
+  conversaId: string,
   destinatario: string,
   intervaloMs: number = 4000
-): () => Promise<void> {
-  let ativo = true;
+): void {
+  if (!conversaId || !destinatario) return;
 
-  // Envia presença imediatamente no início do processamento
+  // 1. Se já existir uma sessão de presença ativa para esta conversa, para antes de começar outra
+  const anterior = sessoesPresencaPorConversa.get(conversaId);
+  if (anterior && anterior.ativo) {
+    anterior.ativo = false;
+    clearInterval(anterior.intervalId);
+    clearTimeout(anterior.travaSegurancaId);
+    const duracaoAnteriorMs = Date.now() - anterior.inicioEm;
+    console.log(
+      `[Presença 🔄 REINÍCIO] Conversa "${conversaId}" -> Destinatário "${anterior.destinatario}" | Presença anterior finalizada após ${duracaoAnteriorMs}ms para iniciar nova.`
+    );
+    sessoesPresencaPorConversa.delete(conversaId);
+  }
+
+  const inicioEm = Date.now();
+  console.log(
+    `[Presença 🟢 INÍCIO] Conversa "${conversaId}" -> Destinatário "${destinatario}" | Status "digitando..." iniciado.`
+  );
+
+  // Envia presença imediatamente
   enviarPresencaEvolution(destinatario, 'composing').catch((err) => {
-    console.warn(`[Evolution Presença ⚠️] Falha inicial ao enviar "composing" para ${destinatario}:`, err?.message || err);
+    console.warn(
+      `[Presença ⚠️] Falha inicial ao enviar "composing" para ${destinatario}:`,
+      err?.message || err
+    );
   });
 
-  // Loop de renovação a cada poucos segundos enquanto a VEGA processa
+  // Loop de renovação a cada intervaloMs (padrão 4s)
   const intervalId = setInterval(() => {
-    if (!ativo) {
+    const sessao = sessoesPresencaPorConversa.get(conversaId);
+    if (!sessao || !sessao.ativo) {
       clearInterval(intervalId);
       return;
     }
     enviarPresencaEvolution(destinatario, 'composing').catch(() => {});
   }, intervaloMs);
 
-  // Função para parar a presença ao finalizar (sucesso ou erro)
-  return async () => {
-    if (!ativo) return;
-    ativo = false;
-    clearInterval(intervalId);
-    try {
-      await enviarPresencaEvolution(destinatario, 'paused');
-    } catch {}
-  };
+  // Trava de segurança: a presença nunca fica ativa mais de 60s seguidos
+  const travaSegurancaId = setTimeout(async () => {
+    const sessao = sessoesPresencaPorConversa.get(conversaId);
+    if (sessao && sessao.ativo) {
+      console.warn(
+        `[Presença ⏰ TRAVA DE SEGURANÇA] Conversa "${conversaId}" atingiu limite máximo de 60s de presença contínua. Parando automaticamente.`
+      );
+      await pararPresencaDigitando(conversaId);
+    }
+  }, 60_000);
+
+  sessoesPresencaPorConversa.set(conversaId, {
+    conversaId,
+    destinatario,
+    inicioEm,
+    intervalId,
+    travaSegurancaId,
+    ativo: true,
+  });
+}
+
+/**
+ * Para a presença "digitando..." da conversa, cancela os timers de renovação e trava de segurança,
+ * envia o status 'paused' para o WhatsApp e registra log com o tempo total de duração.
+ */
+export async function pararPresencaDigitando(conversaId: string): Promise<void> {
+  if (!conversaId) return;
+  const sessao = sessoesPresencaPorConversa.get(conversaId);
+  if (!sessao || !sessao.ativo) {
+    return;
+  }
+
+  sessao.ativo = false;
+  clearInterval(sessao.intervalId);
+  clearTimeout(sessao.travaSegurancaId);
+  sessoesPresencaPorConversa.delete(conversaId);
+
+  const duracaoMs = Date.now() - sessao.inicioEm;
+  console.log(
+    `[Presença 🔴 FIM] Conversa "${conversaId}" -> Destinatário "${sessao.destinatario}" | Digitando encerrado após ${duracaoMs}ms.`
+  );
+
+  try {
+    await enviarPresencaEvolution(sessao.destinatario, 'paused');
+  } catch (err: any) {
+    console.warn(`[Presença ⚠️] Falha ao enviar 'paused' para ${sessao.destinatario}:`, err?.message || err);
+  }
+}
+
+/**
+ * Wrapper de retrocompatibilidade para iniciar presença
+ */
+export function iniciarPresencaDigitandoVega(
+  destinatario: string,
+  intervaloMs: number = 4000
+): () => Promise<void> {
+  const conversaId = `wa-${destinatario}`;
+  iniciarPresencaDigitando(conversaId, destinatario, intervaloMs);
+  return () => pararPresencaDigitando(conversaId);
 }
 
 /**

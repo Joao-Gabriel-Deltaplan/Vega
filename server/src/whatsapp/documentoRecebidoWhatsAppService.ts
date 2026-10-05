@@ -211,14 +211,111 @@ export function extrairTamanhoBytes(fileLengthRaw: any, base64?: string): number
 }
 
 /**
+ * Extrai coordenadas geográficas de localização nativa ou encaminhada do WhatsApp,
+ * varrendo recursivamente os nós da mensagem em busca de latitude e longitude.
+ * Suporta formatos numéricos e strings, e lida com mensagens encaminhadas (contextInfo / forwardedMessage).
+ */
+export function extrairCoordenadasLocalizacao(objeto: any): {
+  latitude: number;
+  longitude: number;
+  nome?: string;
+  endereco?: string;
+} | null {
+  if (!objeto || typeof objeto !== 'object') return null;
+
+  function converterCoord(val: any): number | null {
+    if (typeof val === 'number' && !isNaN(val)) return val;
+    if (typeof val === 'string') {
+      const limpo = val.trim().replace(',', '.');
+      const num = parseFloat(limpo);
+      if (!isNaN(num)) return num;
+    }
+    return null;
+  }
+
+  function buscarRecursivo(node: any, profundidade = 0): {
+    latitude: number;
+    longitude: number;
+    nome?: string;
+    endereco?: string;
+  } | null {
+    if (!node || typeof node !== 'object' || profundidade > 6) return null;
+
+    // 1. Checagem direta neste nó
+    const lat = converterCoord(node.degreesLatitude ?? node.latitude ?? node.lat);
+    const lng = converterCoord(node.degreesLongitude ?? node.longitude ?? node.lng);
+    const nome = typeof node.name === 'string' ? node.name : (typeof node.title === 'string' ? node.title : '');
+    const endereco = typeof node.address === 'string' ? node.address : (typeof node.endereco === 'string' ? node.endereco : '');
+
+    if (lat !== null && lng !== null && (lat !== 0 || lng !== 0)) {
+      return { latitude: lat, longitude: lng, nome, endereco };
+    }
+
+    // 2. Nós conhecidos do Baileys/WhatsApp
+    const subNos = [
+      node.locationMessage,
+      node.liveLocationMessage,
+      node.forwardedMessage?.locationMessage,
+      node.forwardedMessage,
+      node.message?.locationMessage,
+      node.message?.liveLocationMessage,
+      node.contextInfo?.quotedMessage?.locationMessage,
+      node.contextInfo?.forwardedMessage?.locationMessage,
+      node.message,
+      node.data?.message,
+    ];
+
+    for (const sub of subNos) {
+      if (sub && typeof sub === 'object') {
+        const achou = buscarRecursivo(sub, profundidade + 1);
+        if (achou) return achou;
+      }
+    }
+
+    // 3. Varredura ampla de chaves
+    for (const key of Object.keys(node)) {
+      if (['key', 'messageContextInfo'].includes(key)) continue;
+      const val = node[key];
+      if (val && typeof val === 'object') {
+        const achou = buscarRecursivo(val, profundidade + 1);
+        if (achou) return achou;
+      }
+    }
+
+    return null;
+  }
+
+  return buscarRecursivo(objeto);
+}
+
+/**
  * Extrai informações completas e normalizadas de documentos, imagens e mídias do WhatsApp.
- * Suporta nativamente: PDF, JPG, JPEG, PNG, WEBP.
+ * Suporta nativamente: PDF, JPG, JPEG, PNG, WEBP e Localização (nativa ou encaminhada).
  * Detecta tipos não suportados (vídeos, stickers, planilhas/word não homologados, etc.).
  */
 export function extrairInfoDocumentoWhatsApp(evento: any): InfoDocumentoMensagem {
   const messageRaw = evento?.message || evento?.data?.message;
   const msg = desembrulharMensagem(messageRaw) || {};
   const messageType = String(evento?.messageType || '').trim();
+
+  // PRIORIDADE 1: Detecção de Localização (Nativa ou Encaminhada)
+  const coordsLoc = extrairCoordenadasLocalizacao(msg) || extrairCoordenadasLocalizacao(evento);
+  if (coordsLoc) {
+    const linkMaps = `https://www.google.com/maps?q=${coordsLoc.latitude},${coordsLoc.longitude}`;
+    return {
+      isDocumento: false,
+      isImagem: false,
+      isLocalizacao: true,
+      isNaoSuportado: false,
+      tipoDetectado: 'localizacao',
+      latitude: coordsLoc.latitude,
+      longitude: coordsLoc.longitude,
+      nomeLocal: coordsLoc.nome || '',
+      enderecoLocal: coordsLoc.endereco || '',
+      linkMaps,
+      legenda: [coordsLoc.nome, coordsLoc.endereco].filter(Boolean).join(' - '),
+    };
+  }
 
   const docMsg = msg.documentMessage || (messageType === 'documentMessage' ? msg : null);
   const imgMsg = msg.imageMessage || (messageType === 'imageMessage' ? msg : null);
@@ -318,27 +415,7 @@ export function extrairInfoDocumentoWhatsApp(evento: any): InfoDocumentoMensagem
     };
   }
 
-  if (locationMsg) {
-    const lat = Number(locationMsg.degreesLatitude ?? locationMsg.latitude);
-    const lng = Number(locationMsg.degreesLongitude ?? locationMsg.longitude);
-    const nome = locationMsg.name || locationMsg.title || '';
-    const endereco = locationMsg.address || '';
-    if (!isNaN(lat) && !isNaN(lng) && (lat !== 0 || lng !== 0)) {
-      const linkMaps = `https://www.google.com/maps?q=${lat},${lng}`;
-      return {
-        isDocumento: false,
-        isImagem: false,
-        isLocalizacao: true,
-        isNaoSuportado: false,
-        tipoDetectado: 'localizacao',
-        latitude: lat,
-        longitude: lng,
-        nomeLocal: nome,
-        enderecoLocal: endereco,
-        linkMaps,
-        legenda: [nome, endereco].filter(Boolean).join(' - '),
-      };
-    }
+  if (locationMsg || messageType.includes('location')) {
     return {
       isDocumento: false,
       isImagem: false,

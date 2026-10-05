@@ -6,7 +6,8 @@ import { processarMensagemChat, sanitizarRespostaTextoFinal } from '../chat/chat
 import { salvarRastro } from '../rastros/rastroService.js';
 import {
   enviarRespostaCompletaWhatsApp,
-  iniciarPresencaDigitandoVega,
+  iniciarPresencaDigitando,
+  pararPresencaDigitando,
   normalizarDestinatarioEvolution,
 } from './evolutionSenderService.js';
 import { formatarHorarioBrasilia, obterAgoraIsoUtc } from '../utils/dataHoraUtils.js';
@@ -254,8 +255,8 @@ export function notificarMensagemEmPreparo(
     `[Agrupador 🎙️ Preparo] Mensagem "${mensagemId}" em preparo (download/transcrição). Total em preparo: ${estado.mensagensEmPreparo.size}.`
   );
 
-  // Mantém presença "digitando..."
-  iniciarPresencaDigitandoVega(estado.destinatario);
+  // Mantém presença "digitando..." única para a conversa
+  iniciarPresencaDigitando(conversaId, estado.destinatario);
 
   // Cancela qualquer timer de espera ativo
   if (estado.timerAgrupamento) {
@@ -298,6 +299,9 @@ export function concluirMensagemEmPreparo(conversaId: string, mensagemId: string
     setImmediate(async () => {
       await dispararLote(conversaId);
     });
+  } else if (estado.mensagensEmPreparo.size === 0 && estado.loteAtual.length === 0 && !estado.emProcessamento) {
+    // Se não há mais mensagens em preparo nem no lote, encerra a presença
+    pararPresencaDigitando(conversaId).catch(() => {});
   }
 }
 
@@ -319,8 +323,8 @@ export async function adicionarMensagemAoAgrupador(entrada: EntradaAgrupador): P
     `[Agrupador ⏳] Mensagem recebida para conversa "${conversaId}" (Tipo: ${item.tipoMensagem}). Em processamento: ${estado.emProcessamento}. Mensagens em preparo: ${estado.mensagensEmPreparo.size}.`
   );
 
-  // Mantém presença "digitando..."
-  iniciarPresencaDigitandoVega(destinatario);
+  // Mantém presença "digitando..." única para a conversa
+  iniciarPresencaDigitando(conversaId, destinatario);
 
   // Cancela qualquer timer residual
   if (estado.timerAgrupamento) {
@@ -406,6 +410,9 @@ async function dispararLote(conversaId: string): Promise<void> {
   }
 
   if (estado.loteAtual.length === 0) {
+    if (estado.mensagensEmPreparo.size === 0) {
+      await pararPresencaDigitando(conversaId);
+    }
     return;
   }
 
@@ -437,6 +444,7 @@ async function dispararLote(conversaId: string): Promise<void> {
       console.log(`[Agrupador 🛑] Processamento do lote para ${conversaId} cancelado com sucesso.`);
     } else {
       console.error(`[Agrupador ❌] Erro ao processar lote para ${conversaId}:`, erro);
+      await pararPresencaDigitando(conversaId);
     }
   } finally {
     if (estado.abortController === abortController) {
@@ -535,7 +543,7 @@ async function processarLoteUnificado(
   const agoraInicioProcessamento = Date.now();
 
   // Inicia envio contínuo de status "digitando..." da VEGA para o WhatsApp
-  const pararDigitando = iniciarPresencaDigitandoVega(destinatario);
+  iniciarPresencaDigitando(conversaId, destinatario);
 
   try {
     // 1. Identifica se há documentos/imagens no lote
@@ -855,7 +863,7 @@ async function processarLoteUnificado(
     );
   } finally {
     // Garante que o status digitando pare quando a resposta for enviada ou em caso de erro
-    await pararDigitando();
+    await pararPresencaDigitando(conversaId);
   }
 }
 
