@@ -2133,7 +2133,7 @@ export const TOOLS_ORQUESTRADOR: OpenAI.Chat.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'salvar_conhecimento',
-      description: 'Cadastra ou prepara o cadastro de um novo item na Base de Conhecimento interna da Delta Plan (contatos, telefones, chaves PIX, links de sistemas, regras de negócio ou procedimentos). Acione esta ferramenta quando o usuário solicitar salvar/adicionar ou quando enviar dados complementares de um cadastro em andamento (ex: telefone, chave PIX, link). A ferramenta valida se faltam dados, verifica duplicidade e gera a frase de confirmação que você deve apresentar ao usuário antes da gravação definitiva.',
+      description: 'Cadastra ou prepara o cadastro de um novo item na Base de Conhecimento interna da Delta Plan (contatos, telefones, chaves PIX, links de sistemas, regras de negócio ou procedimentos, locais/localizações geográficas). Acione esta ferramenta quando o usuário solicitar salvar/adicionar ou quando enviar dados complementares de um cadastro em andamento. Para localização: você SÓ PODE usar uma localização recebida no lote atual ou na mensagem imediatamente anterior ao pedido. Se não houver, deve responder estritamente: "Não recebi a localização. Pode enviar de novo?". NUNCA busque localizações antigas do histórico. A ferramenta valida dados faltantes, duplicidade e gera a frase de confirmação que você deve apresentar ao usuário antes da gravação definitiva.',
       parameters: {
         type: 'object',
         properties: {
@@ -4784,12 +4784,21 @@ export function extrairLocalizacaoDeTextoOuHistorico(
     }
   }
 
-  // 2. Textos candidatos ordenados da mensagem atual para as mais recentes do histórico
-  const textosCandidatos = [
-    argsConteudo || '',
-    msgAtual || '',
-    ...historico.slice(-15).reverse().map((m) => m.texto || ''),
-  ];
+  // 2. Textos candidatos:
+  // REGRA ESTRITA: ao salvar localização, a IA só pode usar uma localização recebida no LOTE ATUAL
+  // ou na MENSAGEM IMEDIATAMENTE ANTERIOR ao pedido. Nunca usar localizações antigas do histórico!
+  const textosCandidatos: string[] = [];
+  if (argsConteudo) textosCandidatos.push(argsConteudo);
+  if (msgAtual) textosCandidatos.push(msgAtual);
+
+  // Mensagem imediatamente anterior ao pedido no histórico (apenas ela!)
+  if (historico && historico.length > 0) {
+    const ultimas = historico.slice(-2);
+    const msgImediatamenteAnterior = [...ultimas].reverse().find((m) => m.remetente === 'cliente');
+    if (msgImediatamenteAnterior && msgImediatamenteAnterior.texto) {
+      textosCandidatos.push(msgImediatamenteAnterior.texto);
+    }
+  }
 
   for (const txt of textosCandidatos) {
     if (!txt) continue;
@@ -5054,9 +5063,9 @@ export async function toolSalvarConhecimento(
       return {
         sucesso: false,
         status: 'dado_faltante',
-        campo_faltante: 'coordenadas',
-        mensagem: 'Não é possível salvar localização sem as coordenadas geográficas (latitude e longitude). Peça o envio da localização ou as coordenadas ao usuário.',
-        instrucao_resposta: `Falta a localização com coordenadas geográficas para "${tituloLimpo}". Peça ao usuário que envie a localização pelo WhatsApp. NÃO afirme que salvou e NÃO grave nada.`,
+        campo_faltante: 'localizacao',
+        mensagem: 'Não recebi a localização. Pode enviar de novo?',
+        instrucao_resposta: 'Responda estritamente ao usuário: "Não recebi a localização. Pode enviar de novo?". É TERMINANTEMENTE PROIBIDO inventar coordenadas ou resgatar localizações antigas do histórico.',
       };
     }
 
@@ -5134,7 +5143,18 @@ export async function toolSalvarConhecimento(
   } else if (ehPix && !resumoDado.toLowerCase().includes('chave') && !resumoDado.toLowerCase().includes('pix')) {
     resumoDado = `chave ${resumoDado}`;
   } else if (ehLocal && args.dados_estruturados?.latitude && args.dados_estruturados?.longitude) {
-    resumoDado = `localização (${args.dados_estruturados.latitude}, ${args.dados_estruturados.longitude})`;
+    const lat = args.dados_estruturados.latitude;
+    const lng = args.dados_estruturados.longitude;
+    const linkMaps = args.dados_estruturados.linkMaps || `https://www.google.com/maps?q=${lat},${lng}`;
+    const detalhesLocal: string[] = [`(${lat}, ${lng})`];
+    if (args.dados_estruturados.nomeLocal && args.dados_estruturados.nomeLocal !== tituloLimpo) {
+      detalhesLocal.push(`local: "${args.dados_estruturados.nomeLocal}"`);
+    }
+    if (args.dados_estruturados.endereco) {
+      detalhesLocal.push(`endereço: "${args.dados_estruturados.endereco}"`);
+    }
+    detalhesLocal.push(`Maps: ${linkMaps}`);
+    resumoDado = `localização ${detalhesLocal.join(' | ')}`;
   }
 
   const fraseConfirmacao = `Vou salvar: ${tituloLimpo}, ${resumoDado}. Confirma?`;
@@ -5241,6 +5261,20 @@ export async function toolAtualizarConhecimento(
       resumoDado = `telefone ${resumoDado}`;
     } else if (pendenciaPendente.tipoConhecimento === 'pix' && !resumoDado.toLowerCase().includes('chave')) {
       resumoDado = `chave ${resumoDado}`;
+    } else if (pendenciaPendente.tipoConhecimento === 'local') {
+      const lat = pendenciaPendente.dadosEstruturados?.latitude;
+      const lng = pendenciaPendente.dadosEstruturados?.longitude;
+      const linkMaps = pendenciaPendente.dadosEstruturados?.linkMaps || (lat && lng ? `https://www.google.com/maps?q=${lat},${lng}` : '');
+      const detalhes: string[] = [];
+      if (lat && lng) detalhes.push(`(${lat}, ${lng})`);
+      if (pendenciaPendente.dadosEstruturados?.nomeLocal && pendenciaPendente.dadosEstruturados.nomeLocal !== pendenciaPendente.titulo) {
+        detalhes.push(`local: "${pendenciaPendente.dadosEstruturados.nomeLocal}"`);
+      }
+      if (pendenciaPendente.dadosEstruturados?.endereco) {
+        detalhes.push(`endereço: "${pendenciaPendente.dadosEstruturados.endereco}"`);
+      }
+      if (linkMaps) detalhes.push(`Maps: ${linkMaps}`);
+      if (detalhes.length > 0) resumoDado = `localização ${detalhes.join(' | ')}`;
     }
 
     const fraseConfirmacao = `Vou salvar: ${pendenciaPendente.titulo}, ${resumoDado}. Confirma?`;
@@ -5753,6 +5787,20 @@ export async function detectarConfirmacaoSalvarConhecimento(
         resumoDado = `telefone ${resumoDado}`;
       } else if (pendenciaMemoria.tipoConhecimento === 'pix' && !resumoDado.toLowerCase().includes('chave')) {
         resumoDado = `chave ${resumoDado}`;
+      } else if (pendenciaMemoria.tipoConhecimento === 'local') {
+        const lat = pendenciaMemoria.dadosEstruturados?.latitude;
+        const lng = pendenciaMemoria.dadosEstruturados?.longitude;
+        const linkMaps = pendenciaMemoria.dadosEstruturados?.linkMaps || (lat && lng ? `https://www.google.com/maps?q=${lat},${lng}` : '');
+        const detalhes: string[] = [];
+        if (lat && lng) detalhes.push(`(${lat}, ${lng})`);
+        if (pendenciaMemoria.dadosEstruturados?.nomeLocal && pendenciaMemoria.dadosEstruturados.nomeLocal !== pendenciaMemoria.titulo) {
+          detalhes.push(`local: "${pendenciaMemoria.dadosEstruturados.nomeLocal}"`);
+        }
+        if (pendenciaMemoria.dadosEstruturados?.endereco) {
+          detalhes.push(`endereço: "${pendenciaMemoria.dadosEstruturados.endereco}"`);
+        }
+        if (linkMaps) detalhes.push(`Maps: ${linkMaps}`);
+        if (detalhes.length > 0) resumoDado = `localização ${detalhes.join(' | ')}`;
       }
 
       const fraseConfirmacao = `Vou salvar: ${pendenciaMemoria.titulo}, ${resumoDado}. Confirma?`;
@@ -5894,13 +5942,18 @@ export async function detectarConfirmacaoSalvarConhecimento(
           if (matchCoord) {
             const lat = parseFloat(matchCoord[1]);
             const lng = parseFloat(matchCoord[2]);
+            const matchLink = dado.match(/Maps:\s*(https?:\/\/[^\s|)]+)/i) || dado.match(/(https?:\/\/[^\s|)]+)/i);
+            const matchNome = dado.match(/local:\s*"([^"]+)"/i);
+            const matchEnd = dado.match(/endereço:\s*"([^"]+)"/i);
+            const linkFinal = matchLink ? matchLink[1].trim() : `https://www.google.com/maps?q=${lat},${lng}`;
             dadosEstruturados = {
               latitude: lat,
               longitude: lng,
-              linkMaps: `https://www.google.com/maps?q=${lat},${lng}`,
-              nomeLocal: titulo,
+              linkMaps: linkFinal,
+              nomeLocal: matchNome ? matchNome[1].trim() : titulo,
+              endereco: matchEnd ? matchEnd[1].trim() : undefined,
             };
-            conteudo = `Latitude: ${lat}, Longitude: ${lng}\nGoogle Maps: https://www.google.com/maps?q=${lat},${lng}`;
+            conteudo = `Latitude: ${lat}, Longitude: ${lng}\nGoogle Maps: ${linkFinal}${matchNome ? `\nLocal: ${matchNome[1].trim()}` : ''}${matchEnd ? `\nEndereço: ${matchEnd[1].trim()}` : ''}`;
           }
         }
       }
@@ -6219,15 +6272,16 @@ Existe um cadastro de conhecimento EM ANDAMENTO aguardando dados complementares:
 ${pendenciaAtivaK.titulo ? `- Título Proposto: "${pendenciaAtivaK.titulo}"` : ''}
 
 INSTRUÇÕES MANDATÓRIAS DE CONTINUAÇÃO:
-1. Se a mensagem do usuário contiver o dado faltante (${campo}) — mesmo que seja apenas números digitados (ex: "14998810675"), número formatado (ex: "14 99881-0675") ou áudio —, esta mensagem é a CONTINUAÇÃO DIRETA deste cadastro!
+1. Se a mensagem do usuário contiver o dado faltante (${campo}) — mesmo que seja apenas números digitados (ex: "14998810675"), número formatado (ex: "14 99881-0675"), áudio ou mensagem de localização —, esta mensagem é a CONTINUAÇÃO DIRETA deste cadastro!
 2. Você DEVE acionar a ferramenta 'salvar_conhecimento' passando:
    - titulo: "${pendenciaAtivaK.titulo || formatarTituloContato(nomeOuTitulo)}"
-   - categoria: "${pendenciaAtivaK.categoria || 'Contatos'}"
+   - categoria: "${pendenciaAtivaK.categoria || (pendenciaAtivaK.tipoConhecimento === 'local' ? 'Locais' : 'Contatos')}"
    - tipo: "${pendenciaAtivaK.tipoConhecimento || 'contato'}"
-   - conteudo: o dado informado pelo usuário (ex.: o telefone completo)
+   - conteudo: o dado informado pelo usuário (ex.: o telefone completo ou as coordenadas)
    - dados_estruturados: { ${campo}: o dado informado, nome: "${nomeOuTitulo}" }
-3. NUNCA pergunte "de quem é esse contato?" nem peça o nome novamente, pois o nome "${nomeOuTitulo}" já está definido nesta ação pendente!
-4. NUNCA pesquise no Cofre nem busque documentos para números ou dados complementares enviados nessa continuação!
+3. REGRA ESTRITA PARA LOCALIZAÇÃO: Se o dado aguardado for localização e não houver coordenadas no lote atual nem na mensagem imediatamente anterior, responda estritamente: "Não recebi a localização. Pode enviar de novo?". É TERMINANTEMENTE PROIBIDO resgatar localizações antigas do histórico.
+4. NUNCA pergunte "de quem é esse contato?" nem peça o nome novamente, pois o nome "${nomeOuTitulo}" já está definido nesta ação pendente!
+5. NUNCA pesquise no Cofre nem busque documentos para números ou dados complementares enviados nessa continuação!
 </acao_pendente>\n`;
     } else if (pendenciaAtivaK.status === 'aguardando_confirmacao') {
       blocoAcaoPendente = `\n<acao_pendente>
