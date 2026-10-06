@@ -1709,13 +1709,25 @@ REGRAS OBRIGATÓRIAS:
 export function validarCorrespondenciaCampoResposta(
   mensagemUsuario: string,
   textoResposta: string,
-  contato?: Contato
+  contato?: Contato,
+  contextoEntrega?: {
+    entidadeAlvo?: string | null;
+    donoDocumentoOuDado?: string | null;
+    documentoEntregue?: boolean;
+    titularDocumento?: string | null;
+  }
 ): { textoValidado: string; interceptado: boolean; motivo?: string } {
   const msgNorm = normalizarParaBusca(mensagemUsuario);
   const respNorm = normalizarParaBusca(textoResposta);
 
-  // Se a própria resposta já afirma que não encontrou, está em total conformidade
-  if (/\bn[aã]o\s+encontrei\b/i.test(respNorm) || /\bfora\s+do\s+meu\s+escopo\b/i.test(respNorm)) {
+  const MSG_HONESTA_GUARDRAIL = 'Tive um problema ao validar a resposta, tente de novo.';
+
+  // Se a própria resposta já afirma que não encontrou ou mensagem honesta, está em total conformidade
+  if (
+    /\bn[aã]o\s+encontrei\b/i.test(respNorm) ||
+    /\bfora\s+do\s+meu\s+escopo\b/i.test(respNorm) ||
+    respNorm.includes('tive um problema ao validar a resposta')
+  ) {
     return { textoValidado: textoResposta, interceptado: false };
   }
 
@@ -1723,8 +1735,6 @@ export function validarCorrespondenciaCampoResposta(
   const titularExplicito = extrairTitularExplicito(msgNorm);
   const matchPessoa = mensagemUsuario.match(/\bd[eoa]\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+)/);
   const nomePessoa = titularExplicito || (matchPessoa ? matchPessoa[1] : '');
-  const prep = (nomePessoa.toLowerCase().endsWith('a') || nomePessoa.toLowerCase().endsWith('eia')) ? 'da' : 'do';
-  const pessoaFormatada = nomePessoa ? ` ${prep} *${nomePessoa}*` : '';
 
   // 1. TÍTULO DE ELEITOR / TÍTULO ELEITORAL
   const pedeTituloEleitor = /\b(t[ií]tulo(\s*de)?\s*eleitor(al)?|n[uú]mero\s*do\s*t[ií]tulo)\b/i.test(msgNorm);
@@ -1733,7 +1743,7 @@ export function validarCorrespondenciaCampoResposta(
     const falaDeFiliacaoOuOutro = /\b(m[aã]e|pai|pais|filia[cç][aã]o|cpf|rg|nascid|nascimento)\b/i.test(respNorm);
     if (!mencionaTitulo && falaDeFiliacaoOuOutro) {
       return {
-        textoValidado: `Não encontrei o título de eleitor${pessoaFormatada} nos documentos.`,
+        textoValidado: MSG_HONESTA_GUARDRAIL,
         interceptado: true,
         motivo: 'Usuário perguntou título de eleitor, mas a resposta continha outro campo cadastral divergente.',
       };
@@ -1747,7 +1757,7 @@ export function validarCorrespondenciaCampoResposta(
     const falaDeOutro = /\b(m[aã]e|pai|pais|filia[cç][aã]o|cpf|rg|nascid|nascimento|cnh)\b/i.test(respNorm);
     if (!mencionaPis && falaDeOutro) {
       return {
-        textoValidado: `Não encontrei o PIS${pessoaFormatada} nos documentos.`,
+        textoValidado: MSG_HONESTA_GUARDRAIL,
         interceptado: true,
         motivo: 'Usuário perguntou PIS, mas a resposta continha outro campo cadastral divergente.',
       };
@@ -1761,7 +1771,7 @@ export function validarCorrespondenciaCampoResposta(
     const falaDeNascimentoOuFiliacao = /\b(nascimento|nascid|m[aã]e|pai|pais|filia[cç][aã]o)\b/i.test(respNorm);
     if (!mencionaReservista && falaDeNascimentoOuFiliacao) {
       return {
-        textoValidado: `Não encontrei a carteira de reservista${pessoaFormatada} nos documentos.`,
+        textoValidado: MSG_HONESTA_GUARDRAIL,
         interceptado: true,
         motivo: 'Usuário perguntou carteira de reservista, mas a resposta continha dados de nascimento/filiação.',
       };
@@ -1775,7 +1785,7 @@ export function validarCorrespondenciaCampoResposta(
     const falaDeCasamento = /\bcasamento\b/i.test(respNorm);
     if (!mencionaNascimento && falaDeCasamento) {
       return {
-        textoValidado: `Não encontrei a certidão de nascimento${pessoaFormatada} no Cofre.`,
+        textoValidado: MSG_HONESTA_GUARDRAIL,
         interceptado: true,
         motivo: 'Usuário perguntou certidão de nascimento, mas a resposta entregou certidão de casamento.',
       };
@@ -1786,9 +1796,13 @@ export function validarCorrespondenciaCampoResposta(
   const pedePassaporte = /\bpassaporte\b/i.test(msgNorm);
   if (pedePassaporte) {
     const mencionaPassaporte = /\bpassaporte\b/i.test(respNorm);
-    if (!mencionaPassaporte) {
+    const docEntregueEhPassaporte = contextoEntrega?.documentoEntregue && (
+      (contextoEntrega?.donoDocumentoOuDado || '').toLowerCase().includes('passaporte') ||
+      (contextoEntrega?.titularDocumento || '').toLowerCase().includes('passaporte')
+    );
+    if (!mencionaPassaporte && !docEntregueEhPassaporte) {
       return {
-        textoValidado: `Não encontrei o passaporte${pessoaFormatada} nos documentos.`,
+        textoValidado: MSG_HONESTA_GUARDRAIL,
         interceptado: true,
         motivo: 'Usuário perguntou passaporte, mas a resposta continha outro documento ou campo.',
       };
@@ -1802,30 +1816,65 @@ export function validarCorrespondenciaCampoResposta(
     const afirmaNascimento = /\b(data\s*de\s*nascimento|nasceu\s*em)\b/i.test(respNorm);
     if (!mencionaDispensa && afirmaNascimento) {
       return {
-        textoValidado: `Não encontrei a data de dispensa do serviço militar${pessoaFormatada} nos documentos.`,
+        textoValidado: MSG_HONESTA_GUARDRAIL,
         interceptado: true,
         motivo: 'Usuário perguntou data de dispensa militar, mas a resposta entregou data de nascimento.',
       };
     }
   }
 
-  // 7. PESSOA ESPECÍFICA CITADA VS DADOS DE OUTRA PESSOA
+  // 7. PESSOA ESPECÍFICA CITADA VS DADOS DE OUTRA PESSOA (REGRA 17 ATUALIZADA)
   if (nomePessoa && nomePessoa.length >= 3) {
     const nomeNorm = nomePessoa.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    const primeiroNomeRemetente = (extrairPrimeiroNome(contato?.nome || '') || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    const naoMencionaPessoaPedida = !respNorm.includes(nomeNorm);
-    const atribuiAoRemetente = primeiroNomeRemetente && primeiroNomeRemetente !== nomeNorm && respNorm.includes(primeiroNomeRemetente);
-    if (naoMencionaPessoaPedida && atribuiAoRemetente) {
-      return {
-        textoValidado: `Não encontrei esse documento${pessoaFormatada} no Cofre.`,
-        interceptado: true,
-        motivo: `Usuário perguntou sobre ${nomePessoa}, mas a resposta atribuiu dados ao remetente (${contato?.nome}).`,
-      };
+    const donoDocNorm = (
+      contextoEntrega?.donoDocumentoOuDado ||
+      contextoEntrega?.titularDocumento ||
+      contextoEntrega?.entidadeAlvo ||
+      ''
+    )
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+
+    // Se o DONO do documento/dado entregue for igual ou compatível com a entidade alvo pedida, a regra NÃO dispara!
+    const donoBateComEntidadeAlvo = donoDocNorm && (donoDocNorm.includes(nomeNorm) || nomeNorm.includes(donoDocNorm));
+
+    if (!donoBateComEntidadeAlvo) {
+      const primeiroNomeRemetente = (extrairPrimeiroNome(contato?.nome || '') || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+
+      // A saudação inicial com o primeiro nome do contato ("João, segue...") é obrigatória na entrega
+      // e NUNCA pode ser interpretada como atribuição de dados ao remetente.
+      let respSemSaudacao = respNorm;
+      if (primeiroNomeRemetente) {
+        respSemSaudacao = respSemSaudacao.replace(
+          new RegExp(`^(?:ol[aá]|bom\\s*dia|boa\\s*tarde|boa\\s*noite)?\\s*${primeiroNomeRemetente}[,\\s!]+`, 'i'),
+          ''
+        );
+      }
+
+      const naoMencionaPessoaPedida = !respNorm.includes(nomeNorm);
+      const atribuiExpressamenteAoRemetente =
+        primeiroNomeRemetente &&
+        primeiroNomeRemetente !== nomeNorm &&
+        (new RegExp(`\\b(?:d[oe]|em\\s*nome\\s*d[oe]|documento\\s*d[oe]|dados\\s*d[oe])\\s+${primeiroNomeRemetente}\\b`, 'i').test(
+          respSemSaudacao
+        ) ||
+          new RegExp(`\\b(?:sua|seu)\\s+(?:cnh|cpf|rg|habilitacao|carteira|documento)\\b`, 'i').test(respSemSaudacao));
+
+      if (naoMencionaPessoaPedida && atribuiExpressamenteAoRemetente) {
+        return {
+          textoValidado: MSG_HONESTA_GUARDRAIL,
+          interceptado: true,
+          motivo: `Usuário perguntou sobre ${nomePessoa}, mas a resposta atribuiu dados ao remetente (${contato?.nome}).`,
+        };
+      }
     }
   }
 
-  // 8. PARENTESCO EM GERAL (pai, mãe, cônjuge, filho):
-  // NUNCA entregar os dados da pessoa base se pediu dados do parente!
+  // 8. PARENTESCO EM GERAL (pai, mãe, cônjuge, filho)
   const matchParente =
     msgNorm.match(/\b(pai|m[aã]e|c[oó]njuge|esposa|marido|filh[oa])\s+d[oae]\s+([a-z\s]+)/i) ||
     msgNorm.match(/\b(meu\s+pai|minha\s+m[aã]e|minha\s+esposa|meu\s+marido|meu\s+filho|minha\s+filha)\b/i);
@@ -1834,7 +1883,6 @@ export function validarCorrespondenciaCampoResposta(
     const nomeBase = matchParente[2] ? matchParente[2].trim() : (contato?.nome || '');
     const primeiroNomeBase = (extrairPrimeiroNome(nomeBase) || nomeBase).toLowerCase();
 
-    // Se a mensagem pediu endereço ou dados do parente
     const pedeEnderecoOuDado = /(?:endere[cç]|resid[eê]n|\bmora\b|\bmorando\b|\bcasa\b|\bbairro\b|\brua\b|cpf|rg|telefone|contato)/i.test(msgNorm);
     if (pedeEnderecoOuDado) {
       const mencionaParenteNaResposta = new RegExp(`\\b(${termoRel}|pai|m[aã]e|esposa|marido|filh[oa])\\b`, 'i').test(respNorm);
@@ -1842,13 +1890,10 @@ export function validarCorrespondenciaCampoResposta(
       const afirmaEnderecoDiretoSemParente = /\bo\s+endere[cç]o\s+d[oe]\s+[a-z]+\s+[eé]\b/i.test(respNorm) && !mencionaParenteNaResposta;
 
       if (afirmaEnderecoBase || afirmaEnderecoDiretoSemParente) {
-        const artParente = ['mãe', 'mae', 'esposa', 'filha'].some((x) => termoRel.includes(x)) ? 'da' : 'do';
-        const relExib = termoRel.includes('meu') || termoRel.includes('minha') ? termoRel : `${termoRel}`;
-        const titularExib = matchParente[2] ? ` d${artParente} ${matchParente[2].trim()}` : '';
         return {
-          textoValidado: `Não encontrei o endereço ${artParente} ${relExib}${titularExib} nos documentos.`,
+          textoValidado: MSG_HONESTA_GUARDRAIL,
           interceptado: true,
-          motivo: `Usuário pediu o endereço ${artParente} ${termoRel}, mas a resposta entregou dados ou endereços da pessoa base.`,
+          motivo: `Usuário pediu o endereço de parente (${termoRel}), mas a resposta entregou dados ou endereços da pessoa base.`,
         };
       }
     }
@@ -1863,7 +1908,7 @@ export function validarCorrespondenciaCampoResposta(
       const entregouComprovanteOuEndereco = /\b(aqui\s+est[aá]|segue\s+o|comprovante\s+de\s+resid[eê]ncia|em\s+anexo)\b/i.test(respNorm);
       if (entregouComprovanteOuEndereco && !respClean.includes(nomeRuaNorm)) {
         return {
-          textoValidado: `Não encontrei comprovante de residência da ${matchRuaPedido[0]} no Cofre.`,
+          textoValidado: MSG_HONESTA_GUARDRAIL,
           interceptado: true,
           motivo: `Usuário pediu comprovante da ${matchRuaPedido[0]}, mas o documento ou endereço entregue é de outra rua.`,
         };
@@ -1878,7 +1923,7 @@ export function validarCorrespondenciaCampoResposta(
     const mencionaFrontier = /\bfrontier\b/i.test(respNorm);
     if (mencionaAmarok && !mencionaFrontier) {
       return {
-        textoValidado: 'Não encontrei o documento da Nissan Frontier no Cofre. Tenho o da caminhonete Amarok, quer esse?',
+        textoValidado: MSG_HONESTA_GUARDRAIL,
         interceptado: true,
         motivo: 'Usuário pediu documento da Nissan Frontier, mas a resposta entregou a Amarok.',
       };
@@ -1893,10 +1938,8 @@ export function validarCorrespondenciaCampoResposta(
     const naoDisseQueNaoTemDoc = !/\b(n[aã]o\s+tenho\s+o\s+t[ií]tulo|n[aã]o\s+encontrei\s+o\s+documento)\b/i.test(respNorm);
 
     if (citaIR && afirmaEncontrouDoc && naoDisseQueNaoTemDoc) {
-      const matchNum = textoResposta.match(/\b\d{10,14}\b/) || textoResposta.match(/(?:número|nº|numero)[:\s]*([0-9\s.-]+)/i);
-      const numeroTexto = matchNum ? `: ${matchNum[1] || matchNum[0]}` : '';
       return {
-        textoValidado: `Não tenho o título de eleitor no Cofre, mas o número aparece na Declaração de IR${numeroTexto}. Anotei na lista de documentos pendentes.`,
+        textoValidado: MSG_HONESTA_GUARDRAIL,
         interceptado: true,
         motivo: 'Usuário pediu o documento físico do título de eleitor, mas a resposta entregou como se fosse o documento em vez de separar documento x dado.',
       };
@@ -6439,6 +6482,7 @@ Existe uma ação na Base de Conhecimento AGUARDANDO CONFIRMAÇÃO do usuário:
                   id: docEscolhido.id,
                   titulo: docEscolhido.titulo,
                   tipo: docEscolhido.tipo,
+                  titular: docEscolhido.titular || undefined,
                   similaridade: 1.0,
                   usadoNaResposta: true,
                 },
@@ -7307,7 +7351,8 @@ ${statusSaudacao}
   if (!checagemSeguranca.aprovado) {
     const respostaOriginalIa = respostaTextoFinal;
     console.warn(`[VEGA Segurança 🛡️] Bloqueio anti-invenção ativado: ${checagemSeguranca.motivo}`);
-    respostaTextoFinal = 'Não encontrei essa informação nos documentos.';
+    const mensagemHonesta = 'Tive um problema ao validar a resposta, tente de novo.';
+    respostaTextoFinal = mensagemHonesta;
     etapasRastro.push({
       ordem: ordemEtapa++,
       nome: 'Guardrail Ativado: verificarSegurancaDadosPessoais',
@@ -7315,9 +7360,10 @@ ${statusSaudacao}
       tempoMs: 1,
       detalhes: {
         guardrail: 'verificarSegurancaDadosPessoais',
+        regra_bloqueou: 'Rede de Segurança Anti-Invenção',
         motivo: checagemSeguranca.motivo,
-        respostaOriginalIa,
-        respostaFinalEnviada: respostaTextoFinal,
+        texto_original_bloqueado: respostaOriginalIa,
+        resposta_final_enviada: mensagemHonesta,
         dadoSuspeito: checagemSeguranca.dadoSuspeito,
       },
     });
@@ -7434,29 +7480,61 @@ export async function processarMensagemChat(dados: {
     };
   }
 
+  // 3. EXTRAÇÃO DO CONTEXTO DE ENTREGA PARA O GUARDRAIL REGRA 17
+  let donoDocOuDado: string | null = null;
+  let entidadeAlvoRoteador: string | null = null;
+
+  if (resultado.rastro) {
+    const etapaRoteador = resultado.rastro.etapas.find(
+      (e) => e.detalhes?.entidade_identificada || e.detalhes?.entidade_alvo
+    );
+    if (etapaRoteador) {
+      entidadeAlvoRoteador =
+        etapaRoteador.detalhes?.entidade_identificada ||
+        etapaRoteador.detalhes?.entidade_alvo ||
+        null;
+    }
+    const docFonte = resultado.rastro.documentosEncontrados?.[0];
+    if (docFonte) {
+      donoDocOuDado = (docFonte as any).titular || null;
+    }
+  }
+
   // GUARDRAIL FINAL (REGRA 17): Validação estrita de correspondência de campo
-  const checagemCampo = validarCorrespondenciaCampoResposta(dados.mensagemUsuario, resultado.textoResposta, dados.contato);
+  const checagemCampo = validarCorrespondenciaCampoResposta(
+    dados.mensagemUsuario,
+    resultado.textoResposta,
+    dados.contato,
+    {
+      entidadeAlvo: entidadeAlvoRoteador,
+      donoDocumentoOuDado: donoDocOuDado,
+      documentoEntregue: Boolean(resultado.anexos && resultado.anexos.length > 0),
+    }
+  );
+
   if (checagemCampo.interceptado) {
     const respostaOriginalIa = resultado.textoResposta;
-    console.warn(`[VEGA Guardrail] Resposta interceptada pela Regra 17: ${checagemCampo.motivo}`);
-    resultado.textoResposta = checagemCampo.textoValidado;
+    console.warn(`[VEGA Guardrail ⚠️] Resposta interceptada pela Regra 17: ${checagemCampo.motivo}`);
+    const mensagemHonesta = 'Tive um problema ao validar a resposta, tente de novo.';
+    resultado.textoResposta = mensagemHonesta;
     if (resultado.anexos && resultado.anexos.length > 0) {
       resultado.anexos = [];
     }
     if (resultado.rastro) {
-      resultado.rastro.respostaFinal = checagemCampo.textoValidado;
+      resultado.rastro.respostaFinal = mensagemHonesta;
       resultado.rastro.enviouAnexo = false;
       resultado.rastro.anexosDetalhes = [];
       resultado.rastro.etapas.push({
         ordem: resultado.rastro.etapas.length + 1,
-        nome: 'Guardrail Ativado: validarCorrespondenciaCampoResposta (Regra 17)',
-        descricao: `Resposta interceptada e corrigida: ${checagemCampo.motivo}`,
+        nome: 'Guardrail Ativado: Regra 17 (Correspondência de Campo)',
+        descricao: `Resposta interceptada: ${checagemCampo.motivo}`,
         tempoMs: 1,
         detalhes: {
-          guardrail: 'validarCorrespondenciaCampoResposta',
+          guardrail: 'validarCorrespondenciaCampoResposta (Regra 17)',
+          regra_bloqueou: 'Regra 17',
           motivo: checagemCampo.motivo,
-          respostaOriginalIa,
-          respostaFinalEnviada: checagemCampo.textoValidado,
+          texto_original_bloqueado: respostaOriginalIa,
+          resposta_final_enviada: mensagemHonesta,
         },
       });
     }

@@ -469,6 +469,7 @@ export interface DocumentoRastro {
   id?: string;
   titulo: string;
   tipo?: string;
+  titular?: string;
   similaridade?: number;
   pagina?: number;
   trecho?: string;
