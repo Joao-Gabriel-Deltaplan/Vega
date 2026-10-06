@@ -69,6 +69,12 @@ import { criarAnexoParaDocumento, gerarPdfDeMarkdown } from '../pdfService.js';
 import { mascararDadosSensiveis, mascararDocumento, truncarTrecho } from '../utils/segurancaUtils.js';
 import { gerarLinksNavegacao } from '../utils/geoLinks.js';
 import { salvarRastro } from '../rastros/rastroService.js';
+import {
+  executarRoteadorIa,
+  executarBuscaRestrita,
+  responderComTrechosRestritos,
+  DecisaoRoteador,
+} from '../busca/roteadorBuscaService.js';
 
 export function normalizarParaComparacao(s: string): string {
   return (s || '')
@@ -6361,6 +6367,389 @@ Existe uma ação na Base de Conhecimento AGUARDANDO CONFIRMAÇÃO do usuário:
   const todosDocs = dados.documentosDisponiveis && dados.documentosDisponiveis.length > 0
     ? dados.documentosDisponiveis
     : await obterTodosDocumentos();
+
+  // 3.6. ORQUESTRAÇÃO EM DUAS ETAPAS: ROTEADOR DA BUSCA (ETAPA A) E BUSCA RESTRITA (ETAPA B)
+  const todosConhecimentosDisponiveis = await obterTodosConhecimentos();
+  const emAcaoPendenteDado = pendenciaAtivaK && pendenciaAtivaK.status === 'aguardando_dado_faltante';
+
+  let decisaoRoteador: DecisaoRoteador | null = null;
+  if (!emAcaoPendenteDado && mensagemUsuario.trim()) {
+    try {
+      const inicioRoteador = Date.now();
+      decisaoRoteador = await executarRoteadorIa({
+        mensagemUsuario,
+        historicoRecente: historicoPassado,
+        contato,
+        todosDocs,
+        todosConhecimentos: todosConhecimentosDisponiveis,
+        abortSignal: dados.abortSignal,
+      });
+
+      console.log(
+        `[RoteadorBusca 🎯] Intenção: ${decisaoRoteador.intencao} | Entidade: ${decisaoRoteador.entidade_alvo || 'N/A'} | Docs: [${decisaoRoteador.documentos_escolhidos.join(', ')}] | Justificativa: ${decisaoRoteador.justificativa}`
+      );
+
+      // TRATAMENTO DA INTENÇÃO 1: entregar_arquivo
+      if (decisaoRoteador.intencao === 'entregar_arquivo') {
+        const tempoRoteador = Date.now() - inicioRoteador;
+        if (decisaoRoteador.documentos_escolhidos.length > 0) {
+          const docIdEscolhido = decisaoRoteador.documentos_escolhidos[0];
+          const docEscolhido = todosDocs.find((d) => d.id === docIdEscolhido);
+          if (docEscolhido) {
+            const anexo = await criarAnexoParaDocumento(docEscolhido);
+            const textoResposta = formatarFraseAcompanhamento(
+              docEscolhido.titulo,
+              contato.nome,
+              docEscolhido.titular
+            );
+
+            const etapasRastroRoteador: EtapaRastro[] = [
+              {
+                ordem: 1,
+                nome: 'Roteador da Busca (Etapa A)',
+                descricao: `Classificado como entrega de arquivo. Documento selecionado: "${docEscolhido.titulo}".`,
+                tempoMs: tempoRoteador,
+                detalhes: {
+                  entidade_identificada: decisaoRoteador.entidade_alvo,
+                  intencao: decisaoRoteador.intencao,
+                  documentos_escolhidos: decisaoRoteador.documentos_escolhidos,
+                  documento_entregue: docEscolhido.titulo,
+                  justificativa: decisaoRoteador.justificativa,
+                  trechos_retornados: [
+                    {
+                      doc: docEscolhido.titulo,
+                      score: 1.0,
+                      origem: 'catalogo_roteador',
+                    },
+                  ],
+                },
+              },
+            ];
+
+            const rastro: RastroRegistro = {
+              mensagemId: '',
+              usuarioNome: contato.nome,
+              usuarioId: contato.id,
+              mensagemOriginal: mensagemUsuario,
+              perguntaReescrita: mensagemUsuario,
+              intencaoDetectada: 'pedir_arquivo',
+              tipoBusca: 'roteador_busca_restrita',
+              documentosEncontrados: [
+                {
+                  id: docEscolhido.id,
+                  titulo: docEscolhido.titulo,
+                  tipo: docEscolhido.tipo,
+                  similaridade: 1.0,
+                  usadoNaResposta: true,
+                },
+              ],
+              enviouAnexo: true,
+              anexosDetalhes: [
+                {
+                  nome: anexo.nome,
+                  titulo: anexo.titulo,
+                  tamanho: anexo.tamanho,
+                  tipo: anexo.tipo,
+                },
+              ],
+              respostaFinal: mascararDadosSensiveis(textoResposta),
+              modeloUsado: chatModel,
+              tokensTotal: 0,
+              tokensPrompt: 0,
+              tokensCompletion: 0,
+              custoEstimadoUsd: 0,
+              tempoTotalMs: Date.now() - inicioTotal,
+              etapas: etapasRastroRoteador,
+            };
+
+            return {
+              textoResposta,
+              anexos: [anexo],
+              origem: 'motor',
+              intencaoDetectada: 'pedir_arquivo',
+              perguntaReescrita: docEscolhido.titulo,
+              rastro,
+            };
+          }
+        }
+
+        // Se a intenção é entregar_arquivo mas documentos_escolhidos está vazio (ou não achou no Cofre)
+        const textoNaoEncontrado = decisaoRoteador.entidade_alvo
+          ? `Não encontrei esse documento de ${decisaoRoteador.entidade_alvo} no Cofre.`
+          : 'Não encontrei esse documento no Cofre.';
+
+        const etapasRastroRoteador: EtapaRastro[] = [
+          {
+            ordem: 1,
+            nome: 'Roteador da Busca (Etapa A)',
+            descricao: `Documento solicitado não existe no Cofre para a entidade "${decisaoRoteador.entidade_alvo || 'N/A'}".`,
+            tempoMs: tempoRoteador,
+            detalhes: {
+              entidade_identificada: decisaoRoteador.entidade_alvo,
+              intencao: decisaoRoteador.intencao,
+              documentos_escolhidos: [],
+              justificativa: decisaoRoteador.justificativa,
+              trechos_retornados: [],
+            },
+          },
+        ];
+
+        const rastro: RastroRegistro = {
+          mensagemId: '',
+          usuarioNome: contato.nome,
+          usuarioId: contato.id,
+          mensagemOriginal: mensagemUsuario,
+          perguntaReescrita: mensagemUsuario,
+          intencaoDetectada: 'pedir_arquivo',
+          tipoBusca: 'roteador_busca_restrita',
+          documentosEncontrados: [],
+          enviouAnexo: false,
+          anexosDetalhes: [],
+          respostaFinal: mascararDadosSensiveis(textoNaoEncontrado),
+          modeloUsado: chatModel,
+          tokensTotal: 0,
+          tokensPrompt: 0,
+          tokensCompletion: 0,
+          custoEstimadoUsd: 0,
+          tempoTotalMs: Date.now() - inicioTotal,
+          etapas: etapasRastroRoteador,
+        };
+
+        return {
+          textoResposta: textoNaoEncontrado,
+          origem: 'motor',
+          intencaoDetectada: 'pedir_arquivo',
+          perguntaReescrita: mensagemUsuario,
+          rastro,
+        };
+      }
+
+      // TRATAMENTO DA INTENÇÃO 2: responder_dado
+      if (decisaoRoteador.intencao === 'responder_dado') {
+        const tempoInicioB = Date.now();
+
+        // 2.1 Item de Conhecimento escolhido
+        const itemK = todosConhecimentosDisponiveis.find((k) =>
+          decisaoRoteador!.documentos_escolhidos.includes(k.id)
+        );
+        if (itemK) {
+          let textoResp = '';
+          const titK = itemK.titulo;
+          const titLower = titK.toLowerCase();
+          if (titLower.includes('escritório central') || titLower.includes('escritorio central')) {
+            const dEst = itemK.dadosEstruturados as any;
+            const end = dEst?.endereco || itemK.conteudo;
+            textoResp = `O endereço do Escritório Central da Delta Plan é:\n${end}\n\n(Fonte: Base de Conhecimento - ${titK})`;
+          } else {
+            textoResp = `${itemK.conteudo}\n\n(Fonte: Base de Conhecimento - ${titK})`;
+          }
+
+          const etapasRastroK: EtapaRastro[] = [
+            {
+              ordem: 1,
+              nome: 'Roteador da Busca (Etapa A)',
+              descricao: `Selecionado item de conhecimento: "${titK}". Justificativa: ${decisaoRoteador.justificativa}`,
+              tempoMs: tempoInicioB - inicioRoteador,
+              detalhes: {
+                entidade_identificada: decisaoRoteador.entidade_alvo,
+                intencao: decisaoRoteador.intencao,
+                documentos_escolhidos: [itemK.id],
+                justificativa: decisaoRoteador.justificativa,
+                trechos_retornados: [
+                  {
+                    doc: titK,
+                    score: 1.0,
+                    origem: 'base_conhecimento',
+                  },
+                ],
+              },
+            },
+          ];
+
+          const rastro: RastroRegistro = {
+            mensagemId: '',
+            usuarioNome: contato.nome,
+            usuarioId: contato.id,
+            mensagemOriginal: mensagemUsuario,
+            perguntaReescrita: mensagemUsuario,
+            intencaoDetectada: 'pergunta_conteudo',
+            tipoBusca: 'roteador_conhecimento',
+            documentosEncontrados: [],
+            enviouAnexo: false,
+            anexosDetalhes: [],
+            respostaFinal: mascararDadosSensiveis(textoResp),
+            modeloUsado: chatModel,
+            tokensTotal: 0,
+            tokensPrompt: 0,
+            tokensCompletion: 0,
+            custoEstimadoUsd: 0,
+            tempoTotalMs: Date.now() - inicioTotal,
+            etapas: etapasRastroK,
+          };
+
+          return {
+            textoResposta: textoResp,
+            origem: 'ia',
+            intencaoDetectada: 'pergunta_conteudo',
+            perguntaReescrita: titK,
+            rastro,
+          };
+        }
+
+        // 2.2 Busca Restrita (Etapa B) em documentos do Cofre
+        if (decisaoRoteador.documentos_escolhidos.length > 0) {
+          const trechosRestritos = await executarBuscaRestrita({
+            consulta: mensagemUsuario,
+            documentosIds: decisaoRoteador.documentos_escolhidos,
+            entidadeAlvo: decisaoRoteador.entidade_alvo,
+            todosDocs,
+            todosConhecimentos: todosConhecimentosDisponiveis,
+          });
+
+          if (trechosRestritos.length > 0) {
+            const respostaGerada = await responderComTrechosRestritos({
+              perguntaUsuario: mensagemUsuario,
+              trechos: trechosRestritos,
+              entidadeAlvo: decisaoRoteador.entidade_alvo,
+              contato,
+              abortSignal: dados.abortSignal,
+            });
+
+            const docsFontes: DocumentoRastro[] = trechosRestritos.map((t) => {
+              const d = todosDocs.find((doc) => doc.id === t.documento_id);
+              return {
+                id: t.documento_id,
+                titulo: t.titulo_documento,
+                tipo: d?.tipo || 'Documento',
+                similaridade: t.similaridade,
+                trecho: t.conteudo.slice(0, 300),
+                usadoNaResposta: true,
+              };
+            });
+
+            const etapasRastroB: EtapaRastro[] = [
+              {
+                ordem: 1,
+                nome: 'Roteador da Busca (Etapa A)',
+                descricao: `Entidade: "${decisaoRoteador.entidade_alvo || 'N/A'}". Documentos escolhidos: ${decisaoRoteador.documentos_escolhidos.length}. Justificativa: ${decisaoRoteador.justificativa}`,
+                tempoMs: tempoInicioB - inicioRoteador,
+                detalhes: {
+                  entidade_identificada: decisaoRoteador.entidade_alvo,
+                  intencao: decisaoRoteador.intencao,
+                  documentos_escolhidos: decisaoRoteador.documentos_escolhidos,
+                  justificativa: decisaoRoteador.justificativa,
+                },
+              },
+              {
+                ordem: 2,
+                nome: 'Busca Restrita e Resposta IA (Etapa B)',
+                descricao: `Encontrados ${trechosRestritos.length} trechos restritos aos documentos da entidade. Resposta sintetizada com sucesso.`,
+                tempoMs: Date.now() - tempoInicioB,
+                detalhes: {
+                  entidade_alvo: decisaoRoteador.entidade_alvo,
+                  documentos_consultados: decisaoRoteador.documentos_escolhidos,
+                  trechos_retornados: trechosRestritos.map((t) => ({
+                    documento: t.titulo_documento,
+                    score: t.similaridade,
+                    origem: t.origem,
+                    trecho: t.conteudo.slice(0, 200),
+                  })),
+                },
+              },
+            ];
+
+            const rastro: RastroRegistro = {
+              mensagemId: '',
+              usuarioNome: contato.nome,
+              usuarioId: contato.id,
+              mensagemOriginal: mensagemUsuario,
+              perguntaReescrita: mensagemUsuario,
+              intencaoDetectada: 'pergunta_conteudo',
+              tipoBusca: 'roteador_busca_restrita',
+              documentosEncontrados: docsFontes,
+              enviouAnexo: false,
+              anexosDetalhes: [],
+              respostaFinal: mascararDadosSensiveis(respostaGerada),
+              modeloUsado: chatModel,
+              tokensTotal: 0,
+              tokensPrompt: 0,
+              tokensCompletion: 0,
+              custoEstimadoUsd: 0,
+              tempoTotalMs: Date.now() - inicioTotal,
+              etapas: etapasRastroB,
+            };
+
+            return {
+              textoResposta: respostaGerada,
+              origem: 'ia',
+              intencaoDetectada: 'pergunta_conteudo',
+              perguntaReescrita: mensagemUsuario,
+              rastro,
+            };
+          }
+        }
+
+        // Se a intenção era responder_dado e não encontramos trechos ou a entidade não tem docs
+        // Aplica TRAVA DE ENTIDADE obrigatória
+        const textoBloqueioEntidade = decisaoRoteador.entidade_alvo
+          ? `Não encontrei essa informação nos documentos de ${decisaoRoteador.entidade_alvo} no Cofre.`
+          : 'Não encontrei essa informação nos documentos do Cofre.';
+
+        const etapasBloqueio: EtapaRastro[] = [
+          {
+            ordem: 1,
+            nome: 'Roteador da Busca e Trava de Entidade',
+            descricao: `Nenhum documento ou dado localizado para a entidade "${decisaoRoteador.entidade_alvo || 'N/A'}". Trava de entidade acionada.`,
+            tempoMs: Date.now() - inicioRoteador,
+            detalhes: {
+              entidade_identificada: decisaoRoteador.entidade_alvo,
+              intencao: decisaoRoteador.intencao,
+              documentos_escolhidos: decisaoRoteador.documentos_escolhidos,
+              justificativa: decisaoRoteador.justificativa,
+              trechos_retornados: [],
+            },
+          },
+        ];
+
+        const rastro: RastroRegistro = {
+          mensagemId: '',
+          usuarioNome: contato.nome,
+          usuarioId: contato.id,
+          mensagemOriginal: mensagemUsuario,
+          perguntaReescrita: mensagemUsuario,
+          intencaoDetectada: 'pergunta_conteudo',
+          tipoBusca: 'roteador_busca_restrita',
+          documentosEncontrados: [],
+          enviouAnexo: false,
+          anexosDetalhes: [],
+          respostaFinal: mascararDadosSensiveis(textoBloqueioEntidade),
+          modeloUsado: chatModel,
+          tokensTotal: 0,
+          tokensPrompt: 0,
+          tokensCompletion: 0,
+          custoEstimadoUsd: 0,
+          tempoTotalMs: Date.now() - inicioTotal,
+          etapas: etapasBloqueio,
+        };
+
+        return {
+          textoResposta: textoBloqueioEntidade,
+          origem: 'motor',
+          intencaoDetectada: 'pergunta_conteudo',
+          perguntaReescrita: mensagemUsuario,
+          rastro,
+        };
+      }
+    } catch (errRoteamento: any) {
+      if (dados.abortSignal?.aborted || errRoteamento?.name === 'AbortError') {
+        throw errRoteamento;
+      }
+      console.warn(
+        '[RoteadorBusca ⚠️] Erro durante roteamento prioritário, seguindo para fluxo normal:',
+        errRoteamento
+      );
+    }
+  }
 
   // 4. CONTEXTO DA CONVERSA E SAUDAÇÃO
   const ehPrimeiroContatoDoDia = verificarSeEhPrimeiroContatoDoDia(historicoPassado);

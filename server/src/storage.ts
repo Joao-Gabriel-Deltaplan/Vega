@@ -21,6 +21,7 @@ import {
 import { marcarDocumentoFaltanteComoProvidenciado } from './documentosFaltantesService.js';
 import { nomesSaoEquivalentesComTolerancia } from './utils/nomeUtils.js';
 import { gerarLinksNavegacao } from './utils/geoLinks.js';
+import { gerarApelidosParaDocumento } from './busca/roteadorBuscaService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -529,13 +530,21 @@ export async function salvarDocumentos(documentos: DocumentoRegistro[]): Promise
 export async function adicionarDocumento(documento: DocumentoRegistro): Promise<DocumentoRegistro> {
   try {
     const supabase = getSupabaseClient();
+    const apelidosSugeridos = gerarApelidosParaDocumento({
+      titulo: documento.titulo,
+      tipo: documento.tipo,
+      titular: documento.titular,
+      arquivo: documento.arquivo,
+    });
+    const apelidosFinais = Array.from(new Set([...(documento.apelidos || []), ...apelidosSugeridos]));
+
     const payload: any = {
       titulo: documento.titulo.trim(),
       arquivo: documento.arquivo.trim(),
       tipo: documento.tipo ? documento.tipo.trim() : 'Documento Pessoal',
       titular: documento.titular ? documento.titular.trim() : null,
       descricao: documento.descricao ? documento.descricao.trim() : null,
-      apelidos: documento.apelidos || [],
+      apelidos: apelidosFinais,
       visibilidade: documento.visibilidade || 'diretoria',
       tamanho: documento.tamanho ? documento.tamanho.trim() : null,
       status_indexacao: documento.statusIndexacao || 'indexado',
@@ -630,9 +639,16 @@ export async function atualizarDocumento(
     }
     if (dados.corporativo !== undefined) payload.corporativo = dados.corporativo;
     if (dados.descricao !== undefined) payload.descricao = dados.descricao.trim();
-    if (dados.visibilidade !== undefined) payload.visibilidade = dados.visibilidade;
-    if (dados.apelidos !== undefined) payload.apelidos = dados.apelidos;
-    if (dados.arquivo !== undefined) payload.arquivo = dados.arquivo.trim();
+    if (dados.apelidos !== undefined || dados.titulo !== undefined || dados.tipo !== undefined) {
+      const apelidosAuto = gerarApelidosParaDocumento({
+        titulo: dados.titulo || '',
+        tipo: dados.tipo || '',
+        titular: dados.titular || '',
+        arquivo: dados.arquivo || '',
+      });
+      const atuais = Array.isArray(dados.apelidos) ? dados.apelidos : [];
+      payload.apelidos = Array.from(new Set([...atuais, ...apelidosAuto]));
+    }
     if (dados.tamanho !== undefined) payload.tamanho = dados.tamanho.trim();
     if (dados.dataValidade !== undefined) payload.data_validade = dados.dataValidade;
     if (dados.origemValidade !== undefined) payload.origem_validade = dados.origemValidade;
