@@ -6455,35 +6455,52 @@ Existe uma ação na Base de Conhecimento AGUARDANDO CONFIRMAÇÃO do usuário:
       if (decisaoRoteador.intencao === 'entregar_arquivo') {
         const tempoRoteador = Date.now() - inicioRoteador;
         if (decisaoRoteador.documentos_escolhidos.length > 0) {
-          const docIdEscolhido = decisaoRoteador.documentos_escolhidos[0];
-          const docEscolhido = todosDocs.find((d) => d.id === docIdEscolhido);
-          if (docEscolhido) {
-            const anexo = await criarAnexoParaDocumento(docEscolhido);
-            const textoResposta = formatarFraseAcompanhamento(
-              docEscolhido.titulo,
-              contato.nome,
-              docEscolhido.titular
-            );
+          const docsEscolhidos: DocumentoRegistro[] = [];
+          for (const docId of decisaoRoteador.documentos_escolhidos) {
+            const d = todosDocs.find((doc) => doc.id === docId);
+            if (d && !docsEscolhidos.some((existente) => existente.id === d.id)) {
+              docsEscolhidos.push(d);
+            }
+          }
+
+          if (docsEscolhidos.length > 0) {
+            const anexos: Anexo[] = [];
+            for (const doc of docsEscolhidos) {
+              const anexo = await criarAnexoParaDocumento(doc);
+              anexos.push(anexo);
+            }
+
+            let textoResposta = '';
+            if (docsEscolhidos.length === 1) {
+              textoResposta = formatarFraseAcompanhamento(
+                docsEscolhidos[0].titulo,
+                contato.nome,
+                docsEscolhidos[0].titular
+              );
+            } else {
+              const primeiroNome = extrairPrimeiroNome(contato?.nome || '');
+              const saudacao = primeiroNome ? `${primeiroNome}, segue` : 'Segue';
+              const nomesDocs = docsEscolhidos.map((d) => `*${d.titulo}*`).join(' e ');
+              textoResposta = `${saudacao} os documentos solicitados em anexo (${nomesDocs}).`;
+            }
 
             const etapasRastroRoteador: EtapaRastro[] = [
               {
                 ordem: 1,
                 nome: 'Roteador da Busca (Etapa A)',
-                descricao: `Classificado como entrega de arquivo. Documento selecionado: "${docEscolhido.titulo}".`,
+                descricao: `Classificado como entrega de arquivo. ${docsEscolhidos.length} documento(s) selecionado(s): ${docsEscolhidos.map((d) => `"${d.titulo}"`).join(', ')}.`,
                 tempoMs: tempoRoteador,
                 detalhes: {
                   entidade_identificada: decisaoRoteador.entidade_alvo,
                   intencao: decisaoRoteador.intencao,
                   documentos_escolhidos: decisaoRoteador.documentos_escolhidos,
-                  documento_entregue: docEscolhido.titulo,
+                  documentos_entregues: docsEscolhidos.map((d) => d.titulo),
                   justificativa: decisaoRoteador.justificativa,
-                  trechos_retornados: [
-                    {
-                      doc: docEscolhido.titulo,
-                      score: 1.0,
-                      origem: 'catalogo_roteador',
-                    },
-                  ],
+                  trechos_retornados: docsEscolhidos.map((d) => ({
+                    doc: d.titulo,
+                    score: 1.0,
+                    origem: 'catalogo_roteador',
+                  })),
                 },
               },
             ];
@@ -6496,25 +6513,21 @@ Existe uma ação na Base de Conhecimento AGUARDANDO CONFIRMAÇÃO do usuário:
               perguntaReescrita: mensagemUsuario,
               intencaoDetectada: 'pedir_arquivo',
               tipoBusca: 'roteador_busca_restrita',
-              documentosEncontrados: [
-                {
-                  id: docEscolhido.id,
-                  titulo: docEscolhido.titulo,
-                  tipo: docEscolhido.tipo,
-                  titular: docEscolhido.titular || undefined,
-                  similaridade: 1.0,
-                  usadoNaResposta: true,
-                },
-              ],
+              documentosEncontrados: docsEscolhidos.map((d) => ({
+                id: d.id,
+                titulo: d.titulo,
+                tipo: d.tipo,
+                titular: d.titular || undefined,
+                similaridade: 1.0,
+                usadoNaResposta: true,
+              })),
               enviouAnexo: true,
-              anexosDetalhes: [
-                {
-                  nome: anexo.nome,
-                  titulo: anexo.titulo,
-                  tamanho: anexo.tamanho,
-                  tipo: anexo.tipo,
-                },
-              ],
+              anexosDetalhes: anexos.map((anexo) => ({
+                nome: anexo.nome,
+                titulo: anexo.titulo,
+                tamanho: anexo.tamanho,
+                tipo: anexo.tipo,
+              })),
               respostaFinal: mascararDadosSensiveis(textoResposta),
               modeloUsado: chatModel,
               tokensTotal: 0,
@@ -6527,10 +6540,10 @@ Existe uma ação na Base de Conhecimento AGUARDANDO CONFIRMAÇÃO do usuário:
 
             return {
               textoResposta,
-              anexos: [anexo],
+              anexos,
               origem: 'motor',
               intencaoDetectada: 'pedir_arquivo',
-              perguntaReescrita: docEscolhido.titulo,
+              perguntaReescrita: docsEscolhidos.map((d) => d.titulo).join(', '),
               rastro,
             };
           }

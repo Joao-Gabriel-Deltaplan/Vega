@@ -378,11 +378,12 @@ export async function executarRoteadorIa(params: {
   // Histórico resumido das últimas 6 mensagens
   const ultimasMsgs = (historicoRecente || [])
     .slice(-6)
-    .map((m) => `${m.remetente === 'cliente' ? 'Usuário' : 'VEGA'}: "${m.texto}"`)
+    .map((m) => `${m.remetente === 'cliente' ? 'Usuário' : 'VEGA'}: "${m.texto || ''}"`)
     .join('\n');
 
   const promptSistema = `Você é o ROTEADOR CENTRAL DA VEGA (Delta Plan).
 Sua missão é classificar a intenção da mensagem do usuário e escolher com máxima precisão os documentos ou itens de conhecimento que devem ser usados.
+Use o histórico para entender referências a algo já dito na conversa (documentos, pessoas ou empresas mencionados antes).
 
 QUEM ESTÁ FALANDO (CONTATO ATUAL):
 - Nome: "${contato.nome}"
@@ -396,6 +397,7 @@ CATÁLOGO COMPACTO DISPONÍVEL (COFRE E CONHECIMENTO):
 ${textoCatalogo}
 
 DIRETRIZES OBRIGATÓRIAS DE ROTEAMENTO:
+- Use o histórico para entender referências a algo já dito na conversa (documentos, pessoas ou empresas mencionados antes).
 
 1. INTENÇÃO:
    - "entregar_arquivo": quando o usuário pede explicitamente para enviar, mandar, baixar, ver, soltar ou solicita um arquivo/documento físico (ex.: "preciso da minha CNH", "manda minha carteira de motorista", "me manda a certidão", "manda o pdf", "solta esse arquivo").
