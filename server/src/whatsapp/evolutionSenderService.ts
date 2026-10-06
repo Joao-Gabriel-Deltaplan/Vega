@@ -65,6 +65,98 @@ export function normalizarDestinatarioEvolution(destinatarioRaw: string): string
 }
 
 /**
+ * Converte texto formatado em Markdown para o formato nativo do WhatsApp.
+ * Aplicado SOMENTE no envio pela Evolution API (texto e legenda de anexo),
+ * como último passo antes do envio.
+ * O painel web e o banco de dados continuam recebendo e armazenando o Markdown original.
+ *
+ * Conversões aplicadas:
+ * - [texto](url) → texto: url
+ * - Proteção estrita de URLs (nada dentro de URLs é alterado)
+ * - Títulos (#, ##, ###) → *texto* em negrito, sem os #
+ * - Marcadores "- " ou "* " no início da linha → "• "
+ * - **texto** ou __texto__ → *texto*
+ * - ~~texto~~ → ~texto~
+ * - Remoção de espaços entre o asterisco e a palavra (ex.: "* texto *" → "*texto*")
+ */
+export function converterMarkdownParaWhatsApp(texto: string): string {
+  if (!texto || typeof texto !== 'string') return '';
+
+  let resultado = texto;
+
+  // 1. Converte links Markdown [texto](url) -> texto: url e protege a URL extraída
+  const urlsMascaradas: string[] = [];
+
+  resultado = resultado.replace(
+    /\[([^\]\n]+)\]\([ \t]*((?:https?:\/\/|[a-zA-Z0-9+.-]+:\/\/|[^\s\)])+?)[ \t]*\)/g,
+    (_match, textoLink, urlLink) => {
+      const token = `@@VEGA_URL_TOKEN_${urlsMascaradas.length}@@`;
+      urlsMascaradas.push(urlLink.trim());
+      return `${textoLink.trim()}: ${token}`;
+    }
+  );
+
+  // 2. Protege quaisquer outras URLs soltas no texto antes das transformações
+  const regexUrlSolta = /\b(?:https?|ftp):\/\/[^\s<>"'{}|\\^`]+[^\s<>"'{}|\\^`.,;:!?)\]]/gi;
+  resultado = resultado.replace(regexUrlSolta, (urlEncontrada) => {
+    const token = `@@VEGA_URL_TOKEN_${urlsMascaradas.length}@@`;
+    urlsMascaradas.push(urlEncontrada.trim());
+    return token;
+  });
+
+  // 3. Títulos Markdown (#, ##, ###, etc.) no início da linha -> *texto* em negrito, sem os #
+  resultado = resultado.replace(/^(#{1,6})[ \t]+(.+?)[ \t]*$/gm, (_match, _hashes, titulo) => {
+    // Remove asteriscos ou underscores já existentes nas bordas para evitar asteriscos duplicados
+    const tituloLimpo = titulo.trim().replace(/^[*_]+|[*_]+$/g, '').trim();
+    return `*${tituloLimpo}*`;
+  });
+
+  // 4. Marcadores "- " ou "* " no início da linha -> "• " (preserva indentação existente)
+  resultado = resultado.replace(/^([ \t]*)[-*][ \t]+/gm, '$1• ');
+
+  // 5. Negrito Markdown: **texto** ou __texto__ -> *texto*
+  // Também limpa espaços internos (ex.: ** texto ** -> *texto*)
+  resultado = resultado.replace(/\*\*\*([ \t]*)([^*\n]+?)([ \t]*)\*\*\*/g, (_match, _s1, conteudo) => {
+    return `*${conteudo.trim()}*`;
+  });
+  resultado = resultado.replace(/\*\*([ \t]*)([^*\n]+?)([ \t]*)\*\*/g, (_match, _s1, conteudo) => {
+    return `*${conteudo.trim()}*`;
+  });
+  resultado = resultado.replace(/___([ \t]*)([^_\n]+?)([ \t]*)___/g, (_match, _s1, conteudo) => {
+    return `*${conteudo.trim()}*`;
+  });
+  resultado = resultado.replace(/__([ \t]*)([^_\n]+?)([ \t]*)__/g, (_match, _s1, conteudo) => {
+    return `*${conteudo.trim()}*`;
+  });
+
+  // 6. Tachado Markdown: ~~texto~~ -> ~texto~
+  resultado = resultado.replace(/~~([ \t]*)([^~\n]+?)([ \t]*)~~/g, (_match, _s1, conteudo) => {
+    return `~${conteudo.trim()}~`;
+  });
+
+  // 7. Remover espaços entre o asterisco e a palavra (ex.: "* texto *" -> "*texto*")
+  // senão o WhatsApp não aplica o negrito
+  resultado = resultado.replace(
+    /(?<=^|[\s(\[{"'])\*(?:[ \t]+([^*\n]+?)|([^*\n]+?)[ \t]+)\*(?=$|[\s)\]}"'.,;:!?])/g,
+    (_match, p1, p2) => {
+      const conteudo = (p1 || p2 || '').trim();
+      return `*${conteudo}*`;
+    }
+  );
+
+  // Limpeza de asteriscos duplicados remanescentes (** -> *)
+  resultado = resultado.replace(/\*{2,}/g, '*');
+
+  // 8. Restaura todas as URLs originais intactas
+  for (let i = 0; i < urlsMascaradas.length; i++) {
+    const token = `@@VEGA_URL_TOKEN_${i}@@`;
+    resultado = resultado.split(token).join(urlsMascaradas[i]);
+  }
+
+  return resultado;
+}
+
+/**
  * Envia uma mensagem de texto simples via Evolution API.
  * Endpoint: POST {EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE}
  */
@@ -74,11 +166,12 @@ export async function enviarTextoEvolution(
 ): Promise<ResultadoEnvioEvolution> {
   const config = obterConfigEvolution();
   const numeroNormalizado = normalizarDestinatarioEvolution(destinatario);
+  const textoFormatado = converterMarkdownParaWhatsApp(texto);
 
   if (!config) {
     const dataHora = new Date().toLocaleString('pt-BR');
     console.warn(
-      `[Evolution API ⚠️ (Modo Simulação)] ${dataHora} | Variáveis EVOLUTION_API_URL, EVOLUTION_API_KEY ou EVOLUTION_INSTANCE não configuradas. Texto não enviado para "${numeroNormalizado}": "${texto.slice(0, 80)}..."`
+      `[Evolution API ⚠️ (Modo Simulação)] ${dataHora} | Variáveis EVOLUTION_API_URL, EVOLUTION_API_KEY ou EVOLUTION_INSTANCE não configuradas. Texto não enviado para "${numeroNormalizado}": "${textoFormatado.slice(0, 80)}..."`
     );
     return {
       sucesso: false,
@@ -91,7 +184,7 @@ export async function enviarTextoEvolution(
   try {
     const body = {
       number: numeroNormalizado,
-      text: texto,
+      text: textoFormatado,
       delay: 1200,
     };
 
@@ -224,12 +317,13 @@ export async function enviarMediaEvolution(
     const ext = path.extname(nomeLimpo).toLowerCase();
     const isImage = mimeType?.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.webp'].includes(ext);
     const mediatype = isImage ? 'image' : 'document';
+    const legendaFormatada = legenda ? converterMarkdownParaWhatsApp(legenda) : nomeLimpo;
 
     const body = {
       number: numeroNormalizado,
       mediatype,
       mimetype: mimeType,
-      caption: legenda || nomeLimpo,
+      caption: legendaFormatada,
       media: mediaParam,
       fileName: nomeLimpo,
     };
