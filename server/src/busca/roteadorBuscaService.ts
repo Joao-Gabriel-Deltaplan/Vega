@@ -742,3 +742,131 @@ PERGUNTA DO USUÁRIO (${contato.nome}):
   }
 }
 
+/**
+ * Rede Anti-Invenção para a Etapa B (Roteador - responder_dado):
+ * Confere estritamente se todo CPF, CNPJ, RG, telefone, e-mail e CEP citado na resposta
+ * existe nos trechos retornados na Etapa B (ou na pergunta do usuário).
+ */
+export function verificarSegurancaTrechosRestritos(params: {
+  textoResposta: string;
+  trechos: Array<{ conteudo: string; titulo_documento?: string }>;
+  mensagemUsuario?: string;
+}): { aprovado: boolean; motivo?: string; dadoSuspeito?: string } {
+  const { textoResposta, trechos, mensagemUsuario } = params;
+
+  const normalizar = (txt: string) =>
+    (txt || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+
+  const corpusPartes: string[] = trechos.map((t) => t.conteudo);
+  if (mensagemUsuario) {
+    corpusPartes.push(mensagemUsuario);
+  }
+  const corpus = normalizar(corpusPartes.join(' '));
+  const corpusDigitos = corpus.replace(/\D/g, '');
+
+  // 1. CPF (11 dígitos formatados ou puros)
+  const padraoCpf = /\b(\d{3}\.?\d{3}\.?\d{3}-?\d{2})\b/g;
+  let matchCpf;
+  while ((matchCpf = padraoCpf.exec(textoResposta)) !== null) {
+    const cpf = matchCpf[1];
+    const apenasDigitos = cpf.replace(/\D/g, '');
+    if (apenasDigitos.length === 11) {
+      if (!corpusDigitos.includes(apenasDigitos) && !corpus.includes(normalizar(cpf))) {
+        return {
+          aprovado: false,
+          motivo: `CPF ${cpf} citado na resposta não constava nos trechos dos documentos da entidade.`,
+          dadoSuspeito: cpf,
+        };
+      }
+    }
+  }
+
+  // 2. CNPJ (14 dígitos formatados ou puros)
+  const padraoCnpj = /\b(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})\b/g;
+  let matchCnpj;
+  while ((matchCnpj = padraoCnpj.exec(textoResposta)) !== null) {
+    const cnpj = matchCnpj[1];
+    const apenasDigitos = cnpj.replace(/\D/g, '');
+    if (apenasDigitos.length === 14) {
+      if (!corpusDigitos.includes(apenasDigitos) && !corpus.includes(normalizar(cnpj))) {
+        return {
+          aprovado: false,
+          motivo: `CNPJ ${cnpj} citado na resposta não constava nos trechos dos documentos da entidade.`,
+          dadoSuspeito: cnpj,
+        };
+      }
+    }
+  }
+
+  // 3. RG / Identidade (7 a 9 dígitos numéricos com pontuação padrão)
+  const padraoRg = /\b(\d{1,2}\.?\d{3}\.?\d{3}-?[0-9xX])\b/g;
+  let matchRg;
+  while ((matchRg = padraoRg.exec(textoResposta)) !== null) {
+    const rg = matchRg[1];
+    const digitos = rg.replace(/\D/g, '');
+    if (digitos.length >= 7 && digitos.length <= 9) {
+      if (!corpusDigitos.includes(digitos) && !corpus.includes(normalizar(rg))) {
+        return {
+          aprovado: false,
+          motivo: `RG ${rg} citado na resposta não constava nos trechos dos documentos da entidade.`,
+          dadoSuspeito: rg,
+        };
+      }
+    }
+  }
+
+  // 4. Telefone (10 ou 11 dígitos com DDD)
+  const padraoTel = /(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?(?:9\s*\d{4}|\d{4})[-.\s]?\d{4}\b/g;
+  let matchTel;
+  while ((matchTel = padraoTel.exec(textoResposta)) !== null) {
+    const tel = matchTel[0].trim();
+    const digitosTel = tel.replace(/\D/g, '');
+    if (digitosTel.length >= 10 && digitosTel.length <= 13) {
+      const digitosFinais = digitosTel.startsWith('55') ? digitosTel.slice(2) : digitosTel;
+      if (!corpusDigitos.includes(digitosFinais) && !corpus.includes(normalizar(tel))) {
+        return {
+          aprovado: false,
+          motivo: `Telefone ${tel} citado na resposta não constava nos trechos dos documentos da entidade.`,
+          dadoSuspeito: tel,
+        };
+      }
+    }
+  }
+
+  // 5. E-mail
+  const padraoEmail = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
+  let matchEmail;
+  while ((matchEmail = padraoEmail.exec(textoResposta)) !== null) {
+    const email = matchEmail[0].trim();
+    if (!corpus.includes(normalizar(email))) {
+      return {
+        aprovado: false,
+        motivo: `E-mail ${email} citado na resposta não constava nos trechos dos documentos da entidade.`,
+        dadoSuspeito: email,
+      };
+    }
+  }
+
+  // 6. CEP (8 dígitos formatados: 12345-678 ou 12345678)
+  const padraoCep = /\b\d{5}-?\d{3}\b/g;
+  let matchCep;
+  while ((matchCep = padraoCep.exec(textoResposta)) !== null) {
+    const cep = matchCep[0];
+    const digitosCep = cep.replace(/\D/g, '');
+    if (digitosCep.length === 8) {
+      if (!corpusDigitos.includes(digitosCep) && !corpus.includes(normalizar(cep))) {
+        return {
+          aprovado: false,
+          motivo: `CEP ${cep} citado na resposta não constava nos trechos dos documentos da entidade.`,
+          dadoSuspeito: cep,
+        };
+      }
+    }
+  }
+
+  return { aprovado: true };
+}
+

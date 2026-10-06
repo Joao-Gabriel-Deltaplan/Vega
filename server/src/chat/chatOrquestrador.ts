@@ -73,6 +73,7 @@ import {
   executarRoteadorIa,
   executarBuscaRestrita,
   responderComTrechosRestritos,
+  verificarSegurancaTrechosRestritos,
   DecisaoRoteador,
 } from '../busca/roteadorBuscaService.js';
 
@@ -1706,6 +1707,14 @@ REGRAS OBRIGATÓRIAS:
  * entregou outro campo divergente (ex: filiação, CPF, RG, data de nascimento), intercepta e bloqueia,
  * substituindo pela resposta oficial de não encontrado nos documentos.
  */
+export interface ResultadoValidacaoRegra17 {
+  textoValidado: string;
+  interceptado: boolean;
+  teriaBloqueado?: boolean;
+  subRegra?: string;
+  motivo?: string;
+}
+
 export function validarCorrespondenciaCampoResposta(
   mensagemUsuario: string,
   textoResposta: string,
@@ -1715,8 +1724,9 @@ export function validarCorrespondenciaCampoResposta(
     donoDocumentoOuDado?: string | null;
     documentoEntregue?: boolean;
     titularDocumento?: string | null;
+    modoObservacao?: boolean;
   }
-): { textoValidado: string; interceptado: boolean; motivo?: string } {
+): ResultadoValidacaoRegra17 {
   const msgNorm = normalizarParaBusca(mensagemUsuario);
   const respNorm = normalizarParaBusca(textoResposta);
 
@@ -1731,6 +1741,26 @@ export function validarCorrespondenciaCampoResposta(
     return { textoValidado: textoResposta, interceptado: false };
   }
 
+  // Função para reportar disparo respeitando o MODO OBSERVAÇÃO
+  const reportarDisparo = (subRegra: string, motivo: string): ResultadoValidacaoRegra17 => {
+    if (contextoEntrega?.modoObservacao) {
+      return {
+        textoValidado: textoResposta,
+        interceptado: false,
+        teriaBloqueado: true,
+        subRegra,
+        motivo,
+      };
+    }
+    return {
+      textoValidado: MSG_HONESTA_GUARDRAIL,
+      interceptado: true,
+      teriaBloqueado: true,
+      subRegra,
+      motivo,
+    };
+  };
+
   // Extrai nome de pessoa citada na pergunta se houver
   const titularExplicito = extrairTitularExplicito(msgNorm);
   const matchPessoa = mensagemUsuario.match(/\bd[eoa]\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+)/);
@@ -1742,11 +1772,10 @@ export function validarCorrespondenciaCampoResposta(
     const mencionaTitulo = /\bt[ií]tulo\b/i.test(respNorm);
     const falaDeFiliacaoOuOutro = /\b(m[aã]e|pai|pais|filia[cç][aã]o|cpf|rg|nascid|nascimento)\b/i.test(respNorm);
     if (!mencionaTitulo && falaDeFiliacaoOuOutro) {
-      return {
-        textoValidado: MSG_HONESTA_GUARDRAIL,
-        interceptado: true,
-        motivo: 'Usuário perguntou título de eleitor, mas a resposta continha outro campo cadastral divergente.',
-      };
+      return reportarDisparo(
+        'Sub-regra 1 (Título de Eleitor vs Filiação/CPF/RG)',
+        'Usuário perguntou título de eleitor, mas a resposta continha outro campo cadastral divergente.'
+      );
     }
   }
 
@@ -1756,11 +1785,10 @@ export function validarCorrespondenciaCampoResposta(
     const mencionaPis = /\b(pis|pasep|nis)\b/i.test(respNorm);
     const falaDeOutro = /\b(m[aã]e|pai|pais|filia[cç][aã]o|cpf|rg|nascid|nascimento|cnh)\b/i.test(respNorm);
     if (!mencionaPis && falaDeOutro) {
-      return {
-        textoValidado: MSG_HONESTA_GUARDRAIL,
-        interceptado: true,
-        motivo: 'Usuário perguntou PIS, mas a resposta continha outro campo cadastral divergente.',
-      };
+      return reportarDisparo(
+        'Sub-regra 2 (PIS / PASEP / NIS)',
+        'Usuário perguntou PIS, mas a resposta continha outro campo cadastral divergente.'
+      );
     }
   }
 
@@ -1770,11 +1798,10 @@ export function validarCorrespondenciaCampoResposta(
     const mencionaReservista = /\breservista\b/i.test(respNorm);
     const falaDeNascimentoOuFiliacao = /\b(nascimento|nascid|m[aã]e|pai|pais|filia[cç][aã]o)\b/i.test(respNorm);
     if (!mencionaReservista && falaDeNascimentoOuFiliacao) {
-      return {
-        textoValidado: MSG_HONESTA_GUARDRAIL,
-        interceptado: true,
-        motivo: 'Usuário perguntou carteira de reservista, mas a resposta continha dados de nascimento/filiação.',
-      };
+      return reportarDisparo(
+        'Sub-regra 3 (Carteira de Reservista)',
+        'Usuário perguntou carteira de reservista, mas a resposta continha dados de nascimento/filiação.'
+      );
     }
   }
 
@@ -1784,11 +1811,10 @@ export function validarCorrespondenciaCampoResposta(
     const mencionaNascimento = /\bcertid[aã]o\s*de\s*nascimento\b/i.test(respNorm);
     const falaDeCasamento = /\bcasamento\b/i.test(respNorm);
     if (!mencionaNascimento && falaDeCasamento) {
-      return {
-        textoValidado: MSG_HONESTA_GUARDRAIL,
-        interceptado: true,
-        motivo: 'Usuário perguntou certidão de nascimento, mas a resposta entregou certidão de casamento.',
-      };
+      return reportarDisparo(
+        'Sub-regra 4 (Certidão de Nascimento vs Casamento)',
+        'Usuário perguntou certidão de nascimento, mas a resposta entregou certidão de casamento.'
+      );
     }
   }
 
@@ -1801,11 +1827,10 @@ export function validarCorrespondenciaCampoResposta(
       (contextoEntrega?.titularDocumento || '').toLowerCase().includes('passaporte')
     );
     if (!mencionaPassaporte && !docEntregueEhPassaporte) {
-      return {
-        textoValidado: MSG_HONESTA_GUARDRAIL,
-        interceptado: true,
-        motivo: 'Usuário perguntou passaporte, mas a resposta continha outro documento ou campo.',
-      };
+      return reportarDisparo(
+        'Sub-regra 5 (Passaporte)',
+        'Usuário perguntou passaporte, mas a resposta continha outro documento ou campo.'
+      );
     }
   }
 
@@ -1815,11 +1840,10 @@ export function validarCorrespondenciaCampoResposta(
     const mencionaDispensa = /\b(dispens|incorpor|militar)\b/i.test(respNorm);
     const afirmaNascimento = /\b(data\s*de\s*nascimento|nasceu\s*em)\b/i.test(respNorm);
     if (!mencionaDispensa && afirmaNascimento) {
-      return {
-        textoValidado: MSG_HONESTA_GUARDRAIL,
-        interceptado: true,
-        motivo: 'Usuário perguntou data de dispensa militar, mas a resposta entregou data de nascimento.',
-      };
+      return reportarDisparo(
+        'Sub-regra 6 (Dispensa Militar vs Data de Nascimento)',
+        'Usuário perguntou data de dispensa militar, mas a resposta entregou data de nascimento.'
+      );
     }
   }
 
@@ -1865,11 +1889,10 @@ export function validarCorrespondenciaCampoResposta(
           new RegExp(`\\b(?:sua|seu)\\s+(?:cnh|cpf|rg|habilitacao|carteira|documento)\\b`, 'i').test(respSemSaudacao));
 
       if (naoMencionaPessoaPedida && atribuiExpressamenteAoRemetente) {
-        return {
-          textoValidado: MSG_HONESTA_GUARDRAIL,
-          interceptado: true,
-          motivo: `Usuário perguntou sobre ${nomePessoa}, mas a resposta atribuiu dados ao remetente (${contato?.nome}).`,
-        };
+        return reportarDisparo(
+          'Sub-regra 7 (Pessoa Específica Citada vs Remetente)',
+          `Usuário perguntou sobre ${nomePessoa}, mas a resposta atribuiu dados ao remetente (${contato?.nome}).`
+        );
       }
     }
   }
@@ -1890,11 +1913,10 @@ export function validarCorrespondenciaCampoResposta(
       const afirmaEnderecoDiretoSemParente = /\bo\s+endere[cç]o\s+d[oe]\s+[a-z]+\s+[eé]\b/i.test(respNorm) && !mencionaParenteNaResposta;
 
       if (afirmaEnderecoBase || afirmaEnderecoDiretoSemParente) {
-        return {
-          textoValidado: MSG_HONESTA_GUARDRAIL,
-          interceptado: true,
-          motivo: `Usuário pediu o endereço de parente (${termoRel}), mas a resposta entregou dados ou endereços da pessoa base.`,
-        };
+        return reportarDisparo(
+          'Sub-regra 8 (Parentesco vs Pessoa Base)',
+          `Usuário pediu o endereço de parente (${termoRel}), mas a resposta entregou dados ou endereços da pessoa base.`
+        );
       }
     }
   }
@@ -1907,11 +1929,10 @@ export function validarCorrespondenciaCampoResposta(
       const respClean = respNorm.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
       const entregouComprovanteOuEndereco = /\b(aqui\s+est[aá]|segue\s+o|comprovante\s+de\s+resid[eê]ncia|em\s+anexo)\b/i.test(respNorm);
       if (entregouComprovanteOuEndereco && !respClean.includes(nomeRuaNorm)) {
-        return {
-          textoValidado: MSG_HONESTA_GUARDRAIL,
-          interceptado: true,
-          motivo: `Usuário pediu comprovante da ${matchRuaPedido[0]}, mas o documento ou endereço entregue é de outra rua.`,
-        };
+        return reportarDisparo(
+          'Sub-regra 9 (Logradouro / Rua Específica no Pedido)',
+          `Usuário pediu comprovante da ${matchRuaPedido[0]}, mas o documento ou endereço entregue é de outra rua.`
+        );
       }
     }
   }
@@ -1922,11 +1943,10 @@ export function validarCorrespondenciaCampoResposta(
     const mencionaAmarok = /\bamarok\b/i.test(respNorm);
     const mencionaFrontier = /\bfrontier\b/i.test(respNorm);
     if (mencionaAmarok && !mencionaFrontier) {
-      return {
-        textoValidado: MSG_HONESTA_GUARDRAIL,
-        interceptado: true,
-        motivo: 'Usuário pediu documento da Nissan Frontier, mas a resposta entregou a Amarok.',
-      };
+      return reportarDisparo(
+        'Sub-regra 10 (Modelo de Veículo: Frontier vs Amarok)',
+        'Usuário pediu documento da Nissan Frontier, mas a resposta entregou a Amarok.'
+      );
     }
   }
 
@@ -1938,11 +1958,10 @@ export function validarCorrespondenciaCampoResposta(
     const naoDisseQueNaoTemDoc = !/\b(n[aã]o\s+tenho\s+o\s+t[ií]tulo|n[aã]o\s+encontrei\s+o\s+documento)\b/i.test(respNorm);
 
     if (citaIR && afirmaEncontrouDoc && naoDisseQueNaoTemDoc) {
-      return {
-        textoValidado: MSG_HONESTA_GUARDRAIL,
-        interceptado: true,
-        motivo: 'Usuário pediu o documento físico do título de eleitor, mas a resposta entregou como se fosse o documento em vez de separar documento x dado.',
-      };
+      return reportarDisparo(
+        'Sub-regra 11 (Título de Eleitor Físico vs Dado no IR)',
+        'Usuário pediu o documento físico do título de eleitor, mas a resposta entregou como se fosse o documento em vez de separar documento x dado.'
+      );
     }
   }
 
@@ -6671,6 +6690,89 @@ Existe uma ação na Base de Conhecimento AGUARDANDO CONFIRMAÇÃO do usuário:
               };
             });
 
+            // 2.2.1 REDE ANTI-INVENÇÃO (Etapa B)
+            // Confere estritamente se todo CPF, CNPJ, RG, telefone, e-mail e CEP citado na resposta
+            // existe nos trechos retornados na Etapa B.
+            const checagemAntiInvencao = verificarSegurancaTrechosRestritos({
+              textoResposta: respostaGerada,
+              trechos: trechosRestritos,
+              mensagemUsuario,
+            });
+
+            if (!checagemAntiInvencao.aprovado) {
+              console.warn(
+                `[VEGA Guardrail ⚠️] Rede Anti-Invenção (Etapa B) bloqueou resposta: ${checagemAntiInvencao.motivo}`
+              );
+              const mensagemHonesta = 'Tive um problema ao validar a resposta, tente de novo.';
+
+              const etapasRastroAntiInvencao: EtapaRastro[] = [
+                {
+                  ordem: 1,
+                  nome: 'Roteador da Busca (Etapa A)',
+                  descricao: `Entidade: "${decisaoRoteador.entidade_alvo || 'N/A'}". Documentos escolhidos: ${decisaoRoteador.documentos_escolhidos.length}. Justificativa: ${decisaoRoteador.justificativa}`,
+                  tempoMs: tempoInicioB - inicioRoteador,
+                  detalhes: {
+                    entidade_identificada: decisaoRoteador.entidade_alvo,
+                    intencao: decisaoRoteador.intencao,
+                    documentos_escolhidos: decisaoRoteador.documentos_escolhidos,
+                    justificativa: decisaoRoteador.justificativa,
+                  },
+                },
+                {
+                  ordem: 2,
+                  nome: 'Busca Restrita e Resposta IA (Etapa B)',
+                  descricao: `Encontrados ${trechosRestritos.length} trechos restritos aos documentos da entidade.`,
+                  tempoMs: Date.now() - tempoInicioB,
+                  detalhes: {
+                    entidade_alvo: decisaoRoteador.entidade_alvo,
+                    documentos_consultados: decisaoRoteador.documentos_escolhidos,
+                  },
+                },
+                {
+                  ordem: 3,
+                  nome: 'Guardrail Ativado: Rede Anti-Invenção (Etapa B)',
+                  descricao: `Bloqueado: ${checagemAntiInvencao.motivo}. Resposta substituída por mensagem honesta.`,
+                  tempoMs: 1,
+                  detalhes: {
+                    guardrail: 'verificarSegurancaTrechosRestritos (Etapa B)',
+                    motivo: checagemAntiInvencao.motivo,
+                    dadoSuspeito: checagemAntiInvencao.dadoSuspeito,
+                    texto_original_bloqueado: respostaGerada,
+                    resposta_final_enviada: mensagemHonesta,
+                  },
+                },
+              ];
+
+              const rastroBloqueio: RastroRegistro = {
+                mensagemId: '',
+                usuarioNome: contato.nome,
+                usuarioId: contato.id,
+                mensagemOriginal: mensagemUsuario,
+                perguntaReescrita: mensagemUsuario,
+                intencaoDetectada: 'pergunta_conteudo',
+                tipoBusca: 'roteador_busca_restrita',
+                documentosEncontrados: docsFontes,
+                enviouAnexo: false,
+                anexosDetalhes: [],
+                respostaFinal: mensagemHonesta,
+                modeloUsado: chatModel,
+                tokensTotal: 0,
+                tokensPrompt: 0,
+                tokensCompletion: 0,
+                custoEstimadoUsd: 0,
+                tempoTotalMs: Date.now() - inicioTotal,
+                etapas: etapasRastroAntiInvencao,
+              };
+
+              return {
+                textoResposta: mensagemHonesta,
+                origem: 'ia',
+                intencaoDetectada: 'pergunta_conteudo',
+                perguntaReescrita: mensagemUsuario,
+                rastro: rastroBloqueio,
+              };
+            }
+
             const etapasRastroB: EtapaRastro[] = [
               {
                 ordem: 1,
@@ -7483,16 +7585,21 @@ export async function processarMensagemChat(dados: {
   // 3. EXTRAÇÃO DO CONTEXTO DE ENTREGA PARA O GUARDRAIL REGRA 17
   let donoDocOuDado: string | null = null;
   let entidadeAlvoRoteador: string | null = null;
+  let veioDeDecisaoRoteadorComDocs = false;
 
   if (resultado.rastro) {
     const etapaRoteador = resultado.rastro.etapas.find(
-      (e) => e.detalhes?.entidade_identificada || e.detalhes?.entidade_alvo
+      (e) => e.detalhes?.entidade_identificada || e.detalhes?.entidade_alvo || e.nome?.includes('Roteador da Busca')
     );
     if (etapaRoteador) {
       entidadeAlvoRoteador =
         etapaRoteador.detalhes?.entidade_identificada ||
         etapaRoteador.detalhes?.entidade_alvo ||
         null;
+      const docsEscolhidos = etapaRoteador.detalhes?.documentos_escolhidos;
+      if (Array.isArray(docsEscolhidos) && docsEscolhidos.length > 0) {
+        veioDeDecisaoRoteadorComDocs = true;
+      }
     }
     const docFonte = resultado.rastro.documentosEncontrados?.[0];
     if (docFonte) {
@@ -7509,6 +7616,7 @@ export async function processarMensagemChat(dados: {
       entidadeAlvo: entidadeAlvoRoteador,
       donoDocumentoOuDado: donoDocOuDado,
       documentoEntregue: Boolean(resultado.anexos && resultado.anexos.length > 0),
+      modoObservacao: veioDeDecisaoRoteadorComDocs,
     }
   );
 
@@ -7532,9 +7640,30 @@ export async function processarMensagemChat(dados: {
         detalhes: {
           guardrail: 'validarCorrespondenciaCampoResposta (Regra 17)',
           regra_bloqueou: 'Regra 17',
+          sub_regra: checagemCampo.subRegra,
           motivo: checagemCampo.motivo,
           texto_original_bloqueado: respostaOriginalIa,
           resposta_final_enviada: mensagemHonesta,
+        },
+      });
+    }
+  } else if (checagemCampo.teriaBloqueado && veioDeDecisaoRoteadorComDocs) {
+    console.log(
+      `[VEGA Guardrail 👁️] Regra 17 em MODO OBSERVAÇÃO teria bloqueado: [${checagemCampo.subRegra}] ${checagemCampo.motivo}`
+    );
+    if (resultado.rastro) {
+      resultado.rastro.etapas.push({
+        ordem: resultado.rastro.etapas.length + 1,
+        nome: 'Guardrail Regra 17 (Modo Observação)',
+        descricao: `Teria bloqueado: [${checagemCampo.subRegra}] ${checagemCampo.motivo}`,
+        tempoMs: 1,
+        detalhes: {
+          guardrail: 'validarCorrespondenciaCampoResposta (Regra 17)',
+          modo: 'observacao',
+          status: 'teria_bloqueado',
+          sub_regra: checagemCampo.subRegra,
+          motivo: checagemCampo.motivo,
+          resposta_mantida: resultado.textoResposta,
         },
       });
     }
